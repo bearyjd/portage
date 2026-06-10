@@ -11,7 +11,6 @@ package cc.grepon.portage.transport
 
 import cc.grepon.portage.model.PairingPayload
 import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.cbor.Cbor
 import java.util.Base64
 
 /**
@@ -21,7 +20,7 @@ import java.util.Base64
 @OptIn(ExperimentalSerializationApi::class)
 class PairingCodecImpl : PairingCodec {
 
-    private val cbor = Cbor { ignoreUnknownKeys = true }
+    private val cbor = PortageCbor.instance
     private val encoder = Base64.getUrlEncoder().withoutPadding()
     private val decoder = Base64.getUrlDecoder()
 

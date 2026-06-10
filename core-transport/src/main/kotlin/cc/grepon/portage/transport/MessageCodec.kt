@@ -12,7 +12,6 @@ package cc.grepon.portage.transport
 import cc.grepon.portage.model.MessageType
 import cc.grepon.portage.model.ProtocolMessage
 import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.cbor.Cbor
 
 /** Serializes [ProtocolMessage] to/from bytes for the transport. */
 interface MessageCodec {
@@ -28,7 +27,7 @@ interface MessageCodec {
 @OptIn(ExperimentalSerializationApi::class)
 class CborMessageCodec : MessageCodec {
 
-    private val cbor = Cbor { ignoreUnknownKeys = true }
+    private val cbor = PortageCbor.instance
 
     private companion object {
         // Noise max plaintext; the transport frame cap already bounds this, belt-and-suspenders.

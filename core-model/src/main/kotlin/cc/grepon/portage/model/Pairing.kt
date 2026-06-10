@@ -57,6 +57,15 @@ data class PairingPayload(
         return result
     }
 
+    /**
+     * Best-effort zeroization of the secret [psk]. Call once the handshake has consumed it
+     * (security review 2026-06-10, LOW). The app owns this copy; noise-java wipes its own
+     * internal copy via Destroyable. Mind the resume feature if statics must outlive this.
+     */
+    fun wipe() {
+        psk.fill(0)
+    }
+
     companion object {
         const val PROTOCOL_VERSION = 1
         const val PSK_BYTES = 32

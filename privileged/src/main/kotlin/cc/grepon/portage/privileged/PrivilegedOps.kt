@@ -44,11 +44,10 @@ interface PrivilegedOps {
     /** Restore the recorded prior SMS role holder (`cmd role add-role-holder`, V7). */
     suspend fun setSmsRoleHolder(packageName: String): OpResult
 
-    /**
-     * Escape hatch / live-shell fallback (ADR-001 §4): run a raw shell command when the
-     * grant architecture is unavailable. Use sparingly; prefer typed methods above.
-     */
-    suspend fun exec(command: List<String>): ShellResult
+    // NOTE: no public `exec`. A raw shell escape hatch on the public privilege boundary is
+    // a footgun for a security tool (every call site would need its own review). The
+    // live-shell fallback (ADR-001 §4) is a PRIVATE implementation detail of the bridge;
+    // only the typed methods above are exposed. (Security review 2026-06-10, MEDIUM.)
 
     enum class Availability { LIVE, INSTALLED_NOT_RUNNING, NOT_INSTALLED, PERMISSION_DENIED }
 
@@ -61,6 +60,4 @@ interface PrivilegedOps {
         data class Failed(val reason: String) : OpResult
         data object BridgeUnavailable : OpResult
     }
-
-    data class ShellResult(val exitCode: Int, val stdout: String, val stderr: String)
 }

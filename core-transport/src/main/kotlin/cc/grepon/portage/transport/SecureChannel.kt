@@ -27,6 +27,11 @@ interface SecureChannel : AutoCloseable {
     /** Receive the next application message, or null at clean end-of-stream. */
     suspend fun receive(): ProtocolMessage?
 
+    /**
+     * Implementations MUST call [PairingPayload.wipe] once the handshake has consumed the
+     * PSK (security review 2026-06-10), and enforce the listener-layer controls tracked in
+     * ADR-002 §Follow-ups: PSK single-use consumption, 10 s handshake timeout, u16 wire cap.
+     */
     interface Factory {
         /** Receiver side: dial [payload].ip/port and run the handshake as Noise initiator. */
         suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel
