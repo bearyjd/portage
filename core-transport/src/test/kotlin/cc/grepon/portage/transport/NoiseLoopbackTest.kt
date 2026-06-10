@@ -54,22 +54,22 @@ class NoiseLoopbackTest {
         var recvSession: NoiseSession? = null
         var sendSession: NoiseSession? = null
 
-        val r = thread {
+        // Daemon threads: in the mismatch case one endpoint parks forever on a read; as a
+        // daemon it can't block JVM shutdown, so no close()-cleanup is needed (closing would
+        // inject an EOF sentinel that the happy-path data exchange below would misread).
+        val r = thread(isDaemon = true) {
             try {
                 val k = NoiseChannel.handshake(recvT, HandshakeState.INITIATOR, psk, prologue)
                 recvSession = NoiseSession(recvT, k)
             } catch (t: Throwable) { synchronized(errors) { errors.add(t) } }
         }
-        val s = thread {
+        val s = thread(isDaemon = true) {
             try {
                 val k = NoiseChannel.handshake(sendT, HandshakeState.RESPONDER, senderPsk, prologue)
                 sendSession = NoiseSession(sendT, k)
             } catch (t: Throwable) { synchronized(errors) { errors.add(t) } }
         }
         r.join(5_000); s.join(5_000)
-        // Unblock any thread still parked on a read (mismatch case leaves one waiting).
-        runCatching { recvT.close() }; runCatching { sendT.close() }
-        r.join(2_000); s.join(2_000)
         return errors to (recvSession to sendSession)
     }
 
