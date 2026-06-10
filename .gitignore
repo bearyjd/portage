@@ -1,0 +1,25 @@
+# OMC / tooling state
+.omc/
+
+# Android / Gradle
+.gradle/
+build/
+*/build/
+local.properties
+captures/
+.cxx/
+
+# Kotlin / IntelliJ / Android Studio
+*.iml
+.idea/
+.kotlin/
+
+# Signing / secrets — never commit
+*.jks
+*.keystore
+keystore.properties
+secrets.properties
+
+# OS / editor
+.DS_Store
+*.swp
