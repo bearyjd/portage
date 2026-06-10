@@ -43,8 +43,17 @@ class ShizukuPrivilegedOps : PrivilegedOps {
     override suspend fun setSmsRoleHolder(packageName: String): PrivilegedOps.OpResult =
         PrivilegedOps.OpResult.BridgeUnavailable
 
-    override suspend fun exec(command: List<String>): PrivilegedOps.ShellResult =
-        PrivilegedOps.ShellResult(exitCode = -1, stdout = "", stderr = "Shizuku bridge not implemented")
+    /**
+     * Private live-shell escape hatch (ADR-001 §4). The typed methods above route through
+     * this; it is deliberately NOT on the public [PrivilegedOps] boundary. Every use is
+     * internal to the bridge and security-reviewed.
+     */
+    @Suppress("unused") // wired up when the typed ops are implemented
+    private suspend fun exec(command: List<String>): ShellResult =
+        ShellResult(exitCode = -1, stdout = "", stderr = "Shizuku bridge not implemented")
+
+    @Suppress("unused")
+    private data class ShellResult(val exitCode: Int, val stdout: String, val stderr: String)
 
     private companion object {
         const val WRITE_SECURE_SETTINGS = "android.permission.WRITE_SECURE_SETTINGS"
