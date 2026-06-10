@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Minimal platform theme (no Material Components XML dependency); Compose owns the
+      real design system. DayNight is the platform default — the actual light/dark
+      direction is a deliberate design decision made in the Compose theme, not here.
+    -->
+    <style name="Theme.Portage" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

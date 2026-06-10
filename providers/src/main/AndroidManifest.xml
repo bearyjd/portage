@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  portage — GrapheneOS device-parity transfer
+  Copyright (C) 2026 Grepon Labs LLC. Licensed under AGPL-3.0.
+
+  No permissions declared here on purpose: the EXPORTER (app-send) requests READ_* and
+  the IMPORTER (app-recv) requests WRITE_*. Declaring them per-app keeps each binary's
+  requested permission set minimal (see the security rules surfaced for manifests).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

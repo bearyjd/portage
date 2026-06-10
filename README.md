@@ -36,10 +36,35 @@ misses, directly phone-to-phone.** They are complementary, not competitors:
   opt-in runtime-permission parity. See `docs/prp/ADR-001-privilege-feasibility.md` for
   the privilege architecture and on-device verification plan.
 
+## Building
+
+This is a Gradle + Kotlin multi-module Android project (module layout in the brief, §4).
+
+**One-time wrapper bootstrap.** The `gradle-wrapper.jar` is intentionally not committed;
+generate the wrapper once on a machine with Gradle 8.13+ installed:
+
+```sh
+gradle wrapper --gradle-version 8.13   # writes gradlew, gradlew.bat, and the wrapper jar
+```
+
+Then the usual:
+
+```sh
+./gradlew :settings-catalog:test        # pure-JVM safety-critical allowlist guardrails
+./gradlew assembleDebug                  # build both APKs (needs the Android SDK)
+```
+
+Requirements: JDK 17, Android SDK with the `compileSdk` from `gradle/libs.versions.toml`.
+Versions in the catalog are early-2026 baselines — verify/bump AGP, `compileSdk`, and the
+Compose BOM against the **current** GrapheneOS Android version at build time.
+
 ## Status
 
-**Planning / design substrate.** No application code yet. The design artifacts live in
-[`docs/prp/`](docs/prp/):
+**Scaffold + design substrate.** The monorepo (all seven modules), shared wire-protocol
+model, the `PrivilegedOps` boundary, and the safety-critical settings allowlist (with
+guardrail tests) exist; the seed code encodes the design but the Shizuku bridge, Noise
+transport, providers, and UI are stubs to be implemented **after** the ADR-001 on-device
+verification. The design artifacts live in [`docs/prp/`](docs/prp/):
 
 - [`portage-prp-prompt.md`](docs/prp/portage-prp-prompt.md) — execution brief
 - [`ADR-001-privilege-feasibility.md`](docs/prp/ADR-001-privilege-feasibility.md) — Shizuku / Tier 1 go-no-go + verification procedure

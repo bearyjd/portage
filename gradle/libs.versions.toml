@@ -1,0 +1,73 @@
+# Version catalog for portage.
+# NOTE: versions below are baselines from late-2025/early-2026. The brief mandates
+# targeting the CURRENT GrapheneOS Android version — verify + bump AGP / compileSdk /
+# Compose BOM at build time rather than trusting these pins.
+
+[versions]
+# Build
+agp = "8.9.1"                 # verify latest stable at build time
+kotlin = "2.1.21"             # K2; Compose compiler is bundled via the kotlin compose plugin
+ksp = "2.1.21-2.0.1"
+# SDK levels — Pixel 6 and newer (Tensor era)
+minSdk = "31"                 # Android 12 = Pixel 6 launch floor
+compileSdk = "35"             # Android 15; bump to current GOS Android at build time
+targetSdk = "35"
+# AndroidX
+coreKtx = "1.15.0"
+lifecycle = "2.8.7"
+activityCompose = "1.10.0"
+composeBom = "2025.05.00"     # verify latest
+# Kotlin libraries
+coroutines = "1.10.1"
+serialization = "1.8.1"
+cbor = "1.8.1"                # kotlinx-serialization-cbor
+# Privilege bridge
+shizuku = "13.1.5"
+# QR
+zxingCore = "3.5.3"           # QR generation (sender)
+mlkitBarcode = "17.3.0"       # QR scanning (receiver) via CameraX
+camerax = "1.4.1"
+# Crypto — SEE docs/prp/PROTOCOL.md §2. No canonical Maven Kotlin Noise lib exists;
+# this is the Noise-library spike (VERIFY_FIRST #8). Placeholder until resolved.
+# noise = "TBD"
+# Test
+junit = "4.13.2"
+junitExt = "1.2.1"
+truth = "1.4.4"
+
+[libraries]
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { module = "androidx.compose.ui:ui" }
+androidx-compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-serialization-core = { module = "org.jetbrains.kotlinx:kotlinx-serialization-core", version.ref = "serialization" }
+kotlinx-serialization-cbor = { module = "org.jetbrains.kotlinx:kotlinx-serialization-cbor", version.ref = "cbor" }
+
+shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
+shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
+
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxingCore" }
+mlkit-barcode = { module = "com.google.mlkit:barcode-scanning", version.ref = "mlkitBarcode" }
+camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
+camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
+camerax-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
+
+junit = { module = "junit:junit", version.ref = "junit" }
+androidx-junit = { module = "androidx.test.ext:junit", version.ref = "junitExt" }
+truth = { module = "com.google.truth:truth", version.ref = "truth" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
