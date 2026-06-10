@@ -1,6 +1,9 @@
 # ADR-001 — Privilege Feasibility: Shizuku as the Tier 1 Bridge
 
-Status: PROPOSED (pending on-device verification, §3)
+Status: **ACCEPTED — grant architecture** (verified 2026-06-10 on Pixel 9 Pro XL,
+GrapheneOS Android 16, fingerprint `google/comet/comet:16/BP4A.260205.002/2026060600`).
+V2/V4/V5/V6/V7-INTERNET/V7-nav/V8 all passed; see `VERIFICATION-RUNBOOK.md` for the filled
+results table. Re-validate on GOS version bumps.
 Decision owner: JD. Drafted by planning agent, 2026-06-10.
 
 ## 1. Decision (and one architectural correction to the PRP)

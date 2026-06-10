@@ -86,30 +86,33 @@ Repeat V4 with `--user <secondary>`. Confirms v1 is owner-profile-only (expected
 
 ---
 
-## Results template
+## Results (measured 2026-06-10)
 
-| Step | Command verdict | stdout / error signature | Pass? |
-|---|---|---|---|
-| fingerprint | | `ro.build.fingerprint = …` | n/a |
-| V1 liveness | | | |
-| V2 baseline | | | |
-| V3 via Shizuku | | | |
-| V4 self-grant | | | |
-| V5 reboot persist | | | |
-| V6 silent install | | | |
-| V7 INTERNET revoke | | | |
-| V7 OTHER_SENSORS | | | |
-| V7 nav overlay | | | |
-| V7 SMS role | | | |
-| V8 secondary profile | | | |
+Device: **Pixel 9 Pro XL ("comet")**, fingerprint
+`google/comet/comet:16/BP4A.260205.002/2026060600`, **GrapheneOS Android 16 (SDK 36)**.
+Method: driven over USB `adb` (shell uid 2000 — the exact privilege Shizuku brokers), so
+V2–V8 were exercised at the real privilege level without Shizuku installed.
 
-## Verdict (fill in, then update ADR-001 Status)
+| Step | Verdict | Evidence |
+|---|---|---|
+| fingerprint | n/a | `google/comet/comet:16/BP4A.260205.002/2026060600`, Android 16 / SDK 36 |
+| V1 liveness | N/A | Shizuku not installed; privilege exercised directly via adb shell uid 2000 |
+| V2 baseline | ✅ PASS | `settings put secure ui_night_mode 2` → get `2`; `global animator_duration_scale 0.5` → get `0.5`; no SecurityException; restored |
+| V3 via Shizuku | DEFERRED | Equivalent to V2 (identical shell uid). Confirm once Shizuku is installed; expected pass |
+| V4 self-grant | ✅ PASS | `pm grant cc.grepon.portage.recv WRITE_SECURE_SETTINGS` silent (exit 0); dump `granted=true` (userId 0). `development` flag intact |
+| V5 reboot persist | ✅ PASS | After reboot, no re-grant, no Shizuku → `granted=true` persists → **grant architecture** |
+| V6 silent install | ✅ PASS | `pm install-create/-write/-commit` → `Success`, no on-screen prompt → batched reinstall available |
+| V7 INTERNET revoke | ✅ PASS | `pm revoke` → `granted=false`; `pm grant` restore → `granted=true`. GOS Network-toggle parity reachable via `pm` |
+| V7 OTHER_SENSORS | ⚠️ TENTATIVE | `pm grant` exit 0 but app doesn't declare it — re-test with a manifest-declared sensor app before trusting |
+| V7 nav overlay | ✅ PASS | `cmd overlay enable-exclusive … threebutton` switched; restored to `gestural`. Needs LIVE shell at call time |
+| V7 SMS role | ⚠️ GATED | `cmd role add-role-holder SMS <our app>` failed (RuntimeException) — app is not SMS-role-eligible. Mechanism OK; app must declare SMS components (DEVILS_ADVOCATE Q4) |
+| V8 secondary profile | ✅ CONFIRMED | Grant `granted=true` only for userId 0; `false` for profiles 10/11 → owner-profile-only scoping correct |
 
-- [ ] V2 failed → **Tier 1 settings NO-GO**, Tier 0 only.
-- [ ] V2+V3 pass, V4/V5 pass → **grant architecture** (Shizuku one-shot for settings).
-- [ ] V2+V3 pass, V4 or V5 fail → **live-shell architecture** (Shizuku in hot path).
-- [ ] V6 prompts → batched install degrades to per-app confirm.
-- [ ] V7 results: INTERNET ___ · SENSORS ___ · nav ___ · SMS-role ___
+## Verdict
 
-Paste the filled table into `ADR-001-privilege-feasibility.md` and flip its Status from
-PROPOSED to ACCEPTED/REJECTED for the measured fingerprint.
+- [x] **V2 pass + V4/V5 pass → grant architecture.** Shizuku is a one-shot at Tier 1
+  unlock; settings writes leave the bridge afterward and survive reboot.
+- [x] V6 silent → batched reinstall in scope (no per-app-confirm degradation).
+- V7 results: INTERNET **reachable** · SENSORS **tentative** · nav **reachable (live shell)** ·
+  SMS-role **needs SMS-eligible app**.
+- Valid only for fingerprint `…2026060600` (Android 16). Re-run on GOS version bumps.
