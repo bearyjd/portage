@@ -64,3 +64,29 @@ so swapping to B or a future `pskN` lib stays local. Mandate a security review o
 - Open: confirm noise-java's `NoisePSK_` mode interops cleanly initiator↔responder with a
   loopback test (the hello-world this ADR gates). Open: vendor-and-pin vs JitPack vs the
   auties00 Maven Central fork — settle once Option A is chosen.
+
+## Follow-ups from the 2026-06-10 security review (MUST close before the transport ships)
+
+The crypto core is sound (no CRITICAL), but these threat-model controls currently live
+only in the design docs and must be implemented when the TCP `SecureChannel.Factory` /
+listener is built — shipping that layer without them elevates real risk to HIGH:
+
+1. **PSK single-use consumption** — `acceptAsSender` must atomically consume the PSK on the
+   first *successful* `split()` and reject all further handshakes for that `sid`
+   (THREAT_MODEL #4 replay, #7 second-suitor). Add a test for the second-attempt rejection.
+2. **10 s handshake timeout** — wrap `NoiseChannel.handshake` in `withTimeout(10_000)` and
+   set `socket.soTimeout`; document the deadline on `FrameTransport.readFrame()`
+   (THREAT_MODEL #11; the loopback harness already shows a parked-thread risk).
+3. **u16 frame cap at the wire** — enforce in the production TCP `FrameTransport.readFrame()`
+   when reading the length prefix (the defensive caps in `NoiseSession.receive` /
+   `MessageCodec` / `PairingCodecImpl` landed in fix/foundation-hardening).
+4. **Adversarial negative-path tests** — flipped-ciphertext byte, replayed/reordered frame,
+   prologue (sid/version) mismatch — to verify (not just assert) THREAT_MODEL #5/#6.
+5. **App-owned PSK zeroization** — wipe the QR-derived `psk` ByteArray after handshake
+   (mind the resume feature if statics must persist).
+6. **Dedicated security-reviewer pass** on the vendored noise-java tree + glue + a verbatim
+   diff against upstream `49377b6`, before any release.
+
+Landed in fix/foundation-hardening (2026-06-10): exception normalization to
+`TransportException`, single-byte version range guard, defensive frame/message/QR size
+caps, and pairing-payload bounds (port/ip/far-future-expiry).

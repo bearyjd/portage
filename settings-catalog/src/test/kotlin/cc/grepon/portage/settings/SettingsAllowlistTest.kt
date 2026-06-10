@@ -39,11 +39,13 @@ class SettingsAllowlistTest {
     }
 
     @Test
-    fun `every SAFE or RISKY key has a concrete validator`() {
+    fun `every applied key has a concrete validator (None is reserved for excluded keys)`() {
+        // The documented invariant: every value applied to the device is validated. A
+        // SAFE/RISKY key with Validator.None is a bug (e.g. the volume_alarm 0-hazard).
         val unvalidated = SettingsAllowlist.all
             .filter { it.classification != Classification.DEVICE_SPECIFIC }
             .filter { it.validator == Validator.None }
-        // Tighten as the catalog matures; for now assert the intent is visible.
-        assertThat(unvalidated.map { it.name }).doesNotContain("font_scale")
+            .map { it.name }
+        assertThat(unvalidated).isEmpty()
     }
 }

@@ -30,6 +30,11 @@ class CborMessageCodec : MessageCodec {
 
     private val cbor = Cbor { ignoreUnknownKeys = true }
 
+    private companion object {
+        // Noise max plaintext; the transport frame cap already bounds this, belt-and-suspenders.
+        const val MAX_MESSAGE_BYTES = 65519
+    }
+
     override fun encode(message: ProtocolMessage): ByteArray {
         val body: ByteArray = when (message) {
             is ProtocolMessage.Hello -> cbor.encodeToByteArray(ProtocolMessage.Hello.serializer(), message)
@@ -51,6 +56,9 @@ class CborMessageCodec : MessageCodec {
 
     override fun decode(bytes: ByteArray): ProtocolMessage {
         require(bytes.isNotEmpty()) { "empty message frame" }
+        // Bound decoder work even from an authenticated-but-malicious peer (THREAT_MODEL #10).
+        // kotlinx CBOR exposes no depth/size limit, so the byte cap is the mitigation.
+        require(bytes.size <= MAX_MESSAGE_BYTES) { "message exceeds ${MAX_MESSAGE_BYTES}B cap" }
         val t = bytes[0].toInt()
         val type = MessageType.entries.firstOrNull { it.t == t }
             ?: throw IllegalArgumentException("unknown message type byte: $t")
