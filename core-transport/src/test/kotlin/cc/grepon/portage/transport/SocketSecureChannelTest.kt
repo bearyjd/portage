@@ -81,7 +81,7 @@ class SocketSecureChannelTest {
     }
 
     @Test(timeout = 30_000L)
-    fun `the first completed handshake consumes the sid; a later same-sid handshake is rejected`() = runBlocking {
+    fun `first completed handshake consumes the sid and a later same-sid handshake is rejected`() = runBlocking {
         val registry = PskRegistry()
         val factory = NoiseSecureChannelFactory(pskRegistry = registry)
 
