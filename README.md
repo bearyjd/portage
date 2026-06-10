@@ -68,6 +68,7 @@ verification. The design artifacts live in [`docs/prp/`](docs/prp/):
 
 - [`portage-prp-prompt.md`](docs/prp/portage-prp-prompt.md) — execution brief
 - [`ADR-001-privilege-feasibility.md`](docs/prp/ADR-001-privilege-feasibility.md) — Shizuku / Tier 1 go-no-go + verification procedure
+- [`VERIFICATION-RUNBOOK.md`](docs/prp/VERIFICATION-RUNBOOK.md) — phone-ready V1–V8 checklist + results template (run before UI)
 - [`PROTOCOL.md`](docs/prp/PROTOCOL.md) — pairing + transfer wire format (QR anchor, Noise XXpsk3)
 - [`THREAT_MODEL.md`](docs/prp/THREAT_MODEL.md) — semi-trusted-LAN adversary, attack→defense table
 - [`settings_allowlist.md`](docs/prp/settings_allowlist.md) — SAFE / RISKY / DEVICE_SPECIFIC key classification
