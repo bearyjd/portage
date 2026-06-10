@@ -118,8 +118,12 @@ class NoiseLoopbackTest {
     fun `mismatched PSK fails to establish a channel`() {
         val wrong = ByteArray(32) { (it + 99).toByte() }
         val h = runHandshake(senderPsk = wrong)
+        // The responder reads msg1 with the wrong key, its AEAD tag fails, and it produces
+        // no session. Pin the failure type so a future "both sides silently fail" regression
+        // can't pass this test.
         assertThat(h.errors).isNotEmpty()
-        assertThat(h.recv != null && h.send != null).isFalse()
+        assertThat(h.errors.first()).isInstanceOf(TransportException::class.java)
+        assertThat(h.send).isNull()
     }
 
     @Test
@@ -127,7 +131,8 @@ class NoiseLoopbackTest {
         val otherSid = ByteArray(16) { (it * 13 + 1).toByte() }
         val h = runHandshake(senderPrologue = NoiseChannel.prologue(version = 1, sid = otherSid))
         assertThat(h.errors).isNotEmpty()
-        assertThat(h.recv != null && h.send != null).isFalse()
+        assertThat(h.errors.first()).isInstanceOf(TransportException::class.java)
+        assertThat(h.send).isNull()
     }
 
     @Test
@@ -143,12 +148,14 @@ class NoiseLoopbackTest {
         frame[frame.size - 1] = (frame[frame.size - 1].toInt() xor 0x01).toByte()
         h.bToA.put(frame)
 
-        val rejected = try {
-            recv.receive(); false
-        } catch (_: TransportException) {
-            true
+        val thrown: TransportException? = try {
+            recv.receive(); null
+        } catch (e: TransportException) {
+            e
         }
-        assertThat(rejected).isTrue()
+        assertThat(thrown).isNotNull()
+        // Pin the rejection to the AEAD layer, not some unrelated transport error.
+        assertThat(thrown?.cause).isInstanceOf(java.security.GeneralSecurityException::class.java)
     }
 
     @Test
