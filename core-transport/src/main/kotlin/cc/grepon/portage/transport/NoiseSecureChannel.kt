@@ -14,9 +14,10 @@ import cc.grepon.portage.model.ProtocolMessage
 import com.southernstorm.noise.protocol.CipherStatePair
 import com.southernstorm.noise.protocol.HandshakeState
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -35,22 +36,22 @@ class NoiseSecureChannel(private val session: NoiseSession) : SecureChannel {
 
 /**
  * Builds [NoiseSecureChannel]s over TCP. Enforces the listener-layer controls from
- * ADR-002 §Follow-ups: per-session PSK single-use ([PskRegistry]), a handshake timeout
- * (socket `soTimeout` + [withTimeout]), and [PairingPayload.wipe] of the QR PSK once the
- * handshake has consumed it.
+ * ADR-002 §Follow-ups: per-session PSK single-use ([PskRegistry]), a hard handshake
+ * deadline, a bounded total listener lifetime, and [PairingPayload.wipe] of the QR PSK
+ * once the handshake has consumed it.
  */
 class NoiseSecureChannelFactory(
     private val pskRegistry: PskRegistry = PskRegistry(),
     private val handshakeTimeoutMs: Long = HANDSHAKE_TIMEOUT_MS,
+    private val acceptDeadlineMs: Long = ACCEPT_DEADLINE_MS,
 ) : SecureChannel.Factory {
 
     override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = withContext(Dispatchers.IO) {
-        val transport = SocketFrameTransport(connectWithRetry(payload))
+        val socket = connectWithRetry(payload)
+        val transport = SocketFrameTransport(socket)
         try {
             val prologue = NoiseChannel.prologue(payload.version, payload.sid)
-            val keys = withTimeout(handshakeTimeoutMs) {
-                NoiseChannel.handshake(transport, HandshakeState.INITIATOR, payload.psk, prologue)
-            }
+            val keys = handshakeWithDeadline(transport, socket, HandshakeState.INITIATOR, payload, prologue)
             NoiseSecureChannel(NoiseSession(transport, keys))
         } catch (t: Throwable) {
             transport.close()
@@ -62,31 +63,36 @@ class NoiseSecureChannelFactory(
 
     override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel = withContext(Dispatchers.IO) {
         val server = ServerSocket()
+        // One cumulative wall-clock budget for the whole listener (THREAT_MODEL #7/#11):
+        // failed/stalled suitors cannot reset it, so the listener can't be held forever.
+        val deadlineNanos = System.nanoTime() + acceptDeadlineMs * 1_000_000L
         try {
             server.reuseAddress = true
             server.bind(InetSocketAddress(payload.port))
-            server.soTimeout = ACCEPT_DEADLINE_MS
             val prologue = NoiseChannel.prologue(payload.version, payload.sid)
 
-            // Accept until ONE handshake completes. A failed (e.g. attacker, no-PSK) attempt
-            // is closed and the next connection is accepted — a bad first suitor must not
-            // lock out the real receiver. The first SUCCESS consumes the sid (lockout).
+            // Accept until ONE handshake completes, within the total budget. A bad first
+            // suitor closes and the next is accepted (anti-lockout), but every accept()
+            // draws from the SAME shrinking budget.
             while (true) {
+                val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000L
+                if (remainingMs <= 0) throw TransportException("no peer completed the handshake within the deadline")
+                server.soTimeout = remainingMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
+
                 val socket = try {
                     server.accept()
                 } catch (e: SocketTimeoutException) {
                     throw TransportException("no peer completed the handshake within the deadline", e)
+                } catch (e: IOException) {
+                    throw TransportException("listener accept failed", e)
                 }
+                socket.soTimeout = handshakeTimeoutMs.toInt() // before wrapping the streams
                 val transport = SocketFrameTransport(socket)
-                socket.soTimeout = handshakeTimeoutMs.toInt()
+
                 val keys: CipherStatePair? = try {
-                    withTimeout(handshakeTimeoutMs) {
-                        NoiseChannel.handshake(transport, HandshakeState.RESPONDER, payload.psk, prologue)
-                    }
+                    handshakeWithDeadline(transport, socket, HandshakeState.RESPONDER, payload, prologue)
                 } catch (e: TransportException) {
-                    transport.close(); null
-                } catch (e: TimeoutCancellationException) {
-                    transport.close(); null
+                    transport.close(); null // failed suitor — keep listening within budget
                 }
                 if (keys != null) {
                     if (pskRegistry.tryConsume(payload.sid)) {
@@ -104,10 +110,33 @@ class NoiseSecureChannelFactory(
         }
     }
 
-    private fun connectWithRetry(payload: PairingPayload): Socket {
+    /**
+     * Runs the blocking Noise handshake with a HARD deadline. `withTimeout` cannot interrupt
+     * a thread parked in a native socket read, so a watchdog closes the socket at the
+     * deadline — that unblocks the read, which surfaces as a fail-closed [TransportException].
+     */
+    private suspend fun handshakeWithDeadline(
+        transport: SocketFrameTransport,
+        socket: Socket,
+        role: Int,
+        payload: PairingPayload,
+        prologue: ByteArray,
+    ): CipherStatePair = coroutineScope {
+        val watchdog = launch {
+            delay(handshakeTimeoutMs)
+            runCatching { socket.close() }
+        }
+        try {
+            NoiseChannel.handshake(transport, role, payload.psk, prologue)
+        } finally {
+            watchdog.cancel()
+        }
+    }
+
+    private suspend fun connectWithRetry(payload: PairingPayload): Socket {
         val host = payload.ip.firstOrNull() ?: throw TransportException("no address in pairing payload")
         var last: Exception? = null
-        repeat(CONNECT_RETRIES) {
+        for (attempt in 0 until CONNECT_RETRIES) {
             try {
                 return Socket().apply {
                     connect(InetSocketAddress(host, payload.port), CONNECT_TIMEOUT_MS)
@@ -115,7 +144,7 @@ class NoiseSecureChannelFactory(
                 }
             } catch (e: IOException) {
                 last = e
-                Thread.sleep(CONNECT_RETRY_DELAY_MS)
+                delay(CONNECT_RETRY_DELAY_MS)
             }
         }
         throw TransportException("could not connect to $host:${payload.port}", last)
@@ -123,7 +152,7 @@ class NoiseSecureChannelFactory(
 
     private companion object {
         const val HANDSHAKE_TIMEOUT_MS = 10_000L
-        const val ACCEPT_DEADLINE_MS = 120_000
+        const val ACCEPT_DEADLINE_MS = 120_000L
         const val CONNECT_TIMEOUT_MS = 3_000
         const val CONNECT_RETRIES = 15
         const val CONNECT_RETRY_DELAY_MS = 200L

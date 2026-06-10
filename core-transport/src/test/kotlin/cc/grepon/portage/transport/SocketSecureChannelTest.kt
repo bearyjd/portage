@@ -17,14 +17,19 @@ import cc.grepon.portage.model.TransferManifest
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
+import java.io.IOException
+import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.net.Socket
 
 /**
  * End-to-end over real TCP loopback: the proven NoisePSK_XX core wrapped in the socket
  * transport + SecureChannel factory, exercising the listener-layer controls from
- * ADR-002 §Follow-ups (handshake over sockets, PSK wipe, second-suitor lockout).
+ * ADR-002 §Follow-ups (handshake over sockets, PSK wipe, second-suitor lockout via two
+ * real handshakes, bounded listener under a stalled peer).
  */
 class SocketSecureChannelTest {
 
@@ -76,20 +81,52 @@ class SocketSecureChannelTest {
     }
 
     @Test(timeout = 30_000L)
-    fun `a consumed session is rejected (second-suitor lockout)`() = runBlocking {
-        val port = freePort()
+    fun `the first completed handshake consumes the sid; a later same-sid handshake is rejected`() = runBlocking {
         val registry = PskRegistry()
-        registry.tryConsume(sidValue.copyOf()) // simulate a prior successful handshake
         val factory = NoiseSecureChannelFactory(pskRegistry = registry)
-        val sendPayload = payload(port)
-        val recvPayload = payload(port)
 
-        val acceptDeferred = async(Dispatchers.IO) { runCatching { factory.acceptAsSender(sendPayload) } }
-        // The receiver still completes its side of the handshake; the sender rejects after.
-        runCatching { factory.connectAsReceiver(recvPayload) }.getOrNull()?.close()
-        val acceptResult = acceptDeferred.await()
+        // Round 1: a REAL handshake completes and consumes the sid (not pre-seeded).
+        val port1 = freePort()
+        val accept1 = async(Dispatchers.IO) { factory.acceptAsSender(payload(port1)) }
+        val recvCh1 = factory.connectAsReceiver(payload(port1))
+        val sendCh1 = accept1.await()
 
-        assertThat(acceptResult.isFailure).isTrue()
-        assertThat(acceptResult.exceptionOrNull()).isInstanceOf(TransportException::class.java)
+        // Round 2: same sid value, fresh ports — the sender must reject AFTER its handshake.
+        val port2 = freePort()
+        val accept2 = async(Dispatchers.IO) { runCatching { factory.acceptAsSender(payload(port2)) } }
+        runCatching { factory.connectAsReceiver(payload(port2)) }.getOrNull()?.close()
+        val accept2Result = accept2.await()
+
+        assertThat(accept2Result.isFailure).isTrue()
+        assertThat(accept2Result.exceptionOrNull()).isInstanceOf(TransportException::class.java)
+
+        recvCh1.close()
+        sendCh1.close()
+    }
+
+    @Test(timeout = 30_000L)
+    fun `a stalled peer does not hold the listener past the deadline`() = runBlocking {
+        val port = freePort()
+        // Short bounds so the test is fast; proves the cumulative accept deadline (HIGH-1).
+        val factory = NoiseSecureChannelFactory(handshakeTimeoutMs = 800L, acceptDeadlineMs = 4_000L)
+
+        val accept = async(Dispatchers.IO) { runCatching { factory.acceptAsSender(payload(port)) } }
+
+        // Raw client connects (once the server is bound) but never sends a byte.
+        var stall: Socket? = null
+        for (attempt in 0 until 30) {
+            try {
+                stall = Socket().apply { connect(InetSocketAddress("127.0.0.1", port), 1_000) }
+                break
+            } catch (e: IOException) {
+                delay(100)
+            }
+        }
+
+        val result = accept.await()
+        stall?.close()
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()).isInstanceOf(TransportException::class.java)
     }
 }
