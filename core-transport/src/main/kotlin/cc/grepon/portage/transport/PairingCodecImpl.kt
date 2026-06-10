@@ -32,12 +32,27 @@ class PairingCodecImpl : PairingCodec {
 
     override fun decode(qr: String, nowEpochSeconds: Long): Result<PairingPayload> = runCatching {
         require(qr.startsWith(PairingPayload.SCHEME)) { "not a portage pairing URI" }
-        val body = decoder.decode(qr.removePrefix(PairingPayload.SCHEME))
+        val encoded = qr.removePrefix(PairingPayload.SCHEME)
+        require(encoded.length <= MAX_ENCODED_CHARS) { "pairing QR too large" }
+        val body = decoder.decode(encoded)
         val payload = cbor.decodeFromByteArray(PairingPayload.serializer(), body)
+        // Trust boundary: the QR is attacker-controllable in the malicious-peer scenarios.
         require(payload.version == PairingPayload.PROTOCOL_VERSION) {
             "unsupported protocol version ${payload.version}"
         }
+        require(payload.port in 1..65535) { "port out of range" }
+        require(payload.ip.size <= MAX_IP_HINTS) { "too many ip hints" }
         require(nowEpochSeconds <= payload.expiresAtEpochSeconds) { "pairing QR expired" }
+        // Reject a far-future expiry that would defeat the short-TTL replay window.
+        require(payload.expiresAtEpochSeconds <= nowEpochSeconds + MAX_REMAINING_TTL_SECONDS) {
+            "pairing QR expiry implausibly far in the future"
+        }
         payload
+    }
+
+    private companion object {
+        const val MAX_ENCODED_CHARS = 1024
+        const val MAX_IP_HINTS = 8
+        const val MAX_REMAINING_TTL_SECONDS = PairingPayload.DEFAULT_TTL_SECONDS + 30L
     }
 }

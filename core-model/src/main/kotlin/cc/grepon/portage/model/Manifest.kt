@@ -29,7 +29,10 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     APP_INVENTORY("inventory", Tier.TIER0),
     APK("apk", Tier.TIER1),
     SETTINGS("settings", Tier.TIER1),
-    SEEDVAULT_BLOB("seedvault.blob", Tier.TIER1),
+    // NOTE: no SEEDVAULT_BLOB. Couriering a Seedvault file would imply app-DATA transfer,
+    // which contradicts the Seedvault division of labor (PRP §2, DEVILS_ADVOCATE Q5). If
+    // ever wanted, it goes in a v2 protocol bump behind explicit "carrying, not backing up"
+    // UX — never silently in the frozen v1 enum.
 }
 
 /**

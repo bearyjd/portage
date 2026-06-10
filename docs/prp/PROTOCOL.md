@@ -120,8 +120,12 @@ close
 ```
 
 `ItemMeta = {item_id (u32), kind (tstr: "contacts.vcf" | "calendar.ics" | "calllog" |
-"sms" | "inventory" | "apk" | "settings" | "seedvault.blob" | …), tier (0|1),
+"sms" | "inventory" | "apk" | "settings" | …), tier (0|1),
 size, sha256, display_name, group}`.
+
+> No `seedvault.blob` kind in v1: couriering a Seedvault file would imply app-data
+> transfer, which the Seedvault division of labor explicitly excludes (PRP §2,
+> DEVILS_ADVOCATE Q5). Reconsider only behind a v2 protocol bump with explicit UX copy.
 
 - **Integrity:** every byte already rides inside AEAD frames (in-flight integrity);
   `ITEM_END.sha256` is the *at-rest* check over the assembled item — it catches

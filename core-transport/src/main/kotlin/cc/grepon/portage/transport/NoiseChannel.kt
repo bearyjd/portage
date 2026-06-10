@@ -14,6 +14,7 @@ import cc.grepon.portage.model.ProtocolMessage
 import com.southernstorm.noise.protocol.CipherStatePair
 import com.southernstorm.noise.protocol.HandshakeState
 import java.io.EOFException
+import java.security.GeneralSecurityException
 
 /**
  * Noise handshake + transport over a [FrameTransport], using vendored noise-java in the
@@ -28,15 +29,22 @@ object NoiseChannel {
     const val PROTOCOL_NAME = "NoisePSK_XX_25519_ChaChaPoly_SHA256"
     private const val HANDSHAKE_BUF = 4096
 
+    /** u16 framing cap (PROTOCOL.md §3); Noise max plaintext is 65519. */
+    const val MAX_FRAME_BYTES = 65535
+
     /**
      * Prologue mixed into the transcript (PROTOCOL.md §2): binds protocol version + session
      * id so a spliced or cross-session handshake cannot complete. Both sides MUST match.
+     * Version is a single byte on the wire; reject anything that wouldn't round-trip so two
+     * versions can't silently collide (would weaken downgrade resistance, THREAT_MODEL #6).
      */
-    fun prologue(version: Int, sid: ByteArray): ByteArray =
-        "portage".toByteArray(Charsets.US_ASCII) +
+    fun prologue(version: Int, sid: ByteArray): ByteArray {
+        require(version in 0..255) { "version $version out of single-byte prologue range" }
+        return "portage".toByteArray(Charsets.US_ASCII) +
             byteArrayOf(version.toByte()) +
             sid +
             "recv->send".toByteArray(Charsets.US_ASCII)
+    }
 
     /** [role] is [HandshakeState.INITIATOR] (receiver) or [HandshakeState.RESPONDER] (sender). */
     fun handshake(transport: FrameTransport, role: Int, psk: ByteArray, prologue: ByteArray): CipherStatePair {
@@ -56,6 +64,9 @@ object NoiseChannel {
                     }
                     HandshakeState.READ_MESSAGE -> {
                         val frame = transport.readFrame()
+                        if (frame.size > MAX_FRAME_BYTES) {
+                            throw TransportException("handshake frame exceeds ${MAX_FRAME_BYTES}B cap")
+                        }
                         hs.readMessage(frame, 0, frame.size, payloadBuf, 0)
                     }
                     HandshakeState.SPLIT -> return hs.split()
@@ -63,6 +74,13 @@ object NoiseChannel {
                     else -> throw TransportException("Unexpected handshake action: ${hs.action}")
                 }
             }
+        } catch (e: TransportException) {
+            throw e
+        } catch (e: GeneralSecurityException) {
+            // BadPaddingException / ShortBufferException / NoSuchAlgorithmException — fail closed.
+            throw TransportException("handshake authentication failed", e)
+        } catch (e: EOFException) {
+            throw TransportException("handshake aborted: peer closed connection", e)
         } finally {
             hs.destroy()
         }
@@ -95,8 +113,15 @@ class NoiseSession(
         } catch (_: EOFException) {
             return null
         }
+        if (frame.size > NoiseChannel.MAX_FRAME_BYTES) {
+            throw TransportException("frame exceeds ${NoiseChannel.MAX_FRAME_BYTES}B cap")
+        }
         val out = ByteArray(frame.size)
-        val n = keys.receiver.decryptWithAd(null, frame, 0, out, 0, frame.size)
+        val n = try {
+            keys.receiver.decryptWithAd(null, frame, 0, out, 0, frame.size)
+        } catch (e: GeneralSecurityException) {
+            throw TransportException("frame authentication failed", e)
+        }
         return codec.decode(out.copyOf(n))
     }
 

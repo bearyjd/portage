@@ -53,7 +53,9 @@ object SettingsAllowlist {
         SettingKey("vibrate_when_ringing", SYSTEM, SAFE, T0_SYSTEM,
             "Behavioral.", Validator.IntEnum(setOf(0, 1))),
         SettingKey("volume_alarm", SYSTEM, RISKY, T0_SYSTEM,
-            "TRAP: a copied alarm volume of 0 is a missed-alarm hazard. Opt-in."),
+            "TRAP: a copied alarm volume of 0 is a missed-alarm hazard. Reject 0; apply " +
+                "layer further clamps to the device's max alarm-stream volume.",
+            Validator.IntRange(1, 25)),
         SettingKey("ringtone", SYSTEM, DEVICE_SPECIFIC, NA,
             "TRAP: content URI to on-device media absent on the new phone → silent/crash."),
 
@@ -66,10 +68,13 @@ object SettingsAllowlist {
             "TRAP: re-grants powerful a11y access to possibly-absent service components."),
 
         // --- Input / locale ---
+        // TIME_12_24 is stored as the STRING "12"/"24" on AOSP, not an int — confirm in
+        // VERIFY_FIRST #2 provider dump.
         SettingKey("time_12_24", SYSTEM, SAFE, T0_SYSTEM,
-            "12/24h format.", Validator.IntEnum(setOf(12, 24))),
+            "12/24h format.", Validator.StringEnum(setOf("12", "24"))),
         SettingKey("default_input_method", SECURE, RISKY, T1_GRANT,
-            "TRAP: IME component; only valid if that keyboard is installed. Apply post-install."),
+            "TRAP: IME component; only valid if that keyboard is installed. Apply post-install.",
+            Validator.StringPattern("""[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+""")),
 
         // --- Animation ---
         SettingKey("window_animation_scale", GLOBAL, SAFE, T1_GRANT,
@@ -83,7 +88,8 @@ object SettingsAllowlist {
 
         // --- System UI ---
         SettingKey("sysui_qs_tiles", SECURE, RISKY, T1_GRANT,
-            "References tile specs that may not exist on the new build. Filter to resolvable."),
+            "References tile specs that may not exist on the new build. Filter to resolvable.",
+            Validator.StringPattern("""[A-Za-z0-9_,:./()=-]+""")),
     )
 
     /** The ONLY set synced without explicit opt-in. */

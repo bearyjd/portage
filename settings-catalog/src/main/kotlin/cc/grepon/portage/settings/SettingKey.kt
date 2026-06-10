@@ -33,12 +33,20 @@ enum class Reach {
     NA,
 }
 
-/** Receiver-side validation applied to EVERY value before apply, regardless of class. */
+/**
+ * Receiver-side validation applied to EVERY value before apply, regardless of class.
+ * [None] is reserved for DEVICE_SPECIFIC (excluded) keys only — a SAFE/RISKY key with
+ * [None] is a bug, and `SettingsAllowlistTest` enforces that invariant.
+ */
 sealed interface Validator {
     data object None : Validator
     data class IntRange(val min: Int, val max: Int) : Validator
     data class FloatRange(val min: Float, val max: Float) : Validator
     data class IntEnum(val allowed: Set<Int>) : Validator
+    data class StringEnum(val allowed: Set<String>) : Validator
+
+    /** Regex (as a pattern string for stable equality) the value must fully match. */
+    data class StringPattern(val pattern: String) : Validator
 }
 
 data class SettingKey(
