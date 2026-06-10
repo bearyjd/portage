@@ -41,16 +41,15 @@ misses, directly phone-to-phone.** They are complementary, not competitors:
 **Planning / design substrate.** No application code yet. The design artifacts live in
 [`docs/prp/`](docs/prp/):
 
-- [`malle-prp-prompt.md`](docs/prp/malle-prp-prompt.md) — execution brief (original `malle` naming)
+- [`portage-prp-prompt.md`](docs/prp/portage-prp-prompt.md) — execution brief
 - [`ADR-001-privilege-feasibility.md`](docs/prp/ADR-001-privilege-feasibility.md) — Shizuku / Tier 1 go-no-go + verification procedure
 - [`PROTOCOL.md`](docs/prp/PROTOCOL.md) — pairing + transfer wire format (QR anchor, Noise XXpsk3)
 - [`THREAT_MODEL.md`](docs/prp/THREAT_MODEL.md) — semi-trusted-LAN adversary, attack→defense table
 - [`settings_allowlist.md`](docs/prp/settings_allowlist.md) — SAFE / RISKY / DEVICE_SPECIFIC key classification
 - [`DEVILS_ADVOCATE.md`](docs/prp/DEVILS_ADVOCATE.md) — adversarial review of the plan
 
-> Note: the design docs were drafted under the working name `malle`. The project name and
-> app IDs (`cc.grepon.malle.*`) may be renamed to `portage` (`cc.grepon.portage.*`) before
-> implementation.
+> Note: this project was briefly drafted under the working name `malle`; it has been
+> renamed to `portage` (app IDs `cc.grepon.portage.*`) throughout the design docs.
 
 ## License
 

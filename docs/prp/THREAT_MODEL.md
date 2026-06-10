@@ -1,4 +1,4 @@
-# THREAT_MODEL.md — `malle` v1
+# THREAT_MODEL.md — `portage` v1
 
 ## 1. Adversary model
 
@@ -19,7 +19,7 @@ couriered (already Seedvault-encrypted; we protect it anyway).
 |---|---|---|---|
 | 1 | Passive sniffing of transfer | ChaCha20-Poly1305 AEAD transport keyed from the Noise handshake; handshake itself exposes only ephemeral public keys (statics are sent encrypted under `ee`-derived keys in XX) | Traffic analysis: timing + approximate sizes + endpoints visible (see §3) |
 | 2 | Active MITM (ARP spoof, rogue AP, interposed proxy) | **psk3 mutual authentication**: completing either side of `Noise_XXpsk3` requires the 32-byte QR PSK mixed into the chaining key. An interposer cannot produce a valid handshake-msg-3 tag toward the sender, nor valid msg-2/transport frames toward the receiver. Connection dies before any payload | None beyond DoS |
-| 3 | mDNS/NSD spoofing (attacker advertises a fake `malle` instance) | **Discovery carries no trust**: receiver may connect to the attacker, but the handshake fails without the PSK. The receiver treats handshake failure as "wrong device / retry", and may try the next discovered candidate | DoS; UX confusion if attacker floods instances — cap candidates, prefer QR-embedded IPs |
+| 3 | mDNS/NSD spoofing (attacker advertises a fake `portage` instance) | **Discovery carries no trust**: receiver may connect to the attacker, but the handshake fails without the PSK. The receiver treats handshake failure as "wrong device / retry", and may try the next discovered candidate | DoS; UX confusion if attacker floods instances — cap candidates, prefer QR-embedded IPs |
 | 4 | Handshake replay (recorded msgs re-sent) | Fresh ephemerals per session: a replayed initiator message yields keys the replayer can't compute (no `e` private key). **PSK consumption**: sender accepts exactly one completed handshake per `sid`, then invalidates the PSK; `exp` (120 s TTL) bounds the window | None meaningful |
 | 5 | Transport-frame replay / reorder / splice | AEAD nonce sequence per direction — replayed or reordered frames fail authentication and close the session. Cross-session splice blocked by per-session keys + `sid` in the **prologue** (transcript binding) | None |
 | 6 | Downgrade (ciphersuite or version) | **No negotiation exists**: one suite per protocol version; version is in the QR payload and in the prologue. A tampered version claim ⇒ prologue mismatch ⇒ handshake failure | User on old app version must update — fail-closed by design |
@@ -28,7 +28,7 @@ couriered (already Seedvault-encrypted; we protect it anyway).
 | 9 | Malicious *receiver* (valid QR, hostile device) | The QR **is** the consent ceremony: scanning happens because the sender's owner displayed it. Sender additionally shows the selected item list before streaming | A tricked user who shows the QR to an attacker's phone leaks what they then approve — UX must keep the item list visible |
 | 10 | Malicious *sender* / poisoned payloads toward the receiver | **Receiver-side allowlist enforcement**: settings are applied only if the key exists in the receiver's *compiled* catalog, with per-key type/range validation — sender's manifest cannot expand that set. APKs install only through user-confirmed `PackageInstaller` flows (Tier 0) or the explicit batch screen (Tier 1); inventory entries are data, not code. All staged items are written to app-private staging with **generated filenames** — manifest names are display-only, killing path traversal. CBOR decoding has depth/size caps | A hostile sender can still send garbage *values* for SAFE keys (e.g., font_scale 0.01) — mitigated by per-key range clamps in the catalog |
 | 11 | DoS (SYN flood, junk connects, oversized frames) | Listener exists only while the transfer screen is open; accepts one connection; 10 s handshake deadline; `u16` frame cap; staging quota | LAN DoS is always winnable by the adversary; we only guarantee fail-closed |
-| 12 | Metadata exposure via mDNS | Instance name derives from random `sid`, not the device name; service registered only during an active transfer screen | The *existence* of a malle transfer is visible on the LAN; option: "QR-only mode" toggle disabling NSD |
+| 12 | Metadata exposure via mDNS | Instance name derives from random `sid`, not the device name; service registered only during an active transfer screen | The *existence* of a portage transfer is visible on the LAN; option: "QR-only mode" toggle disabling NSD |
 
 ## 3. Residual risks (explicit)
 
@@ -36,7 +36,7 @@ couriered (already Seedvault-encrypted; we protect it anyway).
    Padding is not worth the complexity for v1 — documented as accepted.
 2. **Trusted-Wi-Fi Shizuku autostart** (if the user enables it) means an ADB-privileged
    binder is alive whenever on that SSID — a standing privilege surface unrelated to
-   malle but adjacent to our setup instructions. The README must not recommend enabling
+   portage but adjacent to our setup instructions. The README must not recommend enabling
    it without explaining this.
 3. **Both apps need the GOS Network permission**; a user who denies it gets silent
    socket failures unless we detect and message it (VERIFY_FIRST #6).

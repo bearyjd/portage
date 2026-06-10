@@ -17,9 +17,9 @@ itself:
 
 So the correct Tier 1 architecture is two-phase:
 
-- **Phase A (one-shot, Shizuku live):** `malle-recv` declares `WRITE_SECURE_SETTINGS`
+- **Phase A (one-shot, Shizuku live):** `portage-recv` declares `WRITE_SECURE_SETTINGS`
   in its manifest. At Tier 1 unlock, it uses Shizuku to run
-  `pm grant cc.grepon.malle.recv android.permission.WRITE_SECURE_SETTINGS` on itself.
+  `pm grant cc.grepon.portage.recv android.permission.WRITE_SECURE_SETTINGS` on itself.
 - **Phase B (forever after, Shizuku NOT required):** the app writes `Settings.Secure`
   and `Settings.Global` directly through the normal `Settings.*.putString/putInt` API.
 
@@ -54,7 +54,7 @@ settings catalog (see `settings_allowlist.md`) carries a per-key "reach" column.
    Surface this exactly in the in-app guide.
 2. **GOS auto-reboot.** GOS reboots the device after a configurable idle-locked window
    (default 18 h). A phone prepared "the night before" will have a dead Shizuku in the
-   morning. `malle` must *detect* Shizuku liveness at the moment of use and guide, never
+   morning. `portage` must *detect* Shizuku liveness at the moment of use and guide, never
    assume a previously-seen binder is still valid.
 3. **USB-C port policy.** GOS defaults new installs to "Charging-only when locked".
    Irrelevant for wireless-debugging-started Shizuku; relevant only if the user tries

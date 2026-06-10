@@ -1,6 +1,6 @@
-# PROTOCOL.md — `malle` pairing + transfer wire format (v1)
+# PROTOCOL.md — `portage` pairing + transfer wire format (v1)
 
-Scope: one sender (`malle-send`, old phone), one receiver (`malle-recv`, new phone),
+Scope: one sender (`portage-send`, old phone), one receiver (`portage-recv`, new phone),
 same LAN, no cloud, no relay. One transfer session at a time.
 
 ## 1. Discovery vs. trust — two different jobs
@@ -21,7 +21,7 @@ QR-embedded IP is stale (DHCP churn between display and scan).
 
 ### QR payload
 
-URI form: `malle1:<base64url(CBOR)>` with fields:
+URI form: `portage1:<base64url(CBOR)>` with fields:
 
 | field | type | meaning |
 |---|---|---|
@@ -32,7 +32,7 @@ URI form: `malle1:<base64url(CBOR)>` with fields:
 | `port` | uint | sender's listening TCP port |
 | `exp` | uint | unix seconds; QR invalid after (default now+120 s) |
 
-Sender registers NSD service `_malle._tcp` with instance name `malle-<hex(sid[0..4])>`
+Sender registers NSD service `_portage._tcp` with instance name `portage-<hex(sid[0..4])>`
 while the transfer screen is open. Receiver tries `ip:port` from the QR first, then
 browses mDNS for the matching instance. The sender app sets `FLAG_SECURE` on the QR
 screen and regenerates `psk`/`sid` every time the screen is (re)shown.
@@ -64,7 +64,7 @@ protocol version. No negotiation exists on the wire, so there is nothing to down
 **Roles:** receiver = Noise initiator (it dials the TCP connection); sender = responder.
 
 **Prologue** (mixed into the handshake hash; any mismatch fails the handshake):
-`"malle" || v || sid || "recv->send"`. This binds protocol version and session id into
+`"portage" || v || sid || "recv->send"`. This binds protocol version and session id into
 the transcript — a spliced or cross-session handshake cannot complete.
 
 **Message flow (XX, psk3):**

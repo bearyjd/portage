@@ -1,4 +1,4 @@
-# Devil's-advocate pass — `malle` plan
+# Devil's-advocate pass — `portage` plan
 
 Answers are evidence/reasoning, not reassurance. Where the honest answer is "not yet
 proven," it says so and points at the verification that settles it.
@@ -78,10 +78,10 @@ false.
 **It can strand the user if implemented naively — this is the highest-UX-risk path in
 Tier 0 and needs explicit teardown + a safety net.** Walk the real flow:
 
-- To write SMS/MMS, `malle-recv` must hold the `RoleManager` SMS role
+- To write SMS/MMS, `portage-recv` must hold the `RoleManager` SMS role
   (`ROLE_SMS`). Acquisition = a system dialog the user accepts.
 - The danger: after import, if we don't actively hand the role back, the user is left
-  with `malle-recv` as their texting app — and `malle` has no compose/receive UI, so
+  with `portage-recv` as their texting app — and `portage` has no compose/receive UI, so
   incoming texts could be silently dropped.
 - **Required teardown:**
   1. Before requesting the role, **record the prior holder**
@@ -91,7 +91,7 @@ Tier 0 and needs explicit teardown + a safety net.** Walk the real flow:
      silently *give away* the SMS role to a *specific* other app without user action at
      Tier 0; with live Shizuku, `cmd role add-role-holder` can set it back to the
      recorded holder — verify V7).
-  3. **Safety net:** a persistent notification "malle is temporarily your SMS app — tap
+  3. **Safety net:** a persistent notification "portage is temporarily your SMS app — tap
      to restore" that survives process death until the role is relinquished, so a crash
      mid-import can't silently strand them.
 - **Better path to consider:** make SMS the *last* item in the batch and gate the whole
@@ -112,9 +112,9 @@ scope:**
    restore "your keyboard," users assume learned dictionary/clipboard came too. It
    didn't. Either label as "selects your keyboard app (its data: Seedvault)" or drop.
 3. **The Seedvault blob courier idea** (if `core-transport` is allowed to ferry a
-   Seedvault file as an opaque item) blurs the line hardest — it looks like malle moved
+   Seedvault file as an opaque item) blurs the line hardest — it looks like portage moved
    app data. Keep it explicitly framed as "carrying Seedvault's backup file for you,"
-   never "malle backs up app data." If this muddies the message, **cut it from v1.**
+   never "portage backs up app data." If this muddies the message, **cut it from v1.**
 
 **Net:** the engine promises nothing it can't do; the *words and labels* are where the
 over-promise sneaks in. The §9.5 gate should review every user-facing string for implied

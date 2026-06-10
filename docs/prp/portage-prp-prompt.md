@@ -1,4 +1,4 @@
-# Claude Code PRP — `malle`: GrapheneOS Device-Parity Transfer (Sender + Receiver)
+# Claude Code PRP — `portage`: GrapheneOS Device-Parity Transfer (Sender + Receiver)
 
 > Paste this as the initial PRP into Claude Code. It is written for branch-per-feature
 > discipline with devils-advocate review gates. Implementing agent: read the **Hard
@@ -18,11 +18,12 @@ cloud, no account.
 
 - **Brand:** Entrevoix (software). Legal entity: Grepon Labs LLC (Virginia).
 - **License:** AGPL-3.0.
-- **Project name (suggested, override freely):** `malle` (Fr. *steamer trunk* — the thing
-  you pack your belongings into when moving house). Two artifacts:
-  - `malle-send` (the old phone — exporter)
-  - `malle-recv` (the new phone — importer)
-- **Application IDs:** `cc.grepon.malle.send`, `cc.grepon.malle.recv` (adjust if you prefer
+- **Project name:** `portage` (Fr. *carrying your belongings over* — also what you do when
+  you *port* to a new device; renamed from the working name `malle`, Fr. *steamer trunk*).
+  Two artifacts:
+  - `portage-send` (the old phone — exporter)
+  - `portage-recv` (the new phone — importer)
+- **Application IDs:** `cc.grepon.portage.send`, `cc.grepon.portage.recv` (adjust if you prefer
   `com.greponlabs.*`).
 - **Git:** branch-per-feature off `main`; PRP doc committed under `docs/prp/`; each merge
   gated by a devils-advocate review pass (see §9).
@@ -89,15 +90,15 @@ after each reboot unless the device is rooted. Tier 0 must work with Shizuku abs
 - Home-screen / launcher layout (not exposed to non-launcher apps).
 - GOS per-app security toggles (flag as research item, do not promise).
 
-Frame the product to the user as: **"Seedvault moves your app data; `malle` moves the
+Frame the product to the user as: **"Seedvault moves your app data; `portage` moves the
 settings-and-parity layer Seedvault misses, directly phone-to-phone."**
 
 ## 4. Module layout
 
 ```
-malle/
-├─ app-send/                 # malle-send (exporter) — Compose UI
-├─ app-recv/                 # malle-recv (importer) — Compose UI
+portage/
+├─ app-send/                 # portage-send (exporter) — Compose UI
+├─ app-recv/                 # portage-recv (importer) — Compose UI
 ├─ core-model/               # shared transfer manifest + payload schema (serialization)
 ├─ core-transport/           # LAN pairing + encrypted channel (see §5)
 ├─ providers/                # Tier-0 readers/writers (contacts, calendar, sms, calllog, inventory)
@@ -133,8 +134,8 @@ Keep `privileged` behind a single interface so the root/no-priv swaps in §2 sta
 
 ## 7. UX target (the "dead simple" requirement)
 
-- Old phone: open `malle-send` → "Transfer to new phone" → show QR.
-- New phone: open `malle-recv` → scan → see a single checklist grouped by category with
+- Old phone: open `portage-send` → "Transfer to new phone" → show QR.
+- New phone: open `portage-recv` → scan → see a single checklist grouped by category with
   sane defaults pre-checked → "Bring it over" → progress → done summary (what moved, what
   needs a manual tap, what to use Seedvault for).
 - Tier 1 is presented as an optional "Unlock advanced settings transfer (Shizuku)" step
@@ -142,7 +143,7 @@ Keep `privileged` behind a single interface so the root/no-priv swaps in §2 sta
 
 ## 8. Deliverables
 
-1. Two installable APKs (`malle-send`, `malle-recv`), reproducible debug build.
+1. Two installable APKs (`portage-send`, `portage-recv`), reproducible debug build.
 2. `settings_allowlist.kt` with at least the SAFE-tier keys populated and annotated.
 3. `PROTOCOL.md` documenting the pairing + transfer wire format.
 4. `THREAT_MODEL.md` (LAN trust, QR anchor, what's encrypted).
@@ -173,6 +174,6 @@ The reviewing pass must answer, with evidence from the running build:
 ---
 **Open questions for JD to answer inline before/at kickoff:**
 - Confirm Shizuku-first (vs. pure-unprivileged or rooted).
-- Confirm `malle` naming + `cc.grepon.*` app IDs, or supply alternates.
+- Confirm `portage` naming + `cc.grepon.*` app IDs, or supply alternates.
 - Which Pixel generations must be supported (sets `minSdk`)?
 - Gitea or GitHub for the repo?
