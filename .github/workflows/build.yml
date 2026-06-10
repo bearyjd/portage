@@ -40,6 +40,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
+      - name: Unit tests (core-model + core-transport Noise loopback)
+        run: gradle :core-model:test :core-transport:testDebugUnitTest --no-daemon --stacktrace
       - name: Assemble debug APKs
         run: gradle assembleDebug --no-daemon --stacktrace
       - name: Upload debug APKs

@@ -24,8 +24,8 @@ dependencies {
     implementation(project(":core-model"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.cbor)
-    // Noise handshake: VERIFY_FIRST #8 — wire a vetted Noise (XXpsk3) lib here, or fall
-    // back to NNpsk0. See docs/prp/PROTOCOL.md §2. Crypto stays inside this module.
+    // Noise handshake uses VENDORED noise-java (src/main/java/com/southernstorm/noise),
+    // pinned at commit 49377b6, MIT. Pattern: NoisePSK_XX (ADR-002). No external dep.
     testImplementation(libs.junit)
     testImplementation(libs.truth)
 }

@@ -37,10 +37,19 @@ while the transfer screen is open. Receiver tries `ip:port` from the QR first, t
 browses mDNS for the matching instance. The sender app sets `FLAG_SECURE` on the QR
 screen and regenerates `psk`/`sid` every time the screen is (re)shown.
 
-## 2. Handshake — Noise `XXpsk3`
+## 2. Handshake — Noise `NoisePSK_XX`
 
-**Pattern:** `Noise_XXpsk3_25519_ChaChaPoly_SHA256`, exactly one ciphersuite per
-protocol version. No negotiation exists on the wire, so there is nothing to downgrade.
+**Pattern:** `NoisePSK_XX_25519_ChaChaPoly_SHA256`, exactly one ciphersuite per protocol
+version. No negotiation exists on the wire, so there is nothing to downgrade.
+
+> **Amended 2026-06-10 (ADR-002, after the library spike):** originally specified as
+> `Noise_XXpsk3_…`, but no audited JVM/Kotlin Noise library implements the modern `pskN`
+> placement modifiers. We use vendored noise-java's **legacy PSK** form (`NoisePSK_XX`,
+> PSK mixed at the start ≈ `psk0`). The authentication property is identical: completing
+> the handshake is impossible without the QR PSK, regardless of placement. The "mixed at
+> position 3" wording below is the conceptual goal; the implementation mixes the PSK at
+> the start. Verified by `core-transport`'s NoiseLoopbackTest (match → channel; mismatch →
+> no channel).
 
 **Why XXpsk3 and not something else:**
 - *vs. plain `XX`:* XX alone authenticates "whoever you first met" (TOFU) — a same-LAN
