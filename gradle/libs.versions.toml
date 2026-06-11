@@ -25,6 +25,7 @@ cbor = "1.8.1"                # kotlinx-serialization-cbor
 shizuku = "13.1.5"
 # QR
 zxingCore = "3.5.3"           # QR generation (sender)
+zxingEmbedded = "4.3.0"       # journeyapps wrapper: BarcodeEncoder (send) + scanner view (recv); no GMS
 mlkitBarcode = "17.3.0"       # QR scanning (receiver) via CameraX
 camerax = "1.4.1"
 # Crypto — SEE docs/prp/PROTOCOL.md §2. No canonical Maven Kotlin Noise lib exists;
@@ -58,6 +59,7 @@ shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
 shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
 
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxingCore" }
+zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxingEmbedded" }
 mlkit-barcode = { module = "com.google.mlkit:barcode-scanning", version.ref = "mlkitBarcode" }
 camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
 camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
