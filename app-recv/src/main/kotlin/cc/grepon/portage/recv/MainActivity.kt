@@ -12,43 +12,23 @@ package cc.grepon.portage.recv
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import cc.grepon.portage.recv.ui.ReceiverApp
 
 /**
- * SCAFFOLD entry point. Real flow (portage-prp-prompt.md §7): scan QR → handshake →
- * receive manifest → single grouped checklist (SAFE pre-checked) → "Bring it over" →
- * progress → done summary (moved / needs a tap / use Seedvault for app data).
+ * Importer entry point. Real flow (portage-prp-prompt.md §7): scan QR → handshake → receive
+ * manifest → single grouped checklist (SAFE pre-checked) → "Bring it over" → progress → done
+ * summary (moved / use Seedvault for app data). [ReceiverApp] owns the whole Compose tree and
+ * wraps itself in [cc.grepon.portage.recv.ui.theme.PortageTheme]; this Activity just hosts it.
  *
- * Tier 1 is an optional "Unlock advanced settings transfer (Shizuku)" step; everything
- * in Tier 0 works without it (DEVILS_ADVOCATE.md Q1).
+ * Tier 1 is an optional "Unlock advanced settings transfer (Shizuku)" step; everything in
+ * Tier 0 works without it (DEVILS_ADVOCATE.md Q1).
  */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { RecvScreenPlaceholder() } }
-    }
-}
-
-@Composable
-private fun RecvScreenPlaceholder() {
-    Scaffold { padding ->
-        Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text("portage · recv", style = MaterialTheme.typography.headlineMedium)
-            Text("Importer scaffold — scan + checklist UI lands after ADR-001 verification.")
+        setContent {
+            ReceiverApp(viewModel = viewModel())
         }
     }
 }
