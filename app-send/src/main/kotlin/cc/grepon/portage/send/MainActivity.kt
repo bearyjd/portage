@@ -58,6 +58,9 @@ class MainActivity : ComponentActivity() {
             WindowManager.LayoutParams.FLAG_SECURE,
             WindowManager.LayoutParams.FLAG_SECURE,
         )
+        // Sweep staging orphaned by a mid-transfer process death — staged exports are
+        // plaintext PII and must never outlive a single session (security review 2026-06-11).
+        File(cacheDir, STAGING_DIR).deleteRecursively()
         val summary = deviceSummary()
         setContent {
             SenderApp(viewModel = viewModel, summary = summary)
@@ -99,8 +102,10 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
         @Suppress("UNCHECKED_CAST")
         return SenderViewModel(
             providers = providers,
-            stagingDir = File(context.cacheDir, "portage-staging"),
+            stagingDir = File(context.cacheDir, STAGING_DIR),
             senderName = deviceName(context),
         ) as T
     }
 }
+
+private const val STAGING_DIR = "portage-staging"

@@ -24,6 +24,7 @@ import cc.grepon.portage.transport.PairingCodecImpl
 import cc.grepon.portage.transport.SecureChannel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,7 +41,10 @@ import java.security.SecureRandom
  * carry, no LAN) fail before a useless QR is ever shown.
  *
  * The QR text contains the one-time PSK — it is held only in [SenderState.ShowingQr] for
- * rendering, never logged; the factory wipes the payload copy after the handshake.
+ * rendering, never logged; the factory wipes the payload copy after the handshake. The
+ * encoded String itself is not zeroizable (JVM immutability) and lives until GC after the
+ * state leaves ShowingQr — accepted residual under THREAT_MODEL §1's "on-device process
+ * compromise out of scope" boundary (security review 2026-06-11, MEDIUM, documented).
  */
 class SenderViewModel(
     private val providers: List<ExportProvider>,
@@ -96,6 +100,7 @@ class SenderViewModel(
                 _state.value = SenderState.Linked
 
                 val results = engine.run(ch, built) { event -> onEngineEvent(built, event) }
+                ensureActive() // a reset() mid-run must not be overwritten by Done
                 val ok = results.count { it.status == ItemStatus.OK }
                 _state.value = SenderState.Done(sent = ok, failed = results.size - ok)
                 closeChannel()
@@ -103,6 +108,9 @@ class SenderViewModel(
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
+                // reset() cancels and tears the channel down under the coroutine; the
+                // resulting IO error must not flip the user's Home back to Failed.
+                ensureActive()
                 fail(t.message ?: "Transfer failed")
             }
         }

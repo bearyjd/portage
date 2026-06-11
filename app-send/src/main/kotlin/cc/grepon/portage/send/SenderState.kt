@@ -37,9 +37,7 @@ sealed interface SenderState {
     data object Linked : SenderState
 
     /** Streaming the receiver's picks, tracked per item. */
-    data class Sending(val items: List<SendProgress>) : SenderState {
-        val completed: Int get() = items.count { it.phase == SendPhase.ACKED || it.phase == SendPhase.FAILED }
-    }
+    data class Sending(val items: List<SendProgress>) : SenderState
 
     /** Done summary from the receiver's acks. */
     data class Done(val sent: Int, val failed: Int) : SenderState

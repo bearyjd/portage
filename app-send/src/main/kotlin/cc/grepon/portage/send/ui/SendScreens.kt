@@ -79,10 +79,10 @@ fun SendingScreen(
     modifier: Modifier = Modifier,
 ) {
     val s = LocalSpacing.current
-    val totalBytes = items.sumOf { it.totalBytes }.coerceAtLeast(1)
+    val totalBytes = items.sumOf { it.totalBytes }
     val sentBytes = items.sumOf { it.bytesSent }
     val animated by animateFloatAsState(
-        targetValue = sentBytes.toFloat() / totalBytes.toFloat(),
+        targetValue = sentBytes.toFloat() / totalBytes.coerceAtLeast(1).toFloat(),
         label = "sendProgress",
     )
 
@@ -105,7 +105,7 @@ fun SendingScreen(
                 color = MaterialTheme.colorScheme.onBackground,
             )
             Text(
-                text = " / ${formatBytes(items.sumOf { it.totalBytes })}",
+                text = " / ${formatBytes(totalBytes)}",
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = s.xs),
