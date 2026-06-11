@@ -52,15 +52,24 @@ connect paths, receiver item-stream limits (per-item 64 MiB cap, size/kind/hash
 agreement with the manifest, item-count cap).
 
 STILL OPEN: dedicated verbatim-diff review of the vendored noise-java tree before
-release; CI dependency-audit step (OSV or equivalent — asked for by two security
-reviews); port-probe TOCTOU (`acceptAsSender(port=0)` returning the bound port).
+release; a CI dependency-audit step that FAILS the build on a known CVE (OSV-Scanner
+or equivalent — `.github/dependabot.yml` opens update PRs but is NOT a build gate;
+re-asked by the PR #21 security re-review). CLOSED since: port-probe TOCTOU — the
+sender probe-and-releases, then `acceptAsSender` rebinds with `SO_REUSEADDR` so the
+race is benign (`SenderViewModel` ~L186).
 
-## Post-Tier-0 follow-ups (tracked in PR #5/#6/#7 descriptions)
+## Post-Tier-0 follow-ups
 
-- **SMS restore is INERT BY DESIGN**: `SmsApplyProvider` is registered but hard-skips
-  without the default-SMS role; the recv manifest deliberately declares no role
-  components. The role mini-project (manifest components, role-request UI, relinquish
-  UX) is its own PR with its own security review — do NOT "quick fix" the permissions.
+- **SMS restore LANDED (PR #21), Tier 0.** portage takes the default-SMS role
+  TRANSIENTLY (acquire → write → relinquish in a `finally`), and `SmsApplyProvider`
+  independently hard-gates on `isSelfDefault()` so it writes nothing outside the role.
+  Config-change-hang fixed via one process-scoped coordinator (`SmsRoleCoordinatorHolder`);
+  a 120s `InteractiveGrant` timeout means a never-answered dialog can't hang. Process-death
+  safety net = persistent `SmsRoleLedger` + launch/`onResume` reconcile keyed on real
+  `isSelfDefault()` → an app-wide in-app "restore my texting app" banner (chosen over a
+  notification: POST_NOTIFICATIONS is denied-by-default on GOS). STILL HARDWARE-VERIFY:
+  role grant→write→relinquish on a Pixel/GOS device; whether `READ_SMS` is actually needed
+  for role eligibility (drop it if not — recv only writes).
 - **On-device VERIFY_FIRST**: WRITE_CALL_LOG-only inserts succeed on GOS; null-account
   local contacts visible in default Contacts view; camera releases promptly post-scan.
 - The QR-encoded PSK String is a non-zeroizable accepted residual (THREAT_MODEL §1
