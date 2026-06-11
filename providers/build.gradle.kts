@@ -23,6 +23,7 @@ kotlin { jvmToolchain(17) }
 dependencies {
     implementation(project(":core-model"))
     implementation(project(":settings-catalog")) // SAFE-allowlist gate for the settings provider
+    implementation(project(":privileged"))        // PrivilegedOps seam for the Tier-1 settings apply path
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     testImplementation(libs.junit)

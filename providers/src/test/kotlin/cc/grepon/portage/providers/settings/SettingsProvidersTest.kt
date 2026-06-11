@@ -10,6 +10,8 @@
 package cc.grepon.portage.providers.settings
 
 import cc.grepon.portage.model.ItemStatus
+import cc.grepon.portage.privileged.PrivilegedOps
+import cc.grepon.portage.settings.Namespace
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -31,6 +33,55 @@ private class FakeSystemSettingsStore(
     }
 }
 
+private class FakeSecureGlobalSettingsStore(
+    private val values: MutableMap<Pair<Namespace, String>, String> = mutableMapOf(),
+    var writable: Boolean = false,
+) : SecureGlobalSettingsStore {
+    val writes = mutableMapOf<Pair<Namespace, String>, String>()
+
+    override fun read(namespace: Namespace, name: String): String? = values[namespace to name]
+    override fun canWrite(): Boolean = writable
+    override fun write(namespace: Namespace, name: String, value: String): Boolean {
+        if (!writable) return false
+        writes[namespace to name] = value
+        return true
+    }
+}
+
+/**
+ * Models the one-shot grant: when [outcome] is GRANTED it flips [storeToGrant]'s `canWrite`,
+ * mirroring `pm grant WRITE_SECURE_SETTINGS` making Settings.Secure/Global writable. The default
+ * matches the shipped stub bridge (no grant available), so Tier-1 keys self-skip.
+ */
+private class FakePrivilegedOps(
+    private val outcome: PrivilegedOps.GrantOutcome = PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE,
+    private val storeToGrant: FakeSecureGlobalSettingsStore? = null,
+) : PrivilegedOps {
+    var grantCalls = 0
+        private set
+
+    override fun availability(): PrivilegedOps.Availability = PrivilegedOps.Availability.NOT_INSTALLED
+
+    override suspend fun ensureWriteSecureSettingsGranted(): PrivilegedOps.GrantOutcome {
+        grantCalls++
+        if (outcome == PrivilegedOps.GrantOutcome.GRANTED) storeToGrant?.writable = true
+        return outcome
+    }
+
+    override suspend fun grantRuntimePermission(packageName: String, permission: String) =
+        PrivilegedOps.OpResult.BridgeUnavailable
+
+    override suspend fun revokeRuntimePermission(packageName: String, permission: String) =
+        PrivilegedOps.OpResult.BridgeUnavailable
+
+    override suspend fun installApk(stagedApkPath: String) = PrivilegedOps.OpResult.BridgeUnavailable
+
+    override suspend fun setNavigationMode(mode: PrivilegedOps.NavigationMode) =
+        PrivilegedOps.OpResult.BridgeUnavailable
+
+    override suspend fun setSmsRoleHolder(packageName: String) = PrivilegedOps.OpResult.BridgeUnavailable
+}
+
 class SettingsProvidersTest {
 
     private fun payload(vararg entries: Pair<String, String>): ByteArrayInputStream {
@@ -38,35 +89,45 @@ class SettingsProvidersTest {
         return ByteArrayInputStream(SettingsCodec.encode(snapshot).toByteArray(Charsets.UTF_8))
     }
 
+    private fun applyProvider(
+        system: FakeSystemSettingsStore,
+        secureGlobal: FakeSecureGlobalSettingsStore = FakeSecureGlobalSettingsStore(),
+        privileged: FakePrivilegedOps = FakePrivilegedOps(),
+    ) = SettingsApplyProvider(system, secureGlobal, privileged)
+
     // --- Export side ---
 
     @Test
-    fun `export reads only SAFE Tier-0 SYSTEM keys from the allowlist`() = runTest {
-        val store = FakeSystemSettingsStore(
+    fun `export reads SAFE keys across the system and secure or global namespaces`() = runTest {
+        val system = FakeSystemSettingsStore(
             mutableMapOf(
-                "font_scale" to "1.15",              // SAFE SYSTEM T0
-                "screen_brightness" to "183",        // DEVICE_SPECIFIC — must never be read out
-                "volume_alarm" to "5",               // RISKY — not in the default sync set
-                "ui_night_mode" to "2",              // SAFE but SECURE namespace (Tier 1)
+                "font_scale" to "1.15",        // SAFE SYSTEM T0 — exported
+                "screen_brightness" to "183",  // DEVICE_SPECIFIC — never read out
+                "volume_alarm" to "5",         // RISKY — not in the default sync set
+            ),
+        )
+        val secureGlobal = FakeSecureGlobalSettingsStore(
+            mutableMapOf(
+                (Namespace.SECURE to "ui_night_mode") to "2",          // SAFE SECURE T1 — exported
+                (Namespace.GLOBAL to "window_animation_scale") to "0.5", // SAFE GLOBAL T1 — exported
             ),
         )
         val out = ByteArrayOutputStream()
-        val provider = SettingsExportProvider(store)
+        val provider = SettingsExportProvider(system, secureGlobal)
 
         assertThat(provider.available()).isTrue()
         provider.exportTo(out)
 
-        val snapshot = SettingsCodec.decode(ByteArrayInputStream(out.toByteArray()))
-        val names = snapshot!!.entries.map { it.name }
-        assertThat(names).contains("font_scale")
+        val names = SettingsCodec.decode(ByteArrayInputStream(out.toByteArray()))!!.entries.map { it.name }
+        assertThat(names).containsAtLeast("font_scale", "ui_night_mode", "window_animation_scale")
         assertThat(names).doesNotContain("screen_brightness")
         assertThat(names).doesNotContain("volume_alarm")
-        assertThat(names).doesNotContain("ui_night_mode")
     }
 
     @Test
     fun `export is unavailable when no allowlisted key has a value`() = runTest {
-        assertThat(SettingsExportProvider(FakeSystemSettingsStore()).available()).isFalse()
+        val provider = SettingsExportProvider(FakeSystemSettingsStore(), FakeSecureGlobalSettingsStore())
+        assertThat(provider.available()).isFalse()
     }
 
     // --- Apply side: the allowlist is the boundary (DEVILS_ADVOCATE Q2) ---
@@ -74,7 +135,7 @@ class SettingsProvidersTest {
     @Test
     fun `apply writes a valid SAFE system key`() = runTest {
         val store = FakeSystemSettingsStore()
-        val outcome = SettingsApplyProvider(store).apply(payload("font_scale" to "1.15"))
+        val outcome = applyProvider(store).apply(payload("font_scale" to "1.15"))
 
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(store.writes).containsExactly("font_scale", "1.15")
@@ -83,7 +144,7 @@ class SettingsProvidersTest {
     @Test
     fun `apply skips keys absent from the allowlist even if they exist on the device`() = runTest {
         val store = FakeSystemSettingsStore()
-        val outcome = SettingsApplyProvider(store)
+        val outcome = applyProvider(store)
             .apply(payload("some_vendor_key" to "1", "font_scale" to "1.0"))
 
         assertThat(store.writes.keys).containsExactly("font_scale")
@@ -93,7 +154,7 @@ class SettingsProvidersTest {
     @Test
     fun `apply skips RISKY and DEVICE_SPECIFIC keys — SAFE only, no opt-in path here`() = runTest {
         val store = FakeSystemSettingsStore()
-        SettingsApplyProvider(store).apply(
+        applyProvider(store).apply(
             payload(
                 "volume_alarm" to "5",         // RISKY (valid value!) — still refused
                 "screen_brightness" to "120",  // DEVICE_SPECIFIC trap
@@ -107,7 +168,7 @@ class SettingsProvidersTest {
     @Test
     fun `apply rejects values the catalog validator refuses`() = runTest {
         val store = FakeSystemSettingsStore()
-        SettingsApplyProvider(store).apply(
+        applyProvider(store).apply(
             payload(
                 "font_scale" to "9.0",            // outside FloatRange(0.85, 1.30)
                 "screen_brightness_mode" to "7",  // outside IntEnum(0, 1)
@@ -119,19 +180,9 @@ class SettingsProvidersTest {
     }
 
     @Test
-    fun `apply skips a SECURE-namespace key smuggled under a SYSTEM payload`() = runTest {
-        val store = FakeSystemSettingsStore()
-        // ui_night_mode is SAFE but lives in SECURE (Tier 1) — the SYSTEM-namespace lookup
-        // must not find it.
-        SettingsApplyProvider(store).apply(payload("ui_night_mode" to "2"))
-
-        assertThat(store.writes).isEmpty()
-    }
-
-    @Test
-    fun `apply without the write-settings grant is SKIPPED, not a crash`() = runTest {
+    fun `apply without the modify-system-settings grant is SKIPPED, not a crash`() = runTest {
         val store = FakeSystemSettingsStore(writable = false)
-        val outcome = SettingsApplyProvider(store).apply(payload("font_scale" to "1.0"))
+        val outcome = applyProvider(store).apply(payload("font_scale" to "1.0"))
 
         assertThat(outcome.status).isEqualTo(ItemStatus.SKIPPED)
         assertThat(store.writes).isEmpty()
@@ -139,9 +190,121 @@ class SettingsProvidersTest {
 
     @Test
     fun `an unreadable payload is a WRITE_ERROR`() = runTest {
-        val outcome = SettingsApplyProvider(FakeSystemSettingsStore())
+        val outcome = applyProvider(FakeSystemSettingsStore())
             .apply(ByteArrayInputStream("garbage".toByteArray()))
 
         assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+    }
+
+    // --- Apply side: Tier-1 SECURE/GLOBAL data path (grant architecture, ADR-001) ---
+
+    @Test
+    fun `apply writes a Tier-1 secure key when the grant is already held`() = runTest {
+        val system = FakeSystemSettingsStore()
+        val secureGlobal = FakeSecureGlobalSettingsStore(writable = true) // grant persisted
+        val privileged = FakePrivilegedOps()
+
+        val outcome = applyProvider(system, secureGlobal, privileged).apply(payload("ui_night_mode" to "2"))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(secureGlobal.writes).containsExactly(Namespace.SECURE to "ui_night_mode", "2")
+        assertThat(privileged.grantCalls).isEqualTo(0) // bridge not consulted when already writable
+    }
+
+    @Test
+    fun `apply attempts the one-shot grant once, then writes Tier-1 when granted`() = runTest {
+        val system = FakeSystemSettingsStore()
+        val secureGlobal = FakeSecureGlobalSettingsStore(writable = false)
+        val privileged = FakePrivilegedOps(PrivilegedOps.GrantOutcome.GRANTED, secureGlobal)
+
+        val outcome = applyProvider(system, secureGlobal, privileged).apply(payload("ui_night_mode" to "2"))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(secureGlobal.writes).containsExactly(Namespace.SECURE to "ui_night_mode", "2")
+        assertThat(privileged.grantCalls).isEqualTo(1)
+    }
+
+    @Test
+    fun `apply skips Tier-1 keys when the privilege bridge is unavailable`() = runTest {
+        val system = FakeSystemSettingsStore()
+        val secureGlobal = FakeSecureGlobalSettingsStore(writable = false)
+        val privileged = FakePrivilegedOps(PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE)
+
+        val outcome = applyProvider(system, secureGlobal, privileged).apply(payload("ui_night_mode" to "2"))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.SKIPPED)
+        assertThat(secureGlobal.writes).isEmpty()
+        assertThat(privileged.grantCalls).isEqualTo(1)
+    }
+
+    @Test
+    fun `apply routes secure and global keys to their own namespaces`() = runTest {
+        val system = FakeSystemSettingsStore()
+        val secureGlobal = FakeSecureGlobalSettingsStore(writable = true)
+
+        applyProvider(system, secureGlobal).apply(
+            payload("ui_night_mode" to "2", "window_animation_scale" to "0.5"),
+        )
+
+        assertThat(secureGlobal.writes).containsExactly(
+            Namespace.SECURE to "ui_night_mode", "2",
+            Namespace.GLOBAL to "window_animation_scale", "0.5",
+        )
+    }
+
+    @Test
+    fun `apply rejects a Tier-1 value the catalog validator refuses, even with the grant`() = runTest {
+        val system = FakeSystemSettingsStore()
+        val secureGlobal = FakeSecureGlobalSettingsStore(writable = true)
+
+        applyProvider(system, secureGlobal)
+            .apply(payload("window_animation_scale" to "5.0")) // outside FloatRange(0, 1)
+
+        assertThat(secureGlobal.writes).isEmpty()
+    }
+
+    @Test
+    fun `apply writes Tier-0 and Tier-1 keys together`() = runTest {
+        val system = FakeSystemSettingsStore()
+        val secureGlobal = FakeSecureGlobalSettingsStore(writable = true)
+
+        val outcome = applyProvider(system, secureGlobal)
+            .apply(payload("font_scale" to "1.0", "ui_night_mode" to "2"))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(system.writes).containsExactly("font_scale", "1.0")
+        assertThat(secureGlobal.writes).containsExactly(Namespace.SECURE to "ui_night_mode", "2")
+    }
+
+    @Test
+    fun `apply applies Tier-0 yet flags the missing Tier-1 grant on a mixed payload`() = runTest {
+        // font_scale (T0, writable) applies; ui_night_mode (T1) is grant-blocked. The overall
+        // status is OK (something applied), but the detail must still surface the grant gap so
+        // the done-summary does not silently swallow it.
+        val system = FakeSystemSettingsStore()                       // writable
+        val secureGlobal = FakeSecureGlobalSettingsStore(writable = false)
+        val privileged = FakePrivilegedOps(PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE)
+
+        val outcome = applyProvider(system, secureGlobal, privileged)
+            .apply(payload("font_scale" to "1.0", "ui_night_mode" to "2"))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(system.writes).containsExactly("font_scale", "1.0")
+        assertThat(secureGlobal.writes).isEmpty()
+        assertThat(outcome.detail).contains("secure-settings grant")
+    }
+
+    @Test
+    fun `apply refuses a RISKY Tier-1 key even when the secure-settings grant is held`() = runTest {
+        // default_input_method is SECURE + T1_GRANT but classified RISKY. A VALID value that
+        // passes its pattern validator must still be refused — the SAFE-only gate, not the
+        // validator, is what stops it (THREAT_MODEL §10; the more dangerous RISKY members live
+        // on the Tier-1 seam).
+        val secureGlobal = FakeSecureGlobalSettingsStore(writable = true)
+
+        applyProvider(FakeSystemSettingsStore(), secureGlobal)
+            .apply(payload("default_input_method" to "com.example/.ExampleIme"))
+
+        assertThat(secureGlobal.writes).isEmpty()
     }
 }

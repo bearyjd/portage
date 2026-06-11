@@ -95,6 +95,12 @@ object SettingsAllowlist {
     /** The ONLY set synced without explicit opt-in. */
     val defaultSyncSet: List<SettingKey> = all.filter { it.classification == SAFE }
 
-    fun byName(name: String, namespace: Namespace): SettingKey? =
-        all.firstOrNull { it.name == name && it.namespace == namespace }
+    /**
+     * Look up a key by name alone. SAFE because key names are globally unique across the table
+     * (enforced by `SettingsAllowlistTest`). The receiver relies on this: the wire carries only
+     * name+value, and the namespace/reach that decide which seam a write goes through are taken
+     * from the matched key — a duplicate name would make that routing ambiguous. The namespace
+     * is deliberately NOT a lookup parameter: a wire-supplied namespace must never steer routing.
+     */
+    fun byName(name: String): SettingKey? = all.firstOrNull { it.name == name }
 }

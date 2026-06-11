@@ -44,6 +44,33 @@ class SettingsAllowlistTest {
     }
 
     @Test
+    fun `key names are globally unique across the table`() {
+        // The receiver routes a write to its seam by looking the key up by NAME alone
+        // (SettingsAllowlist.byName) — the wire never carries a namespace. A duplicate name
+        // would make that lookup ambiguous and could send a value to the wrong provider table.
+        val duplicates = SettingsAllowlist.all
+            .groupBy { it.name }
+            .filterValues { it.size > 1 }
+            .keys
+        assertThat(duplicates).isEmpty()
+    }
+
+    @Test
+    fun `reach agrees with namespace — T0_SYSTEM is SYSTEM, T1_GRANT is SECURE or GLOBAL`() {
+        // The apply router picks the store from reach and the namespace from the matched key; if
+        // the two disagree a Secure write could land on the System store (or vice versa). This
+        // pins the correspondence the router depends on for the two writable tiers.
+        val mismatched = SettingsAllowlist.all.filter { key ->
+            when (key.reach) {
+                Reach.T0_SYSTEM -> key.namespace != Namespace.SYSTEM
+                Reach.T1_GRANT -> key.namespace !in setOf(Namespace.SECURE, Namespace.GLOBAL)
+                Reach.T1_SHELL, Reach.NA -> false
+            }
+        }
+        assertThat(mismatched).isEmpty()
+    }
+
+    @Test
     fun `every applied key has a concrete validator (None is reserved for excluded keys)`() {
         // The documented invariant: every value applied to the device is validated. A
         // SAFE/RISKY key with Validator.None is a bug (e.g. the volume_alarm 0-hazard).

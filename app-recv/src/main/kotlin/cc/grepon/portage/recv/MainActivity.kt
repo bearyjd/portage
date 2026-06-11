@@ -18,6 +18,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import cc.grepon.portage.privileged.ShizukuPrivilegedOps
 import cc.grepon.portage.providers.ApplyProviderRegistry
 import cc.grepon.portage.providers.calendar.AndroidCalendarStore
 import cc.grepon.portage.providers.calendar.CalendarApplyProvider
@@ -28,6 +29,7 @@ import cc.grepon.portage.providers.contacts.ContactsApplyProvider
 import cc.grepon.portage.providers.inventory.AndroidInventorySource
 import cc.grepon.portage.providers.inventory.AppInventoryApplyProvider
 import cc.grepon.portage.providers.inventory.InstallAction
+import cc.grepon.portage.providers.settings.AndroidSecureGlobalSettingsStore
 import cc.grepon.portage.providers.settings.AndroidSystemSettingsStore
 import cc.grepon.portage.providers.settings.SettingsApplyProvider
 import cc.grepon.portage.providers.sms.AndroidSmsRoleGateway
@@ -105,7 +107,13 @@ private class ReceiverViewModelFactory(
                     // and the gateway's isSelfDefault gate self-skips outside that window.
                     SmsApplyProvider(AndroidSmsStore(resolver), AndroidSmsRoleGateway(context)),
                     AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), onInstallActions),
-                    SettingsApplyProvider(AndroidSystemSettingsStore(context)),
+                    // Tier-0 SYSTEM keys write today; Tier-1 SECURE/GLOBAL keys self-skip until
+                    // the deferred WRITE_SECURE_SETTINGS bridge (ShizukuPrivilegedOps) lands.
+                    SettingsApplyProvider(
+                        AndroidSystemSettingsStore(context),
+                        AndroidSecureGlobalSettingsStore(context),
+                        ShizukuPrivilegedOps(),
+                    ),
                 ),
             )
         }
