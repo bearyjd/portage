@@ -39,7 +39,7 @@ class ReceiverChecklistTest {
     }
 
     @Test
-    fun `Tier-0 non-SMS items are pre-checked; SMS and Tier-1 are opt-in`() {
+    fun `Tier-0 non-SMS items are pre-checked, SMS and Tier-1 are opt-in`() {
         val groups = ReceiverChecklist.build(manifest)
         val byKind = groups.flatMap { it.items }.associateBy { it.meta.kind }
         assertThat(byKind.getValue(ItemKind.CONTACTS_VCF).checked).isTrue() // Tier 0
