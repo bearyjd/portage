@@ -90,8 +90,7 @@ private fun StateBody(
 
         is ReceiverState.Transferring ->
             TransferringScreen(
-                completed = current.completed,
-                total = current.total,
+                items = current.items,
                 modifier = Modifier.fillMaxSize(),
             )
 

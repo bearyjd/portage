@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,19 +30,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import cc.grepon.portage.recv.ItemPhase
+import cc.grepon.portage.recv.ItemProgress
 import cc.grepon.portage.recv.ui.theme.LocalSpacing
 
 /**
- * Progress. Swiss numerals carry the message — an oversized "completed / total" pair over a
- * single determinate rule that fills with the accent. No spinner chrome; the bar IS the status.
+ * Progress. Swiss numerals carry the headline — "completed / total" over a single
+ * determinate rule — and beneath it every selected item gets its own status line, so a
+ * failed item is visible the moment it fails, not at the end.
  */
 @Composable
 fun TransferringScreen(
-    completed: Int,
-    total: Int,
+    items: List<ItemProgress>,
     modifier: Modifier = Modifier,
 ) {
     val s = LocalSpacing.current
+    val total = items.size
+    val completed = items.count { it.phase == ItemPhase.DONE || it.phase == ItemPhase.FAILED }
     val fraction = if (total > 0) completed.toFloat() / total.toFloat() else 0f
     val animated by animateFloatAsState(targetValue = fraction, label = "progress")
 
@@ -70,13 +76,13 @@ fun TransferringScreen(
             )
         }
         Spacer(Modifier.height(s.md))
-        Text(
-            text = "items brought over",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(s.xl))
         DeterminateRule(fraction = animated)
+        Spacer(Modifier.height(s.lg))
+        LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f, fill = false)) {
+            items(items, key = { it.itemId }) { item ->
+                ItemProgressRow(item)
+            }
+        }
         Spacer(Modifier.height(s.md))
         Text(
             text = "Keep both phones close and awake.",
@@ -84,6 +90,53 @@ fun TransferringScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+/** One item's status line: name left, phase word right, provider detail underneath. */
+@Composable
+private fun ItemProgressRow(item: ItemProgress) {
+    val s = LocalSpacing.current
+    val failed = item.phase == ItemPhase.FAILED
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = s.sm)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = item.displayName,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Text(
+                text = phaseWord(item.phase),
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = if (failed) FontWeight.Bold else FontWeight.Normal,
+                ),
+                color = if (failed) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        item.detail?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        HairlineDivider()
+    }
+}
+
+private fun phaseWord(phase: ItemPhase): String = when (phase) {
+    ItemPhase.PENDING -> "WAITING"
+    ItemPhase.RECEIVING -> "RECEIVING"
+    ItemPhase.APPLYING -> "APPLYING"
+    ItemPhase.DONE -> "DONE"
+    ItemPhase.FAILED -> "FAILED"
 }
 
 /** A 2dp track that fills with the accent — the Swiss reading of a progress bar. */
