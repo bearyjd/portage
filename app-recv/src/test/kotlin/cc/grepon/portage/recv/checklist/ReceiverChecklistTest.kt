@@ -64,6 +64,27 @@ class ReceiverChecklistTest {
     }
 
     @Test
+    fun `absent Tier-0 kinds are reported so the UI can gray them, not hide them`() {
+        val absent = ReceiverChecklist.absentKinds(manifest)
+        // Manifest has contacts/calendar/sms/settings — call log and inventory are missing.
+        assertThat(absent).containsExactly(ItemKind.CALL_LOG, ItemKind.APP_INVENTORY).inOrder()
+    }
+
+    @Test
+    fun `a manifest advertising everything has no absent kinds`() {
+        val full = TransferManifest(
+            senderName = "s",
+            items = listOf(
+                meta(1, ItemKind.CONTACTS_VCF, "g"), meta(2, ItemKind.CALENDAR_ICS, "g"),
+                meta(3, ItemKind.CALL_LOG, "g"), meta(4, ItemKind.SMS, "g"),
+                meta(5, ItemKind.APP_INVENTORY, "g"), meta(6, ItemKind.SETTINGS, "g"),
+            ),
+            totalBytes = 6,
+        )
+        assertThat(ReceiverChecklist.absentKinds(full)).isEmpty()
+    }
+
+    @Test
     fun `selectedMetas returns checked items in display order`() {
         val groups = ReceiverChecklist.build(manifest)
         assertThat(ReceiverChecklist.selectedMetas(groups).map { it.itemId })

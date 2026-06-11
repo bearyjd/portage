@@ -68,4 +68,20 @@ object ReceiverChecklist {
     /** Whether anything is selected (gates the "Bring it over" action). */
     fun hasSelection(groups: List<ChecklistGroup>): Boolean =
         groups.any { group -> group.items.any { it.checked } }
+
+    /** Every kind portage can offer at Tier 0 (APK is true Tier-1 batch install — excluded). */
+    private val EXPECTED_KINDS = listOf(
+        ItemKind.CONTACTS_VCF, ItemKind.CALENDAR_ICS, ItemKind.CALL_LOG,
+        ItemKind.SMS, ItemKind.APP_INVENTORY, ItemKind.SETTINGS,
+    )
+
+    /**
+     * Kinds the sender did NOT advertise. The checklist shows these as disabled rows —
+     * "not on the old phone" — rather than silently omitting them (devils-advocate:
+     * unavailable items become grayed, not missing).
+     */
+    fun absentKinds(manifest: TransferManifest): List<ItemKind> {
+        val present = manifest.items.map { it.kind }.toSet()
+        return EXPECTED_KINDS.filter { it !in present }
+    }
 }

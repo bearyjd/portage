@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -66,6 +67,7 @@ fun ChecklistScreen(
     onToggle: (Int) -> Unit,
     onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
+    absentKinds: List<ItemKind> = emptyList(),
 ) {
     val s = LocalSpacing.current
     val hasSelection = remember(groups) { ReceiverChecklist.hasSelection(groups) }
@@ -87,6 +89,12 @@ fun ChecklistScreen(
                     ChecklistRow(item = item, onToggle = onToggle)
                 }
             }
+            if (absentKinds.isNotEmpty()) {
+                item(key = "h:absent") { GroupHeader(title = "Not on the old phone") }
+                items(absentKinds, key = { "absent:${it.wire}" }) { kind ->
+                    AbsentRow(kind = kind)
+                }
+            }
         }
         ConfirmBar(
             enabled = hasSelection,
@@ -94,6 +102,42 @@ fun ChecklistScreen(
             onConfirm = onConfirm,
         )
     }
+}
+
+/** A grayed, untoggleable line for a kind the sender had nothing of — present, not hidden. */
+@Composable
+private fun AbsentRow(kind: ItemKind) {
+    val s = LocalSpacing.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(0.4f)
+            .heightIn(min = 48.dp)
+            .padding(vertical = s.md),
+        verticalAlignment = Alignment.Top,
+    ) {
+        // An empty, hairline-only square — visibly a non-option, not an unchecked choice.
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .border(1.5.dp, MaterialTheme.colorScheme.outline, RectangleShape),
+        )
+        Spacer(Modifier.width(s.md))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = tierHint(kind),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Spacer(Modifier.height(s.xs))
+            Text(
+                text = "Nothing to bring over",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    HairlineDivider()
 }
 
 @Composable
