@@ -24,7 +24,7 @@ cbor = "1.8.1"                # kotlinx-serialization-cbor
 # Privilege bridge
 shizuku = "13.1.5"
 # QR
-zxingCore = "3.5.3"           # QR generation (sender)
+zxingCore = "3.5.4"           # QR generation (sender)
 zxingEmbedded = "4.3.0"       # journeyapps wrapper: BarcodeEncoder (send) + BarcodeView (recv); no GMS
 # Crypto — SEE docs/prp/PROTOCOL.md §2. No canonical Maven Kotlin Noise lib exists;
 # this is the Noise-library spike (VERIFY_FIRST #8). Placeholder until resolved.
