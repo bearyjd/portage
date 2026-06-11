@@ -122,7 +122,11 @@ class ReceiverViewModel(
                 )
                 ensureActive() // a reset() mid-run must not be overwritten by Done
                 val moved = results.count { it.status == ItemStatus.OK }
-                _state.value = ReceiverState.Done(moved = moved, skipped = results.size - moved)
+                _state.value = ReceiverState.Done(
+                    moved = moved,
+                    skipped = results.size - moved,
+                    installActions = _installActions.value,
+                )
                 channel?.close()
                 channel = null
             } catch (c: CancellationException) {

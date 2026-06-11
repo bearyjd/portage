@@ -18,8 +18,12 @@ import cc.grepon.portage.model.TransferManifest
 import cc.grepon.portage.providers.ApplyOutcome
 import cc.grepon.portage.providers.ApplyProvider
 import cc.grepon.portage.providers.ApplyProviderRegistry
+import cc.grepon.portage.providers.inventory.AppInventoryApplyProvider
+import cc.grepon.portage.providers.inventory.AppInventoryExportProvider
+import cc.grepon.portage.providers.inventory.AppRecord
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.providers.inventory.InstallStore
+import cc.grepon.portage.providers.inventory.InventorySource
 import cc.grepon.portage.providers.sms.SmsApplyProvider
 import cc.grepon.portage.providers.sms.SmsRecord
 import cc.grepon.portage.providers.sms.SmsRoleGateway
@@ -39,6 +43,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.security.MessageDigest
 
@@ -303,6 +308,45 @@ class ReceiverViewModelTest {
 
         assertThat(outcome.status).isEqualTo(ItemStatus.SKIPPED)
         assertThat(store.inserts).isEqualTo(0)
+    }
+
+    @Test
+    fun `app inventory transfer surfaces the reinstall actions on the Done state`() = runTest(dispatcher) {
+        val source = object : InventorySource {
+            override fun installedUserApps() =
+                listOf(AppRecord("org.fossify.gallery", 1, "org.fdroid.fdroid", "Gallery"))
+            override fun installedPackageNames() = emptySet<String>()
+        }
+        val invBytes = ByteArrayOutputStream().also { AppInventoryExportProvider(source).exportTo(it) }.toByteArray()
+        val invMeta = ItemMeta(5, ItemKind.APP_INVENTORY, invBytes.size.toLong(), sha256(invBytes), "App list", "Apps")
+        val channel = FakeChannel(
+            ProtocolMessage.Manifest(TransferManifest("old phone", listOf(invMeta), invBytes.size.toLong())),
+            ProtocolMessage.ItemBegin(5, ItemKind.APP_INVENTORY, invMeta.size, invBytes.size),
+            ProtocolMessage.ItemData(5, 0, invBytes),
+            ProtocolMessage.ItemEnd(5, invMeta.sha256),
+            ProtocolMessage.BatchEnd(listOf(5), "done"),
+        )
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(channel),
+            nowEpochSeconds = { 1_000 },
+            appVersion = "test",
+            osFingerprint = "test",
+            stagingDir = tmp.root,
+            applyRegistryFactory = { onActions ->
+                ApplyProviderRegistry(listOf(AppInventoryApplyProvider(source, onActions)))
+            },
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        val done = vm.state.value as ReceiverState.Done
+        assertThat(done.moved).isEqualTo(1)
+        assertThat(done.installActions.map { it.packageName }).containsExactly("org.fossify.gallery")
+        assertThat(done.installActions.single().store).isEqualTo(InstallStore.FDROID)
     }
 
     @Test

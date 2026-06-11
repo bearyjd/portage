@@ -10,6 +10,7 @@
 package cc.grepon.portage.recv
 
 import cc.grepon.portage.model.ItemKind
+import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.recv.checklist.ChecklistGroup
 
 /** Where one selected item is in its receive→apply lifecycle. */
@@ -47,8 +48,16 @@ sealed interface ReceiverState {
     /** Streaming + applying selected items, tracked per item. */
     data class Transferring(val items: List<ItemProgress>) : ReceiverState
 
-    /** Done summary: what moved, what to do next. */
-    data class Done(val moved: Int, val skipped: Int) : ReceiverState
+    /**
+     * Done summary: what moved, what to do next. [installActions] is the per-app reinstall
+     * list produced when App Inventory was applied (empty otherwise) — the receiver presents
+     * these as one-tap install deep links; it never installs anything silently (PRP §2).
+     */
+    data class Done(
+        val moved: Int,
+        val skipped: Int,
+        val installActions: List<InstallAction> = emptyList(),
+    ) : ReceiverState
 
     /** Fail-closed terminal state with a user-facing reason. */
     data class Failed(val reason: String) : ReceiverState
