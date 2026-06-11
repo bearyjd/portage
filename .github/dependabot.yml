@@ -18,6 +18,16 @@ updates:
         patterns:
           - "androidx.*"
           - "com.google.android.*"
+    ignore:
+      # androidx.core 1.19.0+ hard-requires AGP 9.1.0+ and compileSdk 37 (AAR-metadata gate);
+      # portage is deliberately pinned to AGP 8.9.1 / compileSdk 36 = GOS Android 16. Holding
+      # these back until the compileSdk-37 toolchain bump is done as its own deliberate migration.
+      # Other androidx libs still update via the group above. Remove these two entries then.
+      # (PR #16, 2026-06-11.)
+      - dependency-name: "androidx.core:core"
+        versions: [">=1.19.0"]
+      - dependency-name: "androidx.core:core-ktx"
+        versions: [">=1.19.0"]
     # noise-java is VENDORED (in-tree, not a Gradle dependency), so it is out of scope here;
     # its update path is the manual verbatim-diff review tracked in ADR-002 §Follow-ups.
 
