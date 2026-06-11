@@ -30,7 +30,7 @@ import cc.grepon.portage.recv.ui.theme.LocalSpacing
 
 /**
  * Landing. Swiss editorial: a small indexed running head, an oversized display headline pinned
- * to the gutter, a single explanatory line, then the primary "Scan" call. The Seedvault
+ * to the gutter, a single explanatory line, then the primary "Scan" call. The app-data
  * division-of-labor note sits as tracked-out fine print above the action — context, not noise.
  */
 @Composable
@@ -86,7 +86,7 @@ fun IdleScreen(
         Spacer(Modifier.height(s.xl))
 
         Text(
-            text = "SEEDVAULT MOVES APP DATA · PORTAGE MOVES THE REST",
+            text = "APP DATA NEEDS A BACKUP · PORTAGE MOVES THE REST",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Start,
