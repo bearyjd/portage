@@ -11,9 +11,11 @@ package cc.grepon.portage.recv.ui
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,7 +31,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import cc.grepon.portage.providers.inventory.InstallAction
+import cc.grepon.portage.providers.inventory.InstallStore
 import cc.grepon.portage.recv.ItemPhase
 import cc.grepon.portage.recv.ItemProgress
 import cc.grepon.portage.recv.ui.theme.LocalSpacing
@@ -158,8 +163,9 @@ private fun DeterminateRule(fraction: Float) {
 }
 
 /**
- * Done summary. The moved count dominates; a single line notes that app data isn't carried
- * (the deliberate division of labor — that's a system backup's job), then the exit.
+ * Done summary. The moved count dominates, then a line noting app data isn't carried. When
+ * App Inventory was applied, the per-app reinstall list follows as one-tap store deep links
+ * (the receiver never installs silently, PRP §2); the layout scrolls so a long list fits.
  */
 @Composable
 fun DoneScreen(
@@ -167,14 +173,72 @@ fun DoneScreen(
     skipped: Int,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
+    installActions: List<InstallAction> = emptyList(),
+    onInstall: (InstallAction) -> Unit = {},
 ) {
     val s = LocalSpacing.current
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(horizontal = s.gutter),
-        verticalArrangement = Arrangement.Center,
-    ) {
+    if (installActions.isEmpty()) {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(horizontal = s.gutter),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            DoneSummary(moved = moved, skipped = skipped)
+            Spacer(Modifier.height(s.xl))
+            SwissPrimaryButton(text = "Done", onClick = onDone, fullWidth = true)
+        }
+        return
+    }
+
+    Column(modifier = modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentPadding = PaddingValues(start = s.gutter, end = s.gutter, top = s.lg, bottom = s.lg),
+        ) {
+            item { DoneSummary(moved = moved, skipped = skipped) }
+            item {
+                Spacer(Modifier.height(s.lg))
+                Text(
+                    text = "REINSTALL · ${installActions.size} ${if (installActions.size == 1) "APP" else "APPS"}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(bottom = s.sm),
+                )
+                HairlineDivider()
+            }
+            items(installActions, key = { it.packageName }) { action ->
+                ReinstallRow(action = action, onInstall = onInstall)
+            }
+            item {
+                Spacer(Modifier.height(s.md))
+                Text(
+                    text = "Each opens its store — one tap to install. Nothing installs on its own.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.background),
+        ) {
+            HairlineDivider()
+            Column(modifier = Modifier.padding(horizontal = s.gutter, vertical = s.md)) {
+                SwissPrimaryButton(text = "Done", onClick = onDone, fullWidth = true)
+            }
+        }
+    }
+}
+
+/** The moved-count summary, shared by the plain and reinstall-list Done layouts. */
+@Composable
+private fun DoneSummary(moved: Int, skipped: Int) {
+    val s = LocalSpacing.current
+    Column {
         Text(
             text = "DONE",
             style = MaterialTheme.typography.labelSmall,
@@ -210,11 +274,50 @@ fun DoneScreen(
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onBackground,
         )
-        Spacer(Modifier.height(s.xl))
-        SwissPrimaryButton(
-            text = "Done",
-            onClick = onDone,
-            fullWidth = true,
-        )
     }
+}
+
+/** One reinstall row: app label over its store, the whole row a tap that opens the store. */
+@Composable
+private fun ReinstallRow(action: InstallAction, onInstall: (InstallAction) -> Unit) {
+    val s = LocalSpacing.current
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onInstall(action) }
+                .padding(vertical = s.md),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = action.label,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(s.xs))
+                Text(
+                    text = storeName(action.store),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = "INSTALL",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        HairlineDivider()
+    }
+}
+
+private fun storeName(store: InstallStore): String = when (store) {
+    InstallStore.PLAY -> "Play Store"
+    InstallStore.FDROID -> "F-Droid"
+    InstallStore.AURORA -> "Aurora Store"
+    InstallStore.UNKNOWN -> "Any store"
 }

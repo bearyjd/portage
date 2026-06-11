@@ -9,6 +9,9 @@
  */
 package cc.grepon.portage.recv.ui
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -25,9 +28,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.recv.ReceiverState
 import cc.grepon.portage.recv.ReceiverViewModel
+import cc.grepon.portage.recv.install.InstallLaunch
 import cc.grepon.portage.recv.ui.theme.LocalSpacing
 import cc.grepon.portage.recv.ui.theme.PortageTheme
 
@@ -69,6 +75,7 @@ private fun StateBody(
     current: ReceiverState,
     viewModel: ReceiverViewModel,
 ) {
+    val context = LocalContext.current
     when (current) {
         is ReceiverState.Idle ->
             IdleScreen(onScan = viewModel::startScanning, modifier = Modifier.fillMaxSize())
@@ -101,6 +108,8 @@ private fun StateBody(
                 skipped = current.skipped,
                 onDone = viewModel::reset,
                 modifier = Modifier.fillMaxSize(),
+                installActions = current.installActions,
+                onInstall = { action -> launchInstall(context, action) },
             )
 
         is ReceiverState.Failed ->
@@ -109,6 +118,20 @@ private fun StateBody(
                 onRetry = viewModel::reset,
                 modifier = Modifier.fillMaxSize(),
             )
+    }
+}
+
+/**
+ * Fire a store deep link for one app — exactly one user tap, never a silent install (PRP §2).
+ * The URI is re-validated to an allowed scheme first ([InstallLaunch]); a missing store app is
+ * swallowed rather than crashing the done screen.
+ */
+private fun launchInstall(context: Context, action: InstallAction) {
+    val uri = InstallLaunch.safeUri(action) ?: return
+    runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
     }
 }
 

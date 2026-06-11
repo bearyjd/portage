@@ -124,8 +124,12 @@ class AppInventoryApplyProvider(
 
         val present = runCatching { inventorySource.installedPackageNames() }.getOrDefault(emptySet())
         val (alreadyInstalled, missing) = inventory.packages.partition { it.packageName in present }
-        val actions = missing.mapNotNull(InstallAction::from)
-        val dropped = missing.size - actions.size
+        val valid = missing.mapNotNull(InstallAction::from)
+        // Dedupe by package: a hostile or duplicated inventory must not reach the reinstall
+        // list's LazyColumn keys twice (Compose throws on duplicate keys) — security review
+        // 2026-06-11, LOW. `dropped` still counts only invalid package names, not dupes.
+        val actions = valid.distinctBy { it.packageName }
+        val dropped = missing.size - valid.size
         onActions(actions)
         val detail = buildString {
             append("${actions.size} to reinstall, ${alreadyInstalled.size} already installed")
