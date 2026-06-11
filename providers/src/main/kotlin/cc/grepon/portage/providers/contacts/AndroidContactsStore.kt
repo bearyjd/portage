@@ -81,6 +81,9 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
 
     override fun insert(record: ContactRecord): Boolean {
         val ops = arrayListOf(
+            // Null account = device-local contact BY DESIGN: portage is no-cloud, and a
+            // GOS device typically has no sync account. Verify on-device that local
+            // contacts show in the default Contacts view (tracked follow-up).
             ContentProviderOperation.newInsert(RawContacts.CONTENT_URI)
                 .withValue(RawContacts.ACCOUNT_TYPE, null)
                 .withValue(RawContacts.ACCOUNT_NAME, null)

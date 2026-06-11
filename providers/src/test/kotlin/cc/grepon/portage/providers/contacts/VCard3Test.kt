@@ -136,6 +136,22 @@ class VCard3Test {
     }
 
     @Test
+    fun `long properties are folded on write and survive the round trip`() {
+        val longNote = "n".repeat(300)
+        val record = ContactRecord(displayName = "Folded", note = longNote)
+
+        val out = ByteArrayOutputStream()
+        VCard3.write(listOf(record), out)
+        val text = out.toString(Charsets.UTF_8)
+        text.split("\r\n").forEach {
+            assertThat(it.toByteArray(Charsets.UTF_8).size).isAtMost(75)
+        }
+
+        val back = VCard3.parse(ByteArrayInputStream(out.toByteArray()))
+        assertThat(back.records.single().note).isEqualTo(longNote)
+    }
+
+    @Test
     fun `empty input parses to an empty result`() {
         val back = parse("")
         assertThat(back.records).isEmpty()

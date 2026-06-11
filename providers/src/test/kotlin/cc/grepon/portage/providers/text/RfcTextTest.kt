@@ -64,4 +64,35 @@ class RfcTextTest {
     fun `unfold ignores a leading continuation with nothing to attach to`() {
         assertThat(RfcText.unfold(listOf(" dangling", "X:1"))).containsExactly("X:1")
     }
+
+    @Test
+    fun `fold leaves short lines alone`() {
+        assertThat(RfcText.fold("FN:Ada")).isEqualTo("FN:Ada")
+    }
+
+    @Test
+    fun `fold keeps every physical line within 75 octets and unfold restores it`() {
+        val line = "NOTE:" + "x".repeat(200)
+        val folded = RfcText.fold(line)
+
+        val physical = folded.split("\r\n")
+        assertThat(physical.size).isGreaterThan(1)
+        physical.forEach { assertThat(it.toByteArray(Charsets.UTF_8).size).isAtMost(75) }
+        physical.drop(1).forEach { assertThat(it).startsWith(" ") }
+
+        assertThat(RfcText.unfold(physical)).containsExactly(line)
+    }
+
+    @Test
+    fun `fold never splits a multi-byte character`() {
+        val line = "NOTE:" + "é".repeat(120) // 2 octets each
+        val folded = RfcText.fold(line)
+
+        folded.split("\r\n").forEach { physical ->
+            val content = physical.removePrefix(" ")
+            assertThat(content.toByteArray(Charsets.UTF_8).size).isAtMost(75)
+            // Re-encoding each piece must be valid UTF-8 of whole chars: é count must add up.
+        }
+        assertThat(RfcText.unfold(folded.split("\r\n"))).containsExactly(line)
+    }
 }

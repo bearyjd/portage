@@ -25,6 +25,8 @@ class AndroidInventorySource(private val packageManager: PackageManager) : Inven
             .mapNotNull { app -> runCatching { toRecord(app) }.getOrNull() }
             .sortedBy { it.label.lowercase() }
 
+    // Intentionally the FULL package set (system apps included), unlike installedUserApps():
+    // if an inventory entry exists on the new device as a system app, reinstall is moot.
     override fun installedPackageNames(): Set<String> =
         packageManager.getInstalledApplications(0).map { it.packageName }.toSet()
 

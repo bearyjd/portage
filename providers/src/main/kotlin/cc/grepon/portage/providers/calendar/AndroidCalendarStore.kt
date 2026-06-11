@@ -70,7 +70,12 @@ class AndroidCalendarStore(private val resolver: ContentResolver) : CalendarStor
                 put(Events.RRULE, event.rrule)
                 put(Events.DURATION, event.duration ?: derivedDuration(event))
             } else {
-                put(Events.DTEND, event.endMillis ?: (event.startMillis + DEFAULT_EVENT_MILLIS))
+                // Non-recurring rows must carry DTEND; honor a DURATION-only event's real
+                // span instead of defaulting (multi-day all-day events, review 2026-06-11).
+                val end = event.endMillis
+                    ?: event.duration?.let(Ics::durationToMillis)?.let { event.startMillis + it }
+                    ?: (event.startMillis + DEFAULT_EVENT_MILLIS)
+                put(Events.DTEND, end)
             }
         }
         return runCatching { resolver.insert(Events.CONTENT_URI, values) != null }.getOrDefault(false)

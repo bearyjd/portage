@@ -51,6 +51,52 @@ object RfcText {
     }
 
     /**
+     * Fold one logical line into physical lines of at most [limit] octets, continuations
+     * prefixed with a single SPACE (RFC 2426 §2.6 / RFC 5545 §3.1). Splits only at char
+     * boundaries so multi-byte UTF-8 never tears; [unfold] restores the input exactly.
+     */
+    fun fold(line: String, limit: Int = FOLD_OCTETS): String {
+        if (utf8Octets(line) <= limit) return line
+        val out = StringBuilder(line.length + 16)
+        var octets = 0
+        var budget = limit // continuations spend 1 octet on the leading space
+        var i = 0
+        while (i < line.length) {
+            val cp = line.codePointAt(i)
+            val width = codePointOctets(cp)
+            if (octets + width > budget) {
+                out.append("\r\n ")
+                octets = 0
+                budget = limit - 1
+            }
+            out.appendCodePoint(cp)
+            octets += width
+            i += Character.charCount(cp)
+        }
+        return out.toString()
+    }
+
+    private const val FOLD_OCTETS = 75
+
+    private fun utf8Octets(s: String): Int {
+        var total = 0
+        var i = 0
+        while (i < s.length) {
+            val cp = s.codePointAt(i)
+            total += codePointOctets(cp)
+            i += Character.charCount(cp)
+        }
+        return total
+    }
+
+    private fun codePointOctets(cp: Int): Int = when {
+        cp < 0x80 -> 1
+        cp < 0x800 -> 2
+        cp < 0x10000 -> 3
+        else -> 4
+    }
+
+    /**
      * Unfold physical lines into logical lines: a line starting with SPACE or HTAB is the
      * continuation of the previous one (with the single leading whitespace char removed).
      * A dangling leading continuation has nothing to attach to and is dropped.

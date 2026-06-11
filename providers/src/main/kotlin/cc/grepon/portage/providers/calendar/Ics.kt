@@ -60,7 +60,7 @@ object Ics {
     }
 
     private fun StringBuilder.appendLine(line: String) {
-        append(line)
+        append(RfcText.fold(line))
         append(CRLF)
     }
 
@@ -97,6 +97,19 @@ object Ics {
             }
         }
         return IcsParseResult(events, malformed)
+    }
+
+    /**
+     * RFC 5545 DURATION → millis. `java.time.Duration` covers the `PnDTnHnMnS` forms;
+     * the week form (`PnW`) is special-cased because java.time rejects it. Null on garbage.
+     */
+    fun durationToMillis(value: String): Long? {
+        val v = value.trim().uppercase()
+        if (v.isEmpty()) return null
+        Regex("""P(\d+)W""").matchEntire(v)?.let {
+            return it.groupValues[1].toLongOrNull()?.times(7 * 86_400_000L)
+        }
+        return runCatching { java.time.Duration.parse(v).toMillis() }.getOrNull()
     }
 
     /** Parse a DTSTART/DTEND value: `yyyyMMdd'T'HHmmss[Z]` or bare `yyyyMMdd`. Null if neither. */

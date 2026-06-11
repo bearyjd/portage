@@ -53,7 +53,7 @@ object VCard3 {
     }
 
     private fun StringBuilder.appendLine(line: String) {
-        append(line)
+        append(RfcText.fold(line))
         append(CRLF)
     }
 

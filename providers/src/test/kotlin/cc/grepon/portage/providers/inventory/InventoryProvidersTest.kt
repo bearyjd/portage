@@ -55,19 +55,53 @@ class InventoryProvidersTest {
 
     @Test
     fun `install actions deep-link per source store`() {
-        assertThat(InstallAction.from(fdroidApp).uri)
+        assertThat(requireNotNull(InstallAction.from(fdroidApp)).uri)
             .isEqualTo("https://f-droid.org/packages/org.fossify.gallery")
-        assertThat(InstallAction.from(playApp).uri)
+        assertThat(requireNotNull(InstallAction.from(playApp)).uri)
             .isEqualTo("https://play.google.com/store/apps/details?id=com.banking.app")
-        assertThat(InstallAction.from(auroraApp).uri)
+        assertThat(requireNotNull(InstallAction.from(auroraApp)).uri)
             .isEqualTo("market://details?id=com.maps.app")
-        assertThat(InstallAction.from(sideloaded).uri)
+        assertThat(requireNotNull(InstallAction.from(sideloaded)).uri)
             .isEqualTo("market://details?id=dev.tool.apk")
 
-        assertThat(InstallAction.from(fdroidApp).store).isEqualTo(InstallStore.FDROID)
-        assertThat(InstallAction.from(playApp).store).isEqualTo(InstallStore.PLAY)
-        assertThat(InstallAction.from(auroraApp).store).isEqualTo(InstallStore.AURORA)
-        assertThat(InstallAction.from(sideloaded).store).isEqualTo(InstallStore.UNKNOWN)
+        assertThat(requireNotNull(InstallAction.from(fdroidApp)).store).isEqualTo(InstallStore.FDROID)
+        assertThat(requireNotNull(InstallAction.from(playApp)).store).isEqualTo(InstallStore.PLAY)
+        assertThat(requireNotNull(InstallAction.from(auroraApp)).store).isEqualTo(InstallStore.AURORA)
+        assertThat(requireNotNull(InstallAction.from(sideloaded)).store).isEqualTo(InstallStore.UNKNOWN)
+    }
+
+    @Test
+    fun `a hostile package name is dropped, never turned into a URI`() {
+        // The packageName arrives from the peer — scheme/query smuggling must die here
+        // (security review 2026-06-11, HIGH: validate-or-drop on the package grammar).
+        val hostile = listOf(
+            "a&url=https://evil.example", // query smuggling
+            "../x",                       // traversal junk
+            "x ",                         // trailing space
+            "évil.app",                   // non-ASCII
+            "noseparator",                // single segment is not a package
+            "",                           // empty
+            "a..b",                       // empty segment
+            "https://evil.example/#",     // outright URL
+        )
+        hostile.forEach { name ->
+            assertThat(InstallAction.from(AppRecord(name, 1, null, "X"))).isNull()
+        }
+    }
+
+    @Test
+    fun `apply drops invalid package names and reports them`() = runTest {
+        val out = ByteArrayOutputStream()
+        AppInventoryExportProvider(
+            FakeInventorySource(listOf(fdroidApp, AppRecord("bad&name", 1, null, "Evil"))),
+        ).exportTo(out)
+
+        var actions: List<InstallAction> = emptyList()
+        val outcome = AppInventoryApplyProvider(FakeInventorySource()) { actions = it }
+            .apply(ByteArrayInputStream(out.toByteArray()))
+
+        assertThat(actions.map { it.packageName }).containsExactly("org.fossify.gallery")
+        assertThat(outcome.detail).contains("1 dropped")
     }
 
     @Test

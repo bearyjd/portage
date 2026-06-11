@@ -126,6 +126,8 @@ object SmsHandoff {
     ): ApplyOutcome {
         val prior = recordPrior()
         if (!acquire()) {
+            // Deliberately OUTSIDE the finally: the role was never taken, so there is
+            // nothing to give back and firing a restore prompt would be noise.
             return ApplyOutcome(ItemStatus.SKIPPED, "default-SMS-app handoff declined")
         }
         return try {

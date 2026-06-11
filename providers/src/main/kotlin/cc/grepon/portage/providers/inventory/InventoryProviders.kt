@@ -53,7 +53,17 @@ data class InstallAction(
     val uri: String,
 ) {
     companion object {
-        fun from(record: AppRecord): InstallAction {
+        /**
+         * The Android package grammar: dot-separated `[A-Za-z0-9_]` segments, two or more.
+         * Sender-supplied names that don't match are DROPPED (security review 2026-06-11,
+         * HIGH: an unvalidated name could smuggle a scheme/query into the deep link).
+         * Everything this regex accepts is URL-safe by construction — no encoding needed.
+         */
+        private val PACKAGE_NAME = Regex("""[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+""")
+
+        /** Build the deep link for one record, or null if the package name is not plausible. */
+        fun from(record: AppRecord): InstallAction? {
+            if (!PACKAGE_NAME.matches(record.packageName)) return null
             val store = when (record.installer) {
                 "com.android.vending" -> InstallStore.PLAY
                 "org.fdroid.fdroid", "org.fdroid.basic" -> InstallStore.FDROID
@@ -114,11 +124,13 @@ class AppInventoryApplyProvider(
 
         val present = runCatching { inventorySource.installedPackageNames() }.getOrDefault(emptySet())
         val (alreadyInstalled, missing) = inventory.packages.partition { it.packageName in present }
-        val actions = missing.map(InstallAction::from)
+        val actions = missing.mapNotNull(InstallAction::from)
+        val dropped = missing.size - actions.size
         onActions(actions)
-        return ApplyOutcome(
-            ItemStatus.OK,
-            "${actions.size} to reinstall, ${alreadyInstalled.size} already installed",
-        )
+        val detail = buildString {
+            append("${actions.size} to reinstall, ${alreadyInstalled.size} already installed")
+            if (dropped > 0) append(", $dropped dropped (invalid package name)")
+        }
+        return ApplyOutcome(ItemStatus.OK, detail)
     }
 }

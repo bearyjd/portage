@@ -192,6 +192,42 @@ class ReceiverViewModelTest {
     }
 
     @Test
+    fun `a registered SMS provider is inert end-to-end while the role is not held`() = runTest(dispatcher) {
+        // The recv manifest deliberately declares no SMS role components yet (its own
+        // comment: "treat SMS as its own mini-project"). Registering SmsApplyProvider is
+        // safe ONLY because the role gate holds end-to-end — this test pins that.
+        val store = object : cc.grepon.portage.providers.sms.SmsStore {
+            var inserts = 0
+            override fun count() = 0
+            override fun readAll() = emptyList<cc.grepon.portage.providers.sms.SmsRecord>()
+            override fun insert(record: cc.grepon.portage.providers.sms.SmsRecord): Boolean {
+                inserts++
+                return true
+            }
+        }
+        val noRole = object : cc.grepon.portage.providers.sms.SmsRoleGateway {
+            override fun isSelfDefault() = false
+            override fun currentDefault(): String? = "com.example.messages"
+            override fun launchRestore(priorHolderPackage: String?) = true
+        }
+        val vm = viewModel(registryFactory = {
+            ApplyProviderRegistry(
+                listOf(cc.grepon.portage.providers.sms.SmsApplyProvider(store, noRole)),
+            )
+        })
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+        vm.onConfirm()
+
+        val smsMeta = ItemMeta(9, ItemKind.SMS, 10, "h9", "Text messages", "History")
+        val outcome = vm.applyStaged(smsMeta, ByteArrayInputStream(ByteArray(0)))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.SKIPPED)
+        assertThat(store.inserts).isEqualTo(0)
+    }
+
+    @Test
     fun `install actions surfaced by the inventory provider reach the UI flow`() = runTest(dispatcher) {
         var sink: ((List<InstallAction>) -> Unit)? = null
         val vm = viewModel(registryFactory = { onActions ->

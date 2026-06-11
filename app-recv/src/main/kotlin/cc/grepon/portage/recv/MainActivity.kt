@@ -67,6 +67,11 @@ private class ReceiverViewModelFactory(private val context: Context) : ViewModel
                     ContactsApplyProvider(AndroidContactsStore(resolver)),
                     CalendarApplyProvider(AndroidCalendarStore(resolver)),
                     CallLogApplyProvider(AndroidCallLogStore(resolver)),
+                    // INERT BY DESIGN until the SMS role mini-project lands: the manifest
+                    // declares no SMS role components, so isSelfDefault() is always false
+                    // and apply() hard-skips. Pinned end-to-end by ReceiverViewModelTest
+                    // ("a registered SMS provider is inert..."). Do NOT declare the SMS
+                    // permissions as a quick fix — the role handoff gets its own review.
                     SmsApplyProvider(AndroidSmsStore(resolver), AndroidSmsRoleGateway(context)),
                     AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), onInstallActions),
                     SettingsApplyProvider(AndroidSystemSettingsStore(context)),

@@ -62,7 +62,13 @@ private fun tier0SafeKeys(): List<SettingKey> = SettingsAllowlist.all.filter {
         it.reach == Reach.T0_SYSTEM
 }
 
-/** Sender side: read the SAFE Tier-0 system keys that have a value on this device. */
+/**
+ * Sender side: read the SAFE Tier-0 system keys that have a value on this device.
+ *
+ * Rides [ItemKind.SETTINGS], which the frozen wire enum tags TIER1 (so the checklist
+ * treats it opt-in). The actual safety boundary is the allowlist cut enforced here and in
+ * [SettingsApplyProvider] — never the tier tag.
+ */
 class SettingsExportProvider(private val store: SystemSettingsStore) : ExportProvider {
 
     override val kind = ItemKind.SETTINGS

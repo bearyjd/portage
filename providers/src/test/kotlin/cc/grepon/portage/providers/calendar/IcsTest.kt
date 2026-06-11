@@ -151,4 +151,45 @@ class IcsTest {
         assertThat(back.events).isEmpty()
         assertThat(back.malformed).isEqualTo(0)
     }
+
+    @Test
+    fun `a multi-day all-day event keeps its DTEND across the round trip`() {
+        val start = 1_781_049_600_000 // 2026-06-10T00:00:00Z
+        val event = EventRecord(
+            uid = null, title = "Conference", description = null, location = null,
+            startMillis = start, endMillis = start + 3 * 86_400_000L,
+            allDay = true, rrule = null, duration = null,
+        )
+
+        val back = roundTrip(listOf(event))
+
+        assertThat(back.malformed).isEqualTo(0)
+        assertThat(back.events).containsExactly(event)
+    }
+
+    @Test
+    fun `long descriptions are folded on write and survive the round trip`() {
+        val longDescription = "d".repeat(300)
+        val event = EventRecord(null, "Folded", longDescription, null, 0, null, false, null, null)
+
+        val out = ByteArrayOutputStream()
+        Ics.write(listOf(event), out)
+        out.toString(Charsets.UTF_8).split("\r\n").forEach {
+            assertThat(it.toByteArray(Charsets.UTF_8).size).isAtMost(75)
+        }
+
+        val back = Ics.parse(ByteArrayInputStream(out.toByteArray()))
+        assertThat(back.events.single().description).isEqualTo(longDescription)
+    }
+
+    @Test
+    fun `durationToMillis handles day, time, combined and week forms, rejects garbage`() {
+        assertThat(Ics.durationToMillis("P1D")).isEqualTo(86_400_000L)
+        assertThat(Ics.durationToMillis("PT1H")).isEqualTo(3_600_000L)
+        assertThat(Ics.durationToMillis("P2DT3H30M")).isEqualTo(2 * 86_400_000L + 3 * 3_600_000L + 30 * 60_000L)
+        assertThat(Ics.durationToMillis("P2W")).isEqualTo(14 * 86_400_000L)
+        assertThat(Ics.durationToMillis("p1d")).isEqualTo(86_400_000L)
+        assertThat(Ics.durationToMillis("one hour")).isNull()
+        assertThat(Ics.durationToMillis("")).isNull()
+    }
 }
