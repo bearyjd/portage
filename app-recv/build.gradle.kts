@@ -51,11 +51,8 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
 
-    // QR scanning (receiver) via CameraX + ML Kit barcode.
-    implementation(libs.mlkit.barcode)
-    implementation(libs.camerax.camera2)
-    implementation(libs.camerax.lifecycle)
-    implementation(libs.camerax.view)
+    // QR scanning (receiver) via zxing-android-embedded — no GMS, no ML Kit.
+    implementation(libs.zxing.android.embedded)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
