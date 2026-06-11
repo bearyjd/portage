@@ -46,9 +46,25 @@ CI gates on every push/PR: `:settings-catalog:test` (safety-critical allowlist i
 
 ## Open security follow-ups (build WITH the TCP listener, not after)
 
-Tracked in `ADR-002 §Follow-ups`: PSK single-use consumption, 10s handshake timeout,
-`u16` wire-read frame cap, `payload.wipe()` in the accept path, dedicated verbatim-diff
-review of the vendored noise-java tree before release.
+CLOSED (verified by review + tests in PRs #5-#7): PSK single-use consumption, 10s
+handshake timeout, `u16` wire-read frame cap, `payload.wipe()` in both accept and
+connect paths, receiver item-stream limits (per-item 64 MiB cap, size/kind/hash
+agreement with the manifest, item-count cap).
+
+STILL OPEN: dedicated verbatim-diff review of the vendored noise-java tree before
+release; CI dependency-audit step (OSV or equivalent — asked for by two security
+reviews); port-probe TOCTOU (`acceptAsSender(port=0)` returning the bound port).
+
+## Post-Tier-0 follow-ups (tracked in PR #5/#6/#7 descriptions)
+
+- **SMS restore is INERT BY DESIGN**: `SmsApplyProvider` is registered but hard-skips
+  without the default-SMS role; the recv manifest deliberately declares no role
+  components. The role mini-project (manifest components, role-request UI, relinquish
+  UX) is its own PR with its own security review — do NOT "quick fix" the permissions.
+- **On-device VERIFY_FIRST**: WRITE_CALL_LOG-only inserts succeed on GOS; null-account
+  local contacts visible in default Contacts view; camera releases promptly post-scan.
+- The QR-encoded PSK String is a non-zeroizable accepted residual (THREAT_MODEL §1
+  boundary), documented in `SenderViewModel`.
 
 ## Build
 
