@@ -38,6 +38,7 @@ import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.recv.ReceiverState
 import cc.grepon.portage.recv.ReceiverViewModel
 import cc.grepon.portage.recv.install.InstallLaunch
+import cc.grepon.portage.recv.shizuku.ShizukuAccessStrand
 import cc.grepon.portage.recv.ui.theme.LocalSpacing
 import cc.grepon.portage.recv.ui.theme.PortageTheme
 
@@ -50,6 +51,7 @@ import cc.grepon.portage.recv.ui.theme.PortageTheme
 fun ReceiverApp(viewModel: ReceiverViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val smsRoleStrand by viewModel.smsRoleStrand.collectAsStateWithLifecycle()
+    val shizukuStrand by viewModel.shizukuAccess.collectAsStateWithLifecycle()
 
     PortageTheme {
         Scaffold(
@@ -80,7 +82,7 @@ fun ReceiverApp(viewModel: ReceiverViewModel) {
                     contentKey = { it.key() },
                     label = "receiverState",
                 ) { current ->
-                    StateBody(current = current, viewModel = viewModel)
+                    StateBody(current = current, viewModel = viewModel, shizukuStrand = shizukuStrand)
                 }
             }
         }
@@ -92,11 +94,17 @@ fun ReceiverApp(viewModel: ReceiverViewModel) {
 private fun StateBody(
     current: ReceiverState,
     viewModel: ReceiverViewModel,
+    shizukuStrand: ShizukuAccessStrand,
 ) {
     val context = LocalContext.current
     when (current) {
         is ReceiverState.Idle ->
-            IdleScreen(onScan = viewModel::startScanning, modifier = Modifier.fillMaxSize())
+            IdleScreen(
+                onScan = viewModel::startScanning,
+                shizukuStrand = shizukuStrand,
+                onUnlockSecureSettings = viewModel::unlockSecureSettings,
+                modifier = Modifier.fillMaxSize(),
+            )
 
         is ReceiverState.Scanning ->
             ScanScreen(onScanned = viewModel::onQrScanned, modifier = Modifier.fillMaxSize())

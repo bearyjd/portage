@@ -16,10 +16,14 @@ import cc.grepon.portage.model.ItemMeta
 import cc.grepon.portage.model.ItemResult
 import cc.grepon.portage.model.ItemStatus
 import cc.grepon.portage.model.ProtocolMessage
+import cc.grepon.portage.privileged.PrivilegedAccess
+import cc.grepon.portage.privileged.PrivilegedOps
 import cc.grepon.portage.providers.ApplyOutcome
 import cc.grepon.portage.providers.ApplyProviderRegistry
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.recv.checklist.ReceiverChecklist
+import cc.grepon.portage.recv.shizuku.ShizukuAccessStrand
+import cc.grepon.portage.recv.shizuku.strandFor
 import cc.grepon.portage.recv.sms.SmsRoleCoordinator
 import cc.grepon.portage.recv.sms.SmsRoleStrand
 import cc.grepon.portage.recv.transfer.ItemStreamReceiver
@@ -54,6 +58,9 @@ class ReceiverViewModel(
     // Inert by default: without a real coordinator (or its manifest role components) SMS
     // can never be granted, so the apply path always self-skips.
     private val smsRoleCoordinator: SmsRoleCoordinator = SmsRoleCoordinator.Inert,
+    // Inert by default: with no Shizuku bridge the optional secure-settings unlock simply reports
+    // "not installed" and the Tier-1 keys self-skip (the apply path uses PrivilegedOps separately).
+    private val privilegedAccess: PrivilegedAccess = PrivilegedAccess.Inert,
     applyRegistryFactory: ((List<InstallAction>) -> Unit) -> ApplyProviderRegistry =
         { ApplyProviderRegistry(emptyList()) },
 ) : ViewModel() {
@@ -73,6 +80,14 @@ class ReceiverViewModel(
     private val _smsRoleStrand = MutableStateFlow<SmsRoleStrand?>(null)
     val smsRoleStrand: StateFlow<SmsRoleStrand?> = _smsRoleStrand.asStateFlow()
 
+    /**
+     * Status of the OPTIONAL secure-settings unlock (ADR-001) — drives the secondary affordance on
+     * the Home screen. Derived from the live Shizuku bridge; [ShizukuAccessStrand.UNLOCKED] once the
+     * one-shot grant has landed. Independent of the transfer flow (a Tier-0 transfer ignores it).
+     */
+    private val _shizukuAccess = MutableStateFlow(ShizukuAccessStrand.NOT_INSTALLED)
+    val shizukuAccess: StateFlow<ShizukuAccessStrand> = _shizukuAccess.asStateFlow()
+
     private val applyRegistry: ApplyProviderRegistry =
         applyRegistryFactory { actions -> _installActions.value = actions }
 
@@ -80,6 +95,7 @@ class ReceiverViewModel(
 
     init {
         refreshSmsRoleStrand()
+        refreshShizukuAccess()
     }
 
     fun startScanning() {
@@ -235,8 +251,10 @@ class ReceiverViewModel(
         channel = null
         _installActions.value = emptyList()
         _state.value = ReceiverState.Idle
-        // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
+        // Returning Home is a chance to clear (or surface) a leftover default-SMS strand, and to
+        // re-derive the optional secure-settings unlock state for the Home affordance.
         refreshSmsRoleStrand()
+        refreshShizukuAccess()
     }
 
     /**
@@ -257,6 +275,56 @@ class ReceiverViewModel(
             smsRoleCoordinator.relinquishTo(target)
             // The real clear happens on the next refreshSmsRoleStrand() once the role returns.
         }
+    }
+
+    /**
+     * Reconcile the optional secure-settings unlock affordance with the live bridge — called at
+     * startup, when returning Home, and on every resume (so it reflects the user installing,
+     * starting, or authorizing Shizuku OUTSIDE the app). Never clobbers an in-flight unlock:
+     * [unlockSecureSettings] owns the [ShizukuAccessStrand.UNLOCKING] window and finalizes it itself.
+     */
+    fun refreshShizukuAccess() {
+        if (_shizukuAccess.value == ShizukuAccessStrand.UNLOCKING) return
+        _shizukuAccess.value = derivedShizukuStrand()
+    }
+
+    /**
+     * User tapped "Unlock secure settings": authorize Shizuku if needed, then run the one-shot
+     * WRITE_SECURE_SETTINGS grant — a single gesture covers both steps. A no-op unless currently
+     * actionable ([ShizukuAccessStrand.LOCKED], or a [ShizukuAccessStrand.GRANT_FAILED] retry), so a
+     * double-tap or a tap while showing guidance does nothing. Fails closed back to the derived
+     * strand whenever authorization or the grant doesn't complete.
+     */
+    fun unlockSecureSettings() {
+        val strand = _shizukuAccess.value
+        if (strand != ShizukuAccessStrand.LOCKED && strand != ShizukuAccessStrand.GRANT_FAILED) return
+        _shizukuAccess.value = ShizukuAccessStrand.UNLOCKING
+        viewModelScope.launch {
+            val authorized = when (privilegedAccess.availability()) {
+                PrivilegedOps.Availability.LIVE -> true
+                PrivilegedOps.Availability.PERMISSION_DENIED -> privilegedAccess.requestAccess()
+                PrivilegedOps.Availability.INSTALLED_NOT_RUNNING,
+                PrivilegedOps.Availability.NOT_INSTALLED,
+                PrivilegedOps.Availability.OUTDATED,
+                -> false
+            }
+            if (!authorized) {
+                _shizukuAccess.value = derivedShizukuStrand()
+                return@launch
+            }
+            _shizukuAccess.value = when (privilegedAccess.ensureWriteSecureSettingsGranted()) {
+                PrivilegedOps.GrantOutcome.GRANTED -> ShizukuAccessStrand.UNLOCKED
+                PrivilegedOps.GrantOutcome.GRANT_REJECTED -> ShizukuAccessStrand.GRANT_FAILED
+                PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE -> derivedShizukuStrand()
+            }
+        }
+    }
+
+    /** Unguarded point-in-time read (the unlock coroutine finalizes through this, bypassing the guard). */
+    private fun derivedShizukuStrand(): ShizukuAccessStrand {
+        // One snapshot per derivation — avoids a second bridge read and a (benign) TOCTOU between them.
+        val availability = privilegedAccess.availability()
+        return strandFor(availability, privilegedAccess.canWriteSecureSettings())
     }
 
     /** Fail-closed terminal transition: close the live channel, then surface the reason. */

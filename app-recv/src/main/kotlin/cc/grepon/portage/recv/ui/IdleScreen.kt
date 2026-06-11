@@ -26,16 +26,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
+import cc.grepon.portage.recv.shizuku.ShizukuAccessStrand
 import cc.grepon.portage.recv.ui.theme.LocalSpacing
 
 /**
  * Landing. Swiss editorial: a small indexed running head, an oversized display headline pinned
  * to the gutter, a single explanatory line, then the primary "Scan" call. The app-data
  * division-of-labor note sits as tracked-out fine print above the action — context, not noise.
+ *
+ * Below the primary call, an OPTIONAL secondary section ([SecureSettingsSection]) surfaces the
+ * Tier-1 secure-settings unlock — quiet and indexed "02", and only when Shizuku is at least present.
  */
 @Composable
 fun IdleScreen(
     onScan: () -> Unit,
+    shizukuStrand: ShizukuAccessStrand,
+    onUnlockSecureSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val s = LocalSpacing.current
@@ -100,6 +106,91 @@ fun IdleScreen(
             fullWidth = true,
         )
 
+        SecureSettingsSection(strand = shizukuStrand, onUnlock = onUnlockSecureSettings)
+
         Spacer(Modifier.height(s.xl))
     }
+}
+
+/**
+ * The optional Tier-1 "secure settings" affordance (ADR-001). Deliberately SECONDARY to the Scan
+ * call — portage moves system settings at Tier 0 without it — so it reads as a quiet indexed "02"
+ * section, uses the restrained [SwissTextAction] rather than the red primary block, and stays hidden
+ * entirely when Shizuku isn't installed (no nagging the 95% who never use it). The unlock is one
+ * gesture: authorize Shizuku, then a one-shot WRITE_SECURE_SETTINGS grant the ViewModel runs.
+ */
+@Composable
+private fun SecureSettingsSection(
+    strand: ShizukuAccessStrand,
+    onUnlock: () -> Unit,
+) {
+    if (strand == ShizukuAccessStrand.NOT_INSTALLED) return // fully usable at Tier 0 — keep Home clean
+    val s = LocalSpacing.current
+
+    Spacer(Modifier.height(s.xl))
+    HairlineDivider()
+    Spacer(Modifier.height(s.lg))
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = "02",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.width(s.sm))
+        Text(
+            text = if (strand == ShizukuAccessStrand.UNLOCKED) "SECURE SETTINGS · UNLOCKED" else "OPTIONAL",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    Spacer(Modifier.height(s.md))
+
+    Text(
+        text = "Secure system settings",
+        style = MaterialTheme.typography.headlineMedium,
+        color = MaterialTheme.colorScheme.onBackground,
+    )
+
+    Spacer(Modifier.height(s.sm))
+
+    Text(
+        text = secureSettingsCaption(strand),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth(0.92f),
+    )
+
+    val action: Pair<String, Boolean>? = when (strand) {
+        ShizukuAccessStrand.LOCKED -> "Unlock secure settings" to true
+        ShizukuAccessStrand.GRANT_FAILED -> "Try again" to true
+        ShizukuAccessStrand.UNLOCKING -> "Unlocking…" to false
+        // Guidance-only states: the caption carries the whole message, no action rule.
+        ShizukuAccessStrand.NOT_RUNNING,
+        ShizukuAccessStrand.OUTDATED,
+        ShizukuAccessStrand.UNLOCKED,
+        ShizukuAccessStrand.NOT_INSTALLED, // unreachable (early return) — keeps the when exhaustive
+        -> null
+    }
+    if (action != null) {
+        Spacer(Modifier.height(s.md))
+        SwissTextAction(text = action.first, onClick = onUnlock, enabled = action.second)
+    }
+}
+
+/** One intentional line per [ShizukuAccessStrand] — the Swiss caption that does the explaining. */
+private fun secureSettingsCaption(strand: ShizukuAccessStrand): String = when (strand) {
+    ShizukuAccessStrand.LOCKED ->
+        "Display, sound, and input settings that Android keeps locked. Authorize Shizuku once to " +
+            "include them in the transfer."
+    ShizukuAccessStrand.UNLOCKING -> "Authorizing Shizuku and unlocking…"
+    ShizukuAccessStrand.UNLOCKED -> "These will come across on your next transfer. Nothing else to do."
+    ShizukuAccessStrand.NOT_RUNNING ->
+        "Start Shizuku on this phone, then come back, to also bring locked system settings."
+    ShizukuAccessStrand.OUTDATED ->
+        "Your Shizuku is too old for portage to use. Update it to also bring locked system settings."
+    ShizukuAccessStrand.GRANT_FAILED ->
+        "Shizuku is authorized, but the one-time unlock didn't take. Try again."
+    ShizukuAccessStrand.NOT_INSTALLED -> "" // unreachable (early return)
 }

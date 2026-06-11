@@ -18,6 +18,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import cc.grepon.portage.privileged.AndroidPrivilegedAccess
 import cc.grepon.portage.privileged.ShizukuPrivilegedOps
 import cc.grepon.portage.providers.ApplyProviderRegistry
 import cc.grepon.portage.providers.calendar.AndroidCalendarStore
@@ -83,6 +84,9 @@ class MainActivity : ComponentActivity() {
         // Returning from the system change-default prompt: re-check whether portage is still the
         // default SMS app so the in-app "restore" affordance clears once the role is handed back.
         viewModel.refreshSmsRoleStrand()
+        // Returning from installing/starting/authorizing Shizuku outside the app: re-derive the
+        // optional secure-settings unlock state so the Home affordance reflects reality.
+        viewModel.refreshShizukuAccess()
     }
 }
 
@@ -95,6 +99,10 @@ private class ReceiverViewModelFactory(
 ) : ViewModelProvider.Factory {
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        // One Shizuku bridge shared by both consumers: the apply path (Tier-1 settings writes) and
+        // the interactive "unlock secure settings" affordance. Both read the same global Shizuku
+        // state and the OS-persisted grant, so a single instance keeps them in agreement.
+        val privilegedOps = ShizukuPrivilegedOps(context)
         val registryFactory = { onInstallActions: (List<InstallAction>) -> Unit ->
             val resolver = context.contentResolver
             ApplyProviderRegistry(
@@ -108,13 +116,13 @@ private class ReceiverViewModelFactory(
                     SmsApplyProvider(AndroidSmsStore(resolver), AndroidSmsRoleGateway(context)),
                     AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), onInstallActions),
                     // Tier-0 SYSTEM keys write today. Tier-1 SECURE/GLOBAL keys go live once the
-                    // user authorizes Shizuku and the one-shot WRITE_SECURE_SETTINGS grant lands;
-                    // until then ShizukuPrivilegedOps reports the bridge unavailable and they
-                    // self-skip. (The in-app "unlock secure settings" affordance is a follow-up.)
+                    // user authorizes Shizuku and the one-shot WRITE_SECURE_SETTINGS grant lands
+                    // (driven by the Home "unlock secure settings" affordance, via privilegedAccess
+                    // below); until then privilegedOps reports the bridge unavailable and they self-skip.
                     SettingsApplyProvider(
                         AndroidSystemSettingsStore(context),
                         AndroidSecureGlobalSettingsStore(context),
-                        ShizukuPrivilegedOps(context),
+                        privilegedOps,
                     ),
                 ),
             )
@@ -123,6 +131,7 @@ private class ReceiverViewModelFactory(
         return ReceiverViewModel(
             stagingDir = File(context.cacheDir, STAGING_DIR),
             smsRoleCoordinator = smsRoleCoordinator,
+            privilegedAccess = AndroidPrivilegedAccess(context, privilegedOps),
             applyRegistryFactory = registryFactory,
         ) as T
     }
