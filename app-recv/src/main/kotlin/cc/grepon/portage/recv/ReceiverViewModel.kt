@@ -11,13 +11,17 @@ package cc.grepon.portage.recv
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import cc.grepon.portage.model.ItemKind
 import cc.grepon.portage.model.ItemMeta
+import cc.grepon.portage.model.ItemResult
 import cc.grepon.portage.model.ItemStatus
 import cc.grepon.portage.model.ProtocolMessage
 import cc.grepon.portage.providers.ApplyOutcome
 import cc.grepon.portage.providers.ApplyProviderRegistry
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.recv.checklist.ReceiverChecklist
+import cc.grepon.portage.recv.sms.SmsRoleCoordinator
+import cc.grepon.portage.recv.sms.SmsRoleStrand
 import cc.grepon.portage.recv.transfer.ItemStreamReceiver
 import cc.grepon.portage.transport.NoiseSecureChannelFactory
 import cc.grepon.portage.transport.PairingCodec
@@ -47,6 +51,9 @@ class ReceiverViewModel(
     // Deliberately NO default: staged payloads are plaintext PII, so the staging location
     // must be wired explicitly (production: app-private cacheDir via the factory).
     private val stagingDir: File,
+    // Inert by default: without a real coordinator (or its manifest role components) SMS
+    // can never be granted, so the apply path always self-skips.
+    private val smsRoleCoordinator: SmsRoleCoordinator = SmsRoleCoordinator.Inert,
     applyRegistryFactory: ((List<InstallAction>) -> Unit) -> ApplyProviderRegistry =
         { ApplyProviderRegistry(emptyList()) },
 ) : ViewModel() {
@@ -58,10 +65,22 @@ class ReceiverViewModel(
     private val _installActions = MutableStateFlow<List<InstallAction>>(emptyList())
     val installActions: StateFlow<List<InstallAction>> = _installActions.asStateFlow()
 
+    /**
+     * Non-null ⇒ portage is still the default SMS app from an interrupted handoff (process death,
+     * dismissed restore prompt). Drives an in-app one-tap restore — the persistent backstop to the
+     * `finally` relinquish, which cannot survive a kill (DEVILS_ADVOCATE.md Q4 §3).
+     */
+    private val _smsRoleStrand = MutableStateFlow<SmsRoleStrand?>(null)
+    val smsRoleStrand: StateFlow<SmsRoleStrand?> = _smsRoleStrand.asStateFlow()
+
     private val applyRegistry: ApplyProviderRegistry =
         applyRegistryFactory { actions -> _installActions.value = actions }
 
     private var channel: SecureChannel? = null
+
+    init {
+        refreshSmsRoleStrand()
+    }
 
     fun startScanning() {
         if (_state.value is ReceiverState.Idle || _state.value is ReceiverState.Failed) {
@@ -110,16 +129,19 @@ class ReceiverViewModel(
         _state.value = ReceiverState.Transferring(
             items = selected.map { ItemProgress(it.itemId, it.displayName) },
         )
+        val needsSmsRole = selected.any { it.kind == ItemKind.SMS }
         viewModelScope.launch {
             try {
                 val ch = channel ?: error("no channel")
-                ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
-                val results = ItemStreamReceiver(stagingDir).run(
-                    channel = ch,
-                    expected = selected.associateBy { it.itemId },
-                    apply = ::applyStaged,
-                    onEvent = ::onReceiveEvent,
-                )
+                val results = withSmsRoleIfNeeded(needsSmsRole) {
+                    ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
+                    ItemStreamReceiver(stagingDir).run(
+                        channel = ch,
+                        expected = selected.associateBy { it.itemId },
+                        apply = ::applyStaged,
+                        onEvent = ::onReceiveEvent,
+                    )
+                }
                 ensureActive() // a reset() mid-run must not be overwritten by Done
                 val moved = results.count { it.status == ItemStatus.OK }
                 _state.value = ReceiverState.Done(
@@ -137,6 +159,28 @@ class ReceiverViewModel(
                 ensureActive()
                 fail(t.message ?: "Transfer failed")
             }
+        }
+    }
+
+    /**
+     * Wrap [transfer] in the default-SMS-app handoff when an SMS item is selected: record the
+     * prior holder, acquire the role (interactive system dialog), run the transfer with the
+     * role held so SmsApplyProvider can write, then ALWAYS relinquish toward the prior holder
+     * in a finally (DEVILS_ADVOCATE Q4 — teardown is required, never optional). A declined
+     * role just runs the transfer; SmsApplyProvider self-skips without the role and there is
+     * nothing to give back.
+     */
+    private suspend fun withSmsRoleIfNeeded(
+        needsSmsRole: Boolean,
+        transfer: suspend () -> List<ItemResult>,
+    ): List<ItemResult> {
+        if (!needsSmsRole) return transfer()
+        val prior = smsRoleCoordinator.priorDefaultPackage()
+        if (!smsRoleCoordinator.acquireRole()) return transfer()
+        return try {
+            transfer()
+        } finally {
+            smsRoleCoordinator.relinquishTo(prior)
         }
     }
 
@@ -191,6 +235,28 @@ class ReceiverViewModel(
         channel = null
         _installActions.value = emptyList()
         _state.value = ReceiverState.Idle
+        // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
+        refreshSmsRoleStrand()
+    }
+
+    /**
+     * Reconcile the in-app restore affordance with the real default-SMS state — called at startup,
+     * when returning Home, and on every resume (so it clears the moment the role is handed back).
+     * If nothing is stranded, also clears the persistent ledger marker.
+     */
+    fun refreshSmsRoleStrand() {
+        val strand = smsRoleCoordinator.currentStrand()
+        _smsRoleStrand.value = strand
+        if (strand == null) smsRoleCoordinator.onRoleRestored()
+    }
+
+    /** User tapped "restore my texting app": re-fire the system change-default prompt. */
+    fun restoreSmsRole() {
+        val target = _smsRoleStrand.value?.priorPackage
+        viewModelScope.launch {
+            smsRoleCoordinator.relinquishTo(target)
+            // The real clear happens on the next refreshSmsRoleStrand() once the role returns.
+        }
     }
 
     /** Fail-closed terminal transition: close the live channel, then surface the reason. */

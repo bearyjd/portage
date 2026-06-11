@@ -232,7 +232,7 @@ private fun ChecklistRow(
             if (isSms) {
                 Spacer(Modifier.height(s.xs))
                 Text(
-                    text = "Needs a one-time default-SMS-app step.",
+                    text = "Needs a one-time default-texting-app step — texts that arrive during it may be missed.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                 )

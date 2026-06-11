@@ -74,8 +74,11 @@ class SmsExportProvider(private val store: SmsStore) : ExportProvider {
 }
 
 /**
- * Receiver side: JSON lines → SMS provider rows. HARD-GATED on holding the default-SMS
- * role; orchestration of acquire → apply → relinquish belongs to [SmsHandoff].
+ * Receiver side: JSON lines → SMS provider rows. HARD-GATED on holding the default-SMS role —
+ * outside the role this self-skips and writes nothing. Acquiring and relinquishing the role is
+ * orchestrated receiver-side by the SmsRoleCoordinator (app-recv), which wraps the whole transfer
+ * in `acquire → apply → finally relinquish` (plus a persistent strand backstop for process death)
+ * so that a declined role still lets the other, non-SMS items through.
  */
 class SmsApplyProvider(
     private val store: SmsStore,
@@ -99,41 +102,5 @@ class SmsApplyProvider(
         }
         val status = if (parsed.records.isNotEmpty() && applied == 0) ItemStatus.WRITE_ERROR else ItemStatus.OK
         return ApplyOutcome(status, "applied $applied, skipped $skipped")
-    }
-
-    /** Record who holds the role BEFORE acquiring it — the teardown target. */
-    suspend fun recordPriorDefault(): String? = roleGateway.currentDefault()
-
-    /** Idempotent teardown: prompt the user to hand the role back to [priorHolderPackage]. */
-    suspend fun relinquishTo(priorHolderPackage: String?) {
-        roleGateway.launchRestore(priorHolderPackage)
-    }
-}
-
-/**
- * The handoff state machine, pure and testable: record prior holder → acquire role (user
- * gesture) → apply → ALWAYS relinquish toward the recorded holder. Relinquish runs in a
- * `finally` so no apply outcome — success, failure, or throw — can strand the user with
- * portage as their default SMS app (DEVILS_ADVOCATE.md Q4: required, not optional).
- */
-object SmsHandoff {
-
-    suspend fun run(
-        recordPrior: suspend () -> String?,
-        acquire: suspend () -> Boolean,
-        apply: suspend () -> ApplyOutcome,
-        relinquish: suspend (String?) -> Unit,
-    ): ApplyOutcome {
-        val prior = recordPrior()
-        if (!acquire()) {
-            // Deliberately OUTSIDE the finally: the role was never taken, so there is
-            // nothing to give back and firing a restore prompt would be noise.
-            return ApplyOutcome(ItemStatus.SKIPPED, "default-SMS-app handoff declined")
-        }
-        return try {
-            apply()
-        } finally {
-            relinquish(prior)
-        }
     }
 }

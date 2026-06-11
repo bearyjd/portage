@@ -10,13 +10,11 @@
 package cc.grepon.portage.providers.sms
 
 import cc.grepon.portage.model.ItemStatus
-import cc.grepon.portage.providers.ApplyOutcome
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
-import java.io.IOException
 
 private class FakeSmsStore(
     private val messages: MutableList<SmsRecord> = mutableListOf(),
@@ -92,81 +90,5 @@ class SmsProvidersTest {
 
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(store.inserted).containsExactly(inbox, sent).inOrder()
-    }
-
-    @Test
-    fun `recordPriorDefault and relinquishTo delegate to the role gateway`() = runTest {
-        val gateway = FakeRoleGateway(default = "org.fossify.messages")
-        val provider = SmsApplyProvider(FakeSmsStore(), gateway)
-
-        assertThat(provider.recordPriorDefault()).isEqualTo("org.fossify.messages")
-        provider.relinquishTo("org.fossify.messages")
-        assertThat(gateway.restoreCalls).containsExactly("org.fossify.messages")
-    }
-
-    // --- The handoff coordinator: teardown is REQUIRED, not optional (DEVILS_ADVOCATE Q4). ---
-
-    @Test
-    fun `handoff relinquishes to the recorded prior holder after a successful apply`() = runTest {
-        val relinquished = mutableListOf<String?>()
-
-        val outcome = SmsHandoff.run(
-            recordPrior = { "org.fossify.messages" },
-            acquire = { true },
-            apply = { ApplyOutcome(ItemStatus.OK, "applied 2, skipped 0") },
-            relinquish = { relinquished += it },
-        )
-
-        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
-        assertThat(relinquished).containsExactly("org.fossify.messages")
-    }
-
-    @Test
-    fun `handoff relinquishes even when apply throws`() = runTest {
-        val relinquished = mutableListOf<String?>()
-
-        val thrown = runCatching {
-            SmsHandoff.run(
-                recordPrior = { "org.fossify.messages" },
-                acquire = { true },
-                apply = { throw IOException("mid-apply failure") },
-                relinquish = { relinquished += it },
-            )
-        }.exceptionOrNull()
-
-        assertThat(thrown).isInstanceOf(IOException::class.java)
-        assertThat(relinquished).containsExactly("org.fossify.messages")
-    }
-
-    @Test
-    fun `handoff relinquishes when apply reports a failure status`() = runTest {
-        val relinquished = mutableListOf<String?>()
-
-        val outcome = SmsHandoff.run(
-            recordPrior = { "org.fossify.messages" },
-            acquire = { true },
-            apply = { ApplyOutcome(ItemStatus.WRITE_ERROR, "nothing applied") },
-            relinquish = { relinquished += it },
-        )
-
-        assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
-        assertThat(relinquished).containsExactly("org.fossify.messages")
-    }
-
-    @Test
-    fun `handoff declined by the user skips apply and has no role to give back`() = runTest {
-        var applied = false
-        val relinquished = mutableListOf<String?>()
-
-        val outcome = SmsHandoff.run(
-            recordPrior = { "org.fossify.messages" },
-            acquire = { false },
-            apply = { applied = true; ApplyOutcome(ItemStatus.OK) },
-            relinquish = { relinquished += it },
-        )
-
-        assertThat(outcome.status).isEqualTo(ItemStatus.SKIPPED)
-        assertThat(applied).isFalse()
-        assertThat(relinquished).isEmpty()
     }
 }

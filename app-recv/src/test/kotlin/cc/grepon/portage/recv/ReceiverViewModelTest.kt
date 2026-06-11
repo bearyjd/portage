@@ -28,6 +28,8 @@ import cc.grepon.portage.providers.sms.SmsApplyProvider
 import cc.grepon.portage.providers.sms.SmsRecord
 import cc.grepon.portage.providers.sms.SmsRoleGateway
 import cc.grepon.portage.providers.sms.SmsStore
+import cc.grepon.portage.recv.sms.SmsRoleCoordinator
+import cc.grepon.portage.recv.sms.SmsRoleStrand
 import cc.grepon.portage.transport.PairingCodec
 import cc.grepon.portage.transport.SecureChannel
 import com.google.common.truth.Truth.assertThat
@@ -93,6 +95,28 @@ private class FakeApply(
     }
 }
 
+private class FakeSmsRoleCoordinator(
+    private val acquireResult: Boolean,
+    private val prior: String? = "com.example.messages",
+    private val strand: SmsRoleStrand? = null,
+) : SmsRoleCoordinator {
+    var acquireCalls = 0
+    val relinquished = mutableListOf<String?>()
+    var roleRestoredCalls = 0
+    override fun priorDefaultPackage(): String? = prior
+    override suspend fun acquireRole(): Boolean {
+        acquireCalls++
+        return acquireResult
+    }
+    override suspend fun relinquishTo(priorPackage: String?) {
+        relinquished += priorPackage
+    }
+    override fun currentStrand(): SmsRoleStrand? = strand
+    override fun onRoleRestored() {
+        roleRestoredCalls++
+    }
+}
+
 class ReceiverViewModelTest {
 
     private val dispatcher = StandardTestDispatcher()
@@ -128,6 +152,33 @@ class ReceiverViewModelTest {
                 itemFrames(callsMeta, callsBytes) +
                 ProtocolMessage.BatchEnd(listOf(1, 2), "done")
             ).toTypedArray(),
+    )
+
+    private val smsBytes = """{"address":"+15551234567","body":"hi","dateMillis":1,"type":1}""".toByteArray()
+    private val smsMeta =
+        ItemMeta(3, ItemKind.SMS, smsBytes.size.toLong(), sha256(smsBytes), "Text messages", "History")
+
+    private fun smsChannel() = FakeChannel(
+        ProtocolMessage.Manifest(TransferManifest("old phone", listOf(smsMeta), smsBytes.size.toLong())),
+        ProtocolMessage.ItemBegin(3, ItemKind.SMS, smsMeta.size, smsBytes.size),
+        ProtocolMessage.ItemData(3, 0, smsBytes),
+        ProtocolMessage.ItemEnd(3, smsMeta.sha256),
+        ProtocolMessage.BatchEnd(listOf(3), "done"),
+    )
+
+    private fun smsViewModel(
+        channel: SecureChannel,
+        coordinator: SmsRoleCoordinator,
+        sms: ApplyProvider,
+    ) = ReceiverViewModel(
+        pairingCodec = FakeCodec(),
+        channelFactory = FakeFactory(channel),
+        nowEpochSeconds = { 1_000 },
+        appVersion = "test",
+        osFingerprint = "test-fingerprint",
+        stagingDir = tmp.root,
+        smsRoleCoordinator = coordinator,
+        applyRegistryFactory = { ApplyProviderRegistry(listOf(sms)) },
     )
 
     @Before
@@ -278,6 +329,89 @@ class ReceiverViewModelTest {
         val outcome = vm.applyStaged(callsMeta, ByteArrayInputStream(ByteArray(0)))
 
         assertThat(outcome.status).isEqualTo(ItemStatus.UNKNOWN_KIND)
+    }
+
+    @Test
+    fun `selecting SMS acquires the role, applies, then relinquishes to the prior holder`() = runTest(dispatcher) {
+        val sms = FakeApply(ItemKind.SMS)
+        val coordinator = FakeSmsRoleCoordinator(acquireResult = true)
+        val vm = smsViewModel(smsChannel(), coordinator, sms)
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        vm.onToggle(3) // SMS is opt-in — not pre-checked
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        assertThat(coordinator.acquireCalls).isEqualTo(1)
+        assertThat(coordinator.relinquished).containsExactly("com.example.messages")
+        assertThat(sms.calls).isEqualTo(1)
+        assertThat((vm.state.value as ReceiverState.Done).moved).isEqualTo(1)
+    }
+
+    @Test
+    fun `a declined SMS role runs the transfer but never relinquishes — nothing was taken`() = runTest(dispatcher) {
+        val coordinator = FakeSmsRoleCoordinator(acquireResult = false)
+        val vm = smsViewModel(smsChannel(), coordinator, FakeApply(ItemKind.SMS))
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        vm.onToggle(3)
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        assertThat(coordinator.acquireCalls).isEqualTo(1)
+        assertThat(coordinator.relinquished).isEmpty()
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Done::class.java)
+    }
+
+    @Test
+    fun `relinquish runs even when the transfer throws after the role was acquired`() = runTest(dispatcher) {
+        val droppedChannel = FakeChannel(
+            ProtocolMessage.Manifest(TransferManifest("old phone", listOf(smsMeta), smsBytes.size.toLong())),
+            ProtocolMessage.ItemBegin(3, ItemKind.SMS, smsMeta.size, smsBytes.size),
+            null, // connection lost mid-item → TransportException
+        )
+        val coordinator = FakeSmsRoleCoordinator(acquireResult = true)
+        val vm = smsViewModel(droppedChannel, coordinator, FakeApply(ItemKind.SMS))
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        vm.onToggle(3)
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        assertThat(coordinator.relinquished).containsExactly("com.example.messages")
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Failed::class.java)
+    }
+
+    @Test
+    fun `a leftover default-SMS strand at startup surfaces a restore affordance`() = runTest(dispatcher) {
+        // Process died (or the restore prompt was dismissed) with portage still the default SMS
+        // app: the persistent backstop must surface it for a one-tap in-app restore.
+        val coordinator = FakeSmsRoleCoordinator(
+            acquireResult = true,
+            strand = SmsRoleStrand("com.example.messages"),
+        )
+        val vm = smsViewModel(smsChannel(), coordinator, FakeApply(ItemKind.SMS))
+
+        assertThat(vm.smsRoleStrand.value).isEqualTo(SmsRoleStrand("com.example.messages"))
+
+        vm.restoreSmsRole()
+        advanceUntilIdle()
+        assertThat(coordinator.relinquished).containsExactly("com.example.messages")
+    }
+
+    @Test
+    fun `no strand at startup means no affordance and the persistent marker is cleared`() = runTest(dispatcher) {
+        val coordinator = FakeSmsRoleCoordinator(acquireResult = true, strand = null)
+        val vm = smsViewModel(smsChannel(), coordinator, FakeApply(ItemKind.SMS))
+
+        assertThat(vm.smsRoleStrand.value).isNull()
+        assertThat(coordinator.roleRestoredCalls).isAtLeast(1) // ledger.disarm() ran during reconcile
     }
 
     @Test
