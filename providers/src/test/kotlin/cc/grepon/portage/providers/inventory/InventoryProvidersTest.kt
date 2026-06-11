@@ -120,6 +120,20 @@ class InventoryProvidersTest {
     }
 
     @Test
+    fun `duplicate package names in the inventory collapse to one install action`() = runTest {
+        val out = ByteArrayOutputStream()
+        AppInventoryExportProvider(
+            FakeInventorySource(listOf(fdroidApp, fdroidApp.copy(label = "Same pkg, other label"))),
+        ).exportTo(out)
+
+        var actions: List<InstallAction> = emptyList()
+        AppInventoryApplyProvider(FakeInventorySource()) { actions = it }
+            .apply(ByteArrayInputStream(out.toByteArray()))
+
+        assertThat(actions.map { it.packageName }).containsExactly("org.fossify.gallery")
+    }
+
+    @Test
     fun `an unreadable payload is a WRITE_ERROR with no actions emitted`() = runTest {
         var called = false
         val outcome = AppInventoryApplyProvider(FakeInventorySource()) { called = true }

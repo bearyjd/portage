@@ -212,6 +212,9 @@ class ReceiverViewModelTest {
         assertThat(done.moved).isEqualTo(2)
         assertThat(done.skipped).isEqualTo(0)
         assertThat(channel.closed).isTrue()
+        // A non-inventory transfer must leave installActions empty so the Done screen keeps
+        // the original centered layout (code review 2026-06-11, MEDIUM: pin the branch).
+        assertThat(done.installActions).isEmpty()
     }
 
     @Test

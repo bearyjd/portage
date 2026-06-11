@@ -23,11 +23,21 @@ object InstallLaunch {
     /** Only an app-store deep link is launchable; anything else returns null (no intent). */
     private val ALLOWED_SCHEMES = setOf("https", "market")
 
+    /** For the https scheme, pin the host to the known stores — independent of the producer. */
+    private val ALLOWED_HTTPS_HOSTS = setOf("play.google.com", "f-droid.org")
+
     fun safeUri(action: InstallAction): String? {
         val uri = action.uri
         val colon = uri.indexOf(':')
         if (colon <= 0) return null
         val scheme = uri.substring(0, colon).lowercase()
-        return if (scheme in ALLOWED_SCHEMES) uri else null
+        if (scheme !in ALLOWED_SCHEMES) return null
+        if (scheme == "https") {
+            // Host-pin https so even a future producer change can't point a tap off-store
+            // (security review 2026-06-11, LOW: defense-in-depth over the package grammar).
+            val host = runCatching { java.net.URI(uri).host }.getOrNull()?.lowercase() ?: return null
+            if (host !in ALLOWED_HTTPS_HOSTS) return null
+        }
+        return uri
     }
 }

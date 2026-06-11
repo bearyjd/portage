@@ -13,8 +13,12 @@
     <uses-permission android:name="android.permission.WRITE_CALL_LOG" />
     <!-- Camera scans the pairing QR (the out-of-band trust anchor). -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <!-- Assisted reinstall fires per-app installer intents (Tier 0). -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!--
+      Assisted reinstall opens each app's store page via ACTION_VIEW — the store performs the
+      install, so NO install permission is needed here. QUERY_ALL_PACKAGES lets the receiver
+      skip apps already present. REQUEST_INSTALL_PACKAGES is intentionally NOT declared: it is
+      reserved for the Tier-1 batch installer (its own PR), per least-privilege.
+    -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
     <!--
