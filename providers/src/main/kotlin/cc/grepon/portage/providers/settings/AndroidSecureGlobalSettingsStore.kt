@@ -22,10 +22,11 @@ import cc.grepon.portage.settings.Namespace
  *
  * WRITE_SECURE_SETTINGS is declared in the `:privileged` library manifest (so the shell uid can
  * `pm grant` it) and merges into the recv APK; the declaration is dormant and grants nothing
- * until that `pm grant` runs. The bridge that performs the grant
- * ([cc.grepon.portage.privileged.ShizukuPrivilegedOps.ensureWriteSecureSettingsGranted]) is the
- * deferred, on-device-verified Tier-1 follow-up — until it lands [canWrite] is false and the
- * apply provider self-skips every SECURE/GLOBAL key, leaving shipped Tier-0 behavior unchanged.
+ * until that `pm grant` runs. The bridge that performs it
+ * ([cc.grepon.portage.privileged.ShizukuPrivilegedOps.ensureWriteSecureSettingsGranted]) is wired
+ * up but stays dormant until the user authorizes Shizuku (an in-app affordance, still to come) and
+ * the grant is verified on-device (ADR-001 V4/V5). Until then [canWrite] is false and the apply
+ * provider self-skips every SECURE/GLOBAL key, leaving shipped Tier-0 behavior unchanged.
  *
  * [Namespace.SYSTEM] is never serviced here — it routes through [AndroidSystemSettingsStore]
  * (Tier 0). A SYSTEM call is a routing bug and is rejected fail-closed.

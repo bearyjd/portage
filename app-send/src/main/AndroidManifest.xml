@@ -3,7 +3,8 @@
   portage-send (exporter) — GrapheneOS device-parity transfer
   Copyright (C) 2026 Grepon Labs LLC. Licensed under AGPL-3.0.
 -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Exporter requests READ-only access to the Tier-0 domains. -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
@@ -12,6 +13,15 @@
     <uses-permission android:name="android.permission.READ_SMS" />
     <!-- App-inventory enumeration. Confirm GOS policy at runtime (VERIFY_FIRST). -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!--
+      Least-privilege: the sender NEVER escalates. These permissions reach app-send only by
+      transitive manifest merge (app-send → :providers → :privileged + the Shizuku provider lib);
+      strip them so the exporter APK declares neither secure-settings write nor the Shizuku API.
+      The actual Tier-1 grant + ShizukuProvider live only in portage-recv.
+    -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:node="remove" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" tools:node="remove" />
 
     <application
         android:allowBackup="false"

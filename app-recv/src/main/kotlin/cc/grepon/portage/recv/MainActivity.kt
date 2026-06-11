@@ -107,12 +107,14 @@ private class ReceiverViewModelFactory(
                     // and the gateway's isSelfDefault gate self-skips outside that window.
                     SmsApplyProvider(AndroidSmsStore(resolver), AndroidSmsRoleGateway(context)),
                     AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), onInstallActions),
-                    // Tier-0 SYSTEM keys write today; Tier-1 SECURE/GLOBAL keys self-skip until
-                    // the deferred WRITE_SECURE_SETTINGS bridge (ShizukuPrivilegedOps) lands.
+                    // Tier-0 SYSTEM keys write today. Tier-1 SECURE/GLOBAL keys go live once the
+                    // user authorizes Shizuku and the one-shot WRITE_SECURE_SETTINGS grant lands;
+                    // until then ShizukuPrivilegedOps reports the bridge unavailable and they
+                    // self-skip. (The in-app "unlock secure settings" affordance is a follow-up.)
                     SettingsApplyProvider(
                         AndroidSystemSettingsStore(context),
                         AndroidSecureGlobalSettingsStore(context),
-                        ShizukuPrivilegedOps(),
+                        ShizukuPrivilegedOps(context),
                     ),
                 ),
             )

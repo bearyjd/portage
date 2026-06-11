@@ -9,24 +9,61 @@
  */
 package cc.grepon.portage.privileged
 
+import android.content.Context
+import kotlinx.coroutines.withTimeoutOrNull
+
 /**
- * Shizuku-backed implementation of [PrivilegedOps].
+ * Shizuku-backed [PrivilegedOps] (ADR-001 grant architecture). The ONE method wired up is
+ * [ensureWriteSecureSettingsGranted]: it has the shell uid `pm grant` us WRITE_SECURE_SETTINGS
+ * exactly once, after which `Settings.Secure`/`Global` writes use the normal API with no live
+ * bridge. The grant persists across reboots and across the bridge dying (ADR-001 §1, V4/V5).
  *
- * SCAFFOLD STUB — implement only after ADR-001 verification (V1–V8) on a real GOS device
- * decides between the two architectures:
- *   - grant architecture (V4/V5 pass): [ensureWriteSecureSettingsGranted] does one
- *     `pm grant`, then settings writes leave this class entirely.
- *   - live-shell architecture (V4/V5 fail): route settings writes through [exec].
+ * The Shizuku PERMISSION (the user authorizing portage to use Shizuku at all) is a UI interaction
+ * and is NOT requested here — this method assumes it is already held and fails closed
+ * ([GrantOutcome.BRIDGE_UNAVAILABLE]) otherwise, so an apply with no grant simply self-skips its
+ * Tier-1 keys. The in-app "unlock secure settings" affordance that drives the permission request
+ * is a separate follow-up.
  *
- * All methods currently signal the bridge is not wired up rather than pretending to work.
+ * The remaining privileged ops (runtime-permission parity, installer, nav-mode, SMS role) stay
+ * deferred to their own least-privilege PRs and report the bridge as unavailable.
+ *
+ * Decision logic lives here and is unit-tested through [ShizukuGate]; all device-only Shizuku
+ * surface lives in [AndroidShizukuGate].
  */
-class ShizukuPrivilegedOps : PrivilegedOps {
+class ShizukuPrivilegedOps internal constructor(
+    private val selfPackage: String,
+    private val gate: ShizukuGate,
+) : PrivilegedOps {
 
-    override fun availability(): PrivilegedOps.Availability =
-        PrivilegedOps.Availability.NOT_INSTALLED // TODO: query Shizuku.pingBinder() + permission
+    constructor(context: Context) : this(context.packageName, AndroidShizukuGate(context))
 
-    override suspend fun ensureWriteSecureSettingsGranted(): PrivilegedOps.GrantOutcome =
-        PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE // TODO: exec(["pm","grant",SELF_PKG,WRITE_SECURE_SETTINGS])
+    override fun availability(): PrivilegedOps.Availability = when {
+        !gate.isBinderAlive() ->
+            if (gate.isInstalled()) PrivilegedOps.Availability.INSTALLED_NOT_RUNNING
+            else PrivilegedOps.Availability.NOT_INSTALLED
+        // Running but too old for portage to drive — the user's fix is "update", not "start".
+        gate.isPreV11() -> PrivilegedOps.Availability.OUTDATED
+        !gate.hasPermission() -> PrivilegedOps.Availability.PERMISSION_DENIED
+        else -> PrivilegedOps.Availability.LIVE
+    }
+
+    override suspend fun ensureWriteSecureSettingsGranted(): PrivilegedOps.GrantOutcome {
+        if (!gate.isBinderAlive() || gate.isPreV11() || !gate.hasPermission()) {
+            return PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE
+        }
+        // Fixed argv — never a shell string. `selfPackage` is our own package, not wire input.
+        // Bound the wait: a bind that is accepted but never connects (a real risk on GOS, where
+        // the binder can die between the liveness check and the bind) must fail closed, not hang
+        // the apply. Timing out cancels runAsShell, whose invokeOnCancellation unbinds.
+        val exitCode = withTimeoutOrNull(GRANT_TIMEOUT_MS) {
+            gate.runAsShell(listOf("pm", "grant", selfPackage, WRITE_SECURE_SETTINGS))
+        }
+        return when (exitCode) {
+            0 -> PrivilegedOps.GrantOutcome.GRANTED
+            null -> PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE // timeout or bind/exec failure
+            else -> PrivilegedOps.GrantOutcome.GRANT_REJECTED // ran, but the grant did not take
+        }
+    }
 
     override suspend fun grantRuntimePermission(packageName: String, permission: String): PrivilegedOps.OpResult =
         PrivilegedOps.OpResult.BridgeUnavailable
@@ -43,19 +80,11 @@ class ShizukuPrivilegedOps : PrivilegedOps {
     override suspend fun setSmsRoleHolder(packageName: String): PrivilegedOps.OpResult =
         PrivilegedOps.OpResult.BridgeUnavailable
 
-    /**
-     * Private live-shell escape hatch (ADR-001 §4). The typed methods above route through
-     * this; it is deliberately NOT on the public [PrivilegedOps] boundary. Every use is
-     * internal to the bridge and security-reviewed.
-     */
-    @Suppress("unused") // wired up when the typed ops are implemented
-    private suspend fun exec(command: List<String>): ShellResult =
-        ShellResult(exitCode = -1, stdout = "", stderr = "Shizuku bridge not implemented")
-
-    @Suppress("unused")
-    private data class ShellResult(val exitCode: Int, val stdout: String, val stderr: String)
-
     private companion object {
         const val WRITE_SECURE_SETTINGS = "android.permission.WRITE_SECURE_SETTINGS"
+
+        // Mirrors the transport handshake timeout — a one-shot `pm grant` is sub-second when the
+        // bridge is healthy; anything slower is a stuck bind we'd rather fail closed on.
+        const val GRANT_TIMEOUT_MS = 10_000L
     }
 }
