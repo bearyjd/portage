@@ -14,8 +14,6 @@ import android.content.Context
 import android.content.Intent
 import cc.grepon.portage.providers.sms.AndroidSmsRoleGateway
 import cc.grepon.portage.providers.sms.SmsRoleGateway
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
@@ -38,14 +36,13 @@ class AndroidSmsRoleCoordinator(
     context: Context,
     private val gateway: SmsRoleGateway = AndroidSmsRoleGateway(context),
     private val ledger: SmsRoleLedger = SmsRoleLedger(File(context.filesDir, LEDGER_FILE)),
+    private val grant: InteractiveGrant = InteractiveGrant(ROLE_DIALOG_TIMEOUT_MS),
 ) : SmsRoleCoordinator {
 
     private val roleManager: RoleManager? = context.getSystemService(RoleManager::class.java)
 
     /** Set by the host Activity: launches the role-request intent. */
     var requestLauncher: ((Intent) -> Unit)? = null
-
-    private var pending: CompletableDeferred<Boolean>? = null
 
     // Snapshotted once on priorDefaultPackage() so acquire/arm reuse a single read (no TOCTOU).
     private var priorSnapshot: String? = null
@@ -61,24 +58,14 @@ class AndroidSmsRoleCoordinator(
         }
         val launch = requestLauncher ?: return false
         val intent = runCatching { rm.createRequestRoleIntent(RoleManager.ROLE_SMS) }.getOrNull() ?: return false
-        val deferred = CompletableDeferred<Boolean>()
-        pending = deferred
-        launch(intent)
-        val granted = try {
-            withTimeoutOrNull(ROLE_DIALOG_TIMEOUT_MS) { deferred.await() } ?: false
-        } finally {
-            // Drop the slot only if it's still ours, so a late result can't complete a newer await.
-            if (pending === deferred) pending = null
-        }
+        // InteractiveGrant bounds the await: a never-answered dialog returns false, never hangs.
+        val granted = grant.await { launch(intent) }
         if (granted) ledger.arm(priorSnapshot)
         return granted
     }
 
     /** Called by the host Activity with the role-request ActivityResult outcome. */
-    fun onRoleResult(granted: Boolean) {
-        pending?.complete(granted)
-        pending = null
-    }
+    fun onRoleResult(granted: Boolean) = grant.complete(granted)
 
     override suspend fun relinquishTo(priorPackage: String?) {
         gateway.launchRestore(priorPackage)

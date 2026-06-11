@@ -49,25 +49,39 @@ import cc.grepon.portage.recv.ui.theme.PortageTheme
 @Composable
 fun ReceiverApp(viewModel: ReceiverViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val smsRoleStrand by viewModel.smsRoleStrand.collectAsStateWithLifecycle()
 
     PortageTheme {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             topBar = { SwissMasthead() },
         ) { padding ->
-            AnimatedContent(
-                targetState = state,
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding),
-                transitionSpec = {
-                    (fadeIn(animationSpec = tween(260)) togetherWith
-                        fadeOut(animationSpec = tween(180)))
-                },
-                contentKey = { it.key() },
-                label = "receiverState",
-            ) { current ->
-                StateBody(current = current, viewModel = viewModel)
+            ) {
+                // Persistent safety net, above every screen EXCEPT the legitimate role window
+                // (Transferring): portage must never be left the default texting app outside a
+                // transfer (DEVILS_ADVOCATE.md Q4 §3). Scoping to one screen would let a stranded
+                // user who navigates away lose the only way back.
+                if (smsRoleStrand != null && state !is ReceiverState.Transferring) {
+                    SmsRoleRestoreBanner(onRestore = viewModel::restoreSmsRole)
+                }
+                AnimatedContent(
+                    targetState = state,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    transitionSpec = {
+                        (fadeIn(animationSpec = tween(260)) togetherWith
+                            fadeOut(animationSpec = tween(180)))
+                    },
+                    contentKey = { it.key() },
+                    label = "receiverState",
+                ) { current ->
+                    StateBody(current = current, viewModel = viewModel)
+                }
             }
         }
     }
@@ -81,15 +95,8 @@ private fun StateBody(
 ) {
     val context = LocalContext.current
     when (current) {
-        is ReceiverState.Idle -> {
-            val strand by viewModel.smsRoleStrand.collectAsStateWithLifecycle()
-            Column(modifier = Modifier.fillMaxSize()) {
-                if (strand != null) {
-                    SmsRoleRestoreBanner(onRestore = viewModel::restoreSmsRole)
-                }
-                IdleScreen(onScan = viewModel::startScanning, modifier = Modifier.weight(1f))
-            }
-        }
+        is ReceiverState.Idle ->
+            IdleScreen(onScan = viewModel::startScanning, modifier = Modifier.fillMaxSize())
 
         is ReceiverState.Scanning ->
             ScanScreen(onScanned = viewModel::onQrScanned, modifier = Modifier.fillMaxSize())
