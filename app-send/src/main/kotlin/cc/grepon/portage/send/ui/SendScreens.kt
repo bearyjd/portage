@@ -231,7 +231,7 @@ fun SendDoneScreen(
         HairlineDivider()
         Spacer(Modifier.height(s.lg))
         Text(
-            text = "App data? Move it with Seedvault.",
+            text = "App data isn't carried — back it up separately.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onBackground,
         )

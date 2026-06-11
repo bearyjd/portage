@@ -158,8 +158,8 @@ private fun DeterminateRule(fraction: Float) {
 }
 
 /**
- * Done summary. The moved count dominates; a single line points to Seedvault for app data
- * (the deliberate division of labor), then the exit.
+ * Done summary. The moved count dominates; a single line notes that app data isn't carried
+ * (the deliberate division of labor — that's a system backup's job), then the exit.
  */
 @Composable
 fun DoneScreen(
@@ -206,7 +206,7 @@ fun DoneScreen(
         HairlineDivider()
         Spacer(Modifier.height(s.lg))
         Text(
-            text = "App data? Restore it with Seedvault.",
+            text = "App data isn't carried — restore it from a system backup.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onBackground,
         )

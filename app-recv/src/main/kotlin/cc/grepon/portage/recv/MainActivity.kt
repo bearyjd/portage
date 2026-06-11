@@ -37,7 +37,7 @@ import java.io.File
 /**
  * Importer entry point. Real flow (portage-prp-prompt.md §7): scan QR → handshake → receive
  * manifest → single grouped checklist (SAFE pre-checked) → "Bring it over" → progress → done
- * summary (moved / use Seedvault for app data). [ReceiverApp] owns the whole Compose tree;
+ * summary (moved / app data isn't carried). [ReceiverApp] owns the whole Compose tree;
  * this Activity hosts it and assembles the Tier-0 apply registry over the Android stores.
  *
  * Tier 1 is an optional "Unlock advanced settings transfer (Shizuku)" step; everything in
