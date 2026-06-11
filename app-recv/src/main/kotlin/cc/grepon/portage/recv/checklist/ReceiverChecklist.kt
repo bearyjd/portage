@@ -61,6 +61,10 @@ object ReceiverChecklist {
     fun selectedIds(groups: List<ChecklistGroup>): Set<Int> =
         groups.flatMap { it.items }.filter { it.checked }.map { it.meta.itemId }.toSet()
 
+    /** The checked items' metadata in display order — what the transfer screen tracks. */
+    fun selectedMetas(groups: List<ChecklistGroup>): List<ItemMeta> =
+        groups.flatMap { it.items }.filter { it.checked }.map { it.meta }
+
     /** Whether anything is selected (gates the "Bring it over" action). */
     fun hasSelection(groups: List<ChecklistGroup>): Boolean =
         groups.any { group -> group.items.any { it.checked } }

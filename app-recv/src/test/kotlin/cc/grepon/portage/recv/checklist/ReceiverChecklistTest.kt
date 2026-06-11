@@ -64,6 +64,13 @@ class ReceiverChecklistTest {
     }
 
     @Test
+    fun `selectedMetas returns checked items in display order`() {
+        val groups = ReceiverChecklist.build(manifest)
+        assertThat(ReceiverChecklist.selectedMetas(groups).map { it.itemId })
+            .containsExactly(1, 2).inOrder()
+    }
+
+    @Test
     fun `hasSelection is false only when nothing is checked`() {
         val none = ReceiverChecklist.build(manifest)
             .map { g -> g.copy(items = g.items.map { it.copy(checked = false) }) }
