@@ -9,45 +9,103 @@
  */
 package cc.grepon.portage.send
 
+import android.content.Context
+import android.os.BatteryManager
+import android.os.Build
 import android.os.Bundle
+import android.os.StatFs
+import android.provider.Settings
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.activity.viewModels
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import cc.grepon.portage.providers.calendar.AndroidCalendarStore
+import cc.grepon.portage.providers.calendar.CalendarExportProvider
+import cc.grepon.portage.providers.calllog.AndroidCallLogStore
+import cc.grepon.portage.providers.calllog.CallLogExportProvider
+import cc.grepon.portage.providers.contacts.AndroidContactsStore
+import cc.grepon.portage.providers.contacts.ContactsExportProvider
+import cc.grepon.portage.providers.inventory.AndroidInventorySource
+import cc.grepon.portage.providers.inventory.AppInventoryExportProvider
+import cc.grepon.portage.providers.settings.AndroidSystemSettingsStore
+import cc.grepon.portage.providers.settings.SettingsExportProvider
+import cc.grepon.portage.providers.sms.AndroidSmsStore
+import cc.grepon.portage.providers.sms.SmsExportProvider
+import cc.grepon.portage.send.ui.DeviceSummary
+import cc.grepon.portage.send.ui.SenderApp
+import cc.grepon.portage.send.ui.formatBytes
+import java.io.File
 
 /**
- * SCAFFOLD entry point. Real flow (portage-prp-prompt.md §7): "Transfer to new phone" →
- * generate [cc.grepon.portage.model.PairingPayload] → show QR (FLAG_SECURE) → accept one
- * receiver → advertise manifest → stream selected items.
+ * Exporter entry point (portage-prp-prompt.md §7): "Transfer to new phone" → permissions →
+ * pack → QR (trust anchor) → accept one receiver → stream picks → done summary.
  *
- * Per the build order, UI is built AFTER the privilege model is verified (ADR-001).
+ * FLAG_SECURE is held for the WHOLE session, not just the QR screen: the QR carries the
+ * one-time PSK and every other screen shows personal-data summaries — none of it belongs
+ * in screenshots, the recents thumbnail, or a cast display (PROTOCOL.md §1).
  */
 class MainActivity : ComponentActivity() {
+
+    private val viewModel: SenderViewModel by viewModels {
+        SenderViewModelFactory(applicationContext)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { SendScreenPlaceholder() } }
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE,
+        )
+        // Sweep staging orphaned by a mid-transfer process death — staged exports are
+        // plaintext PII and must never outlive a single session (security review 2026-06-11).
+        File(cacheDir, STAGING_DIR).deleteRecursively()
+        val summary = deviceSummary()
+        setContent {
+            SenderApp(viewModel = viewModel, summary = summary)
+        }
+    }
+
+    private fun deviceSummary(): DeviceSummary {
+        val battery = getSystemService(BatteryManager::class.java)
+            ?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+        val freeBytes = runCatching { StatFs(filesDir.absolutePath).availableBytes }.getOrDefault(0L)
+        return DeviceSummary(
+            deviceName = deviceName(this),
+            batteryPercent = battery,
+            freeStorage = formatBytes(freeBytes),
+        )
     }
 }
 
-@Composable
-private fun SendScreenPlaceholder() {
-    Scaffold { padding ->
-        Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text("portage · send", style = MaterialTheme.typography.headlineMedium)
-            Text("Exporter scaffold — pairing + transfer UI lands after ADR-001 verification.")
-        }
+/** The user-visible device name; falls back to the model when unset. */
+private fun deviceName(context: Context): String =
+    runCatching { Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME) }
+        .getOrNull()
+        ?.takeIf { it.isNotBlank() }
+        ?: Build.MODEL
+
+/** Builds the ViewModel with the compiled Tier-0 export set (one provider per kind). */
+private class SenderViewModelFactory(private val context: Context) : ViewModelProvider.Factory {
+
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        val resolver = context.contentResolver
+        val providers = listOf(
+            ContactsExportProvider(AndroidContactsStore(resolver)),
+            CalendarExportProvider(AndroidCalendarStore(resolver)),
+            CallLogExportProvider(AndroidCallLogStore(resolver)),
+            SmsExportProvider(AndroidSmsStore(resolver)),
+            AppInventoryExportProvider(AndroidInventorySource(context.packageManager)),
+            SettingsExportProvider(AndroidSystemSettingsStore(context)),
+        )
+        @Suppress("UNCHECKED_CAST")
+        return SenderViewModel(
+            providers = providers,
+            stagingDir = File(context.cacheDir, STAGING_DIR),
+            senderName = deviceName(context),
+        ) as T
     }
 }
+
+private const val STAGING_DIR = "portage-staging"
