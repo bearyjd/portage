@@ -9,6 +9,7 @@
  */
 package cc.grepon.portage.recv
 
+import cc.grepon.portage.model.ItemKind
 import cc.grepon.portage.recv.checklist.ChecklistGroup
 
 /** Where one selected item is in its receive→apply lifecycle. */
@@ -33,14 +34,18 @@ sealed interface ReceiverState {
     /** QR decoded; running the Noise handshake + receiving the manifest. */
     data object Pairing : ReceiverState
 
-    /** The checklist: grouped items with sane defaults, awaiting "Bring it over". */
-    data class Reviewing(val senderName: String, val groups: List<ChecklistGroup>) : ReceiverState
+    /**
+     * The checklist: grouped items with sane defaults, awaiting "Bring it over".
+     * [absentKinds] are shown disabled — "not on the old phone" — never hidden.
+     */
+    data class Reviewing(
+        val senderName: String,
+        val groups: List<ChecklistGroup>,
+        val absentKinds: List<ItemKind> = emptyList(),
+    ) : ReceiverState
 
     /** Streaming + applying selected items, tracked per item. */
-    data class Transferring(val items: List<ItemProgress>) : ReceiverState {
-        val total: Int get() = items.size
-        val completed: Int get() = items.count { it.phase == ItemPhase.DONE || it.phase == ItemPhase.FAILED }
-    }
+    data class Transferring(val items: List<ItemProgress>) : ReceiverState
 
     /** Done summary: what moved, what to do next. */
     data class Done(val moved: Int, val skipped: Int) : ReceiverState

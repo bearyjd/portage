@@ -32,6 +32,7 @@ import cc.grepon.portage.providers.sms.AndroidSmsRoleGateway
 import cc.grepon.portage.providers.sms.AndroidSmsStore
 import cc.grepon.portage.providers.sms.SmsApplyProvider
 import cc.grepon.portage.recv.ui.ReceiverApp
+import java.io.File
 
 /**
  * Importer entry point. Real flow (portage-prp-prompt.md §7): scan QR → handshake → receive
@@ -50,11 +51,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Sweep staging orphaned by a mid-transfer process death — staged payloads are
+        // plaintext PII and must never outlive a single session.
+        File(cacheDir, STAGING_DIR).deleteRecursively()
         setContent {
             ReceiverApp(viewModel = viewModel)
         }
     }
 }
+
+private const val STAGING_DIR = "portage-staging"
 
 /** Builds the ViewModel with the compiled Tier-0 apply registry (one provider per kind). */
 private class ReceiverViewModelFactory(private val context: Context) : ViewModelProvider.Factory {
@@ -79,6 +85,9 @@ private class ReceiverViewModelFactory(private val context: Context) : ViewModel
             )
         }
         @Suppress("UNCHECKED_CAST")
-        return ReceiverViewModel(applyRegistryFactory = registryFactory) as T
+        return ReceiverViewModel(
+            stagingDir = File(context.cacheDir, STAGING_DIR),
+            applyRegistryFactory = registryFactory,
+        ) as T
     }
 }

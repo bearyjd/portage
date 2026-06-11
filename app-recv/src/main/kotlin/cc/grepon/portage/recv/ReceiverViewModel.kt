@@ -18,22 +18,25 @@ import cc.grepon.portage.providers.ApplyOutcome
 import cc.grepon.portage.providers.ApplyProviderRegistry
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.recv.checklist.ReceiverChecklist
+import cc.grepon.portage.recv.transfer.ItemStreamReceiver
 import cc.grepon.portage.transport.NoiseSecureChannelFactory
 import cc.grepon.portage.transport.PairingCodec
 import cc.grepon.portage.transport.PairingCodecImpl
 import cc.grepon.portage.transport.SecureChannel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.io.File
 import java.io.InputStream
 
 /**
  * Drives the receiver flow: scan → pair (real [SecureChannel.Factory.connectAsReceiver]) →
- * receive manifest → checklist → confirm → per-item apply via [ApplyProviderRegistry].
- * The item byte-stream (ITEM_BEGIN/DATA/END staging + sha256 verify) plugs into
- * [applyStaged]; until the live loop lands, [onConfirm] stops at SELECT.
+ * receive manifest → checklist → confirm → live item stream ([ItemStreamReceiver]: stage,
+ * verify sha256, ack) → per-item apply via [ApplyProviderRegistry] → real done counts from
+ * the final results. A dropped connection mid-transfer fails visibly, never hangs.
  */
 class ReceiverViewModel(
     private val pairingCodec: PairingCodec = PairingCodecImpl(),
@@ -41,6 +44,9 @@ class ReceiverViewModel(
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
     private val appVersion: String = "0.1.0",
     private val osFingerprint: String = android.os.Build.FINGERPRINT,
+    // Deliberately NO default: staged payloads are plaintext PII, so the staging location
+    // must be wired explicitly (production: app-private cacheDir via the factory).
+    private val stagingDir: File,
     applyRegistryFactory: ((List<InstallAction>) -> Unit) -> ApplyProviderRegistry =
         { ApplyProviderRegistry(emptyList()) },
 ) : ViewModel() {
@@ -80,6 +86,7 @@ class ReceiverViewModel(
                         _state.value = ReceiverState.Reviewing(
                             senderName = msg.manifest.senderName,
                             groups = ReceiverChecklist.build(msg.manifest),
+                            absentKinds = ReceiverChecklist.absentKinds(msg.manifest),
                         )
                     else -> fail("Sender did not send a manifest")
                 }
@@ -107,17 +114,44 @@ class ReceiverViewModel(
             try {
                 val ch = channel ?: error("no channel")
                 ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
-                // TODO(Gap 3): drive ITEM_BEGIN/DATA/END → stage → verify sha256 →
-                // applyStaged(meta, stream) per item → BATCH_END/BATCH_ACK. Until then
-                // moved/skipped are PLACEHOLDERS counting requested items, not applied.
-                _state.value = ReceiverState.Done(moved = selected.size, skipped = 0)
+                val results = ItemStreamReceiver(stagingDir).run(
+                    channel = ch,
+                    expected = selected.associateBy { it.itemId },
+                    apply = ::applyStaged,
+                    onEvent = ::onReceiveEvent,
+                )
+                ensureActive() // a reset() mid-run must not be overwritten by Done
+                val moved = results.count { it.status == ItemStatus.OK }
+                _state.value = ReceiverState.Done(moved = moved, skipped = results.size - moved)
                 channel?.close()
                 channel = null
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
+                // reset() cancels and closes the channel underneath this coroutine; the
+                // resulting IO error must not flip the user's Home back to Failed.
+                ensureActive()
                 fail(t.message ?: "Transfer failed")
             }
+        }
+    }
+
+    /** Map stream events onto the per-item progress rows. */
+    private fun onReceiveEvent(event: ItemStreamReceiver.Event) {
+        when (event) {
+            is ItemStreamReceiver.Event.ItemStarted ->
+                updateItem(event.itemId) { it.copy(phase = ItemPhase.RECEIVING) }
+
+            is ItemStreamReceiver.Event.ItemProgressed -> Unit // byte ticks not surfaced per-row in v1
+
+            is ItemStreamReceiver.Event.ItemApplying -> Unit // applyStaged flips APPLYING itself
+
+            is ItemStreamReceiver.Event.ItemFinished ->
+                updateItem(event.result.itemId) {
+                    val phase =
+                        if (event.result.status == ItemStatus.OK) ItemPhase.DONE else ItemPhase.FAILED
+                    it.copy(phase = phase, detail = event.result.detail ?: it.detail)
+                }
         }
     }
 

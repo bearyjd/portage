@@ -9,35 +9,32 @@
  */
 package cc.grepon.portage.recv.ui
 
-import android.annotation.SuppressLint
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ExperimentalGetImage
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
-import com.google.mlkit.vision.barcode.BarcodeScanner
-import com.google.mlkit.vision.barcode.BarcodeScannerOptions
-import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.common.InputImage
-import java.util.concurrent.Executors
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.ResultPoint
+import com.journeyapps.barcodescanner.BarcodeCallback
+import com.journeyapps.barcodescanner.BarcodeResult
+import com.journeyapps.barcodescanner.BarcodeView
+import com.journeyapps.barcodescanner.DefaultDecoderFactory
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Live QR viewfinder. CameraX [PreviewView] hosted via [AndroidView] with an [ImageAnalysis]
- * stage feeding ML Kit's barcode scanner (QR-only). The first decoded `rawValue` fires
- * [onResult] exactly once — a [AtomicBoolean] latch debounces the repeats ML Kit emits while
- * the same code stays in frame. Bound to the composition's [LocalLifecycleOwner]; the analysis
- * executor and scanner are released on dispose so nothing leaks the camera.
+ * Live QR viewfinder on zxing-android-embedded's [BarcodeView] (QR-only decoder, no GMS,
+ * no ML Kit). The raw view is used — no built-in laser/status chrome — because the Swiss
+ * reticle is drawn by the caller. The first decoded value fires [onResult] exactly once
+ * (an [AtomicBoolean] latch debounces continuous re-decodes of the same code), and the
+ * camera follows the composition's lifecycle: resume on ON_RESUME, pause on ON_PAUSE and
+ * on dispose, so nothing leaks the camera.
  */
 @Composable
 fun QrScanner(
@@ -46,88 +43,40 @@ fun QrScanner(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-
-    // Single-thread analysis executor + a one-shot latch, stable across recompositions.
-    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     val delivered = remember { AtomicBoolean(false) }
-    val scanner: BarcodeScanner = remember {
-        BarcodeScanning.getClient(
-            BarcodeScannerOptions.Builder()
-                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-                .build(),
-        )
-    }
-    val previewView = remember {
-        PreviewView(context).apply {
-            scaleType = PreviewView.ScaleType.FILL_CENTER
+    val currentOnResult by rememberUpdatedState(onResult)
+
+    val barcodeView = remember {
+        BarcodeView(context).apply {
+            decoderFactory = DefaultDecoderFactory(listOf(BarcodeFormat.QR_CODE))
+            decodeContinuous(object : BarcodeCallback {
+                override fun barcodeResult(result: BarcodeResult) {
+                    val text = result.text
+                    if (!text.isNullOrBlank() && delivered.compareAndSet(false, true)) {
+                        currentOnResult(text)
+                    }
+                }
+
+                override fun possibleResultPoints(resultPoints: List<ResultPoint>) = Unit
+            })
         }
     }
 
     DisposableEffect(lifecycleOwner) {
-        val providerFuture = ProcessCameraProvider.getInstance(context)
-        var cameraProvider: ProcessCameraProvider? = null
-
-        providerFuture.addListener({
-            val provider = providerFuture.get().also { cameraProvider = it }
-
-            val preview = Preview.Builder().build().apply {
-                surfaceProvider = previewView.surfaceProvider
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> barcodeView.resume()
+                Lifecycle.Event.ON_PAUSE -> barcodeView.pause()
+                else -> Unit
             }
-
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-                .apply {
-                    setAnalyzer(analysisExecutor) { imageProxy ->
-                        processFrame(scanner, imageProxy, delivered, onResult)
-                    }
-                }
-
-            runCatching {
-                provider.unbindAll()
-                provider.bindToLifecycle(
-                    lifecycleOwner,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
-                    preview,
-                    analysis,
-                )
-            }
-        }, ContextCompat.getMainExecutor(context))
-
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        barcodeView.resume()
         onDispose {
-            cameraProvider?.unbindAll()
-            analysisExecutor.shutdown()
-            scanner.close()
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            barcodeView.pause()
         }
     }
 
-    AndroidView(factory = { previewView }, modifier = modifier)
-}
-
-/**
- * Run one analysis frame through ML Kit. Always closes the [imageProxy] when done (failing to
- * close stalls the pipeline). Fires [onResult] only on the first non-blank QR value.
- */
-@SuppressLint("UnsafeOptInUsageError")
-@OptIn(ExperimentalGetImage::class)
-private fun processFrame(
-    scanner: BarcodeScanner,
-    imageProxy: androidx.camera.core.ImageProxy,
-    delivered: AtomicBoolean,
-    onResult: (String) -> Unit,
-) {
-    val mediaImage = imageProxy.image
-    if (mediaImage == null) {
-        imageProxy.close()
-        return
-    }
-    val input = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-    scanner.process(input)
-        .addOnSuccessListener { barcodes ->
-            val value = barcodes.firstOrNull()?.rawValue
-            if (!value.isNullOrBlank() && delivered.compareAndSet(false, true)) {
-                onResult(value)
-            }
-        }
-        .addOnCompleteListener { imageProxy.close() }
+    AndroidView(factory = { barcodeView }, modifier = modifier)
 }

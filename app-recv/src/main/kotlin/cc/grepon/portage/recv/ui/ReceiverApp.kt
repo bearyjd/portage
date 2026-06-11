@@ -86,6 +86,7 @@ private fun StateBody(
                 onToggle = viewModel::onToggle,
                 onConfirm = viewModel::onConfirm,
                 modifier = Modifier.fillMaxSize(),
+                absentKinds = current.absentKinds,
             )
 
         is ReceiverState.Transferring ->

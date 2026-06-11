@@ -68,4 +68,25 @@ object ReceiverChecklist {
     /** Whether anything is selected (gates the "Bring it over" action). */
     fun hasSelection(groups: List<ChecklistGroup>): Boolean =
         groups.any { group -> group.items.any { it.checked } }
+
+    /**
+     * Every kind a sender normally offers: the five Tier-0 domains plus SETTINGS, whose
+     * wire kind is tagged TIER1 but whose SAFE Settings.System cut ships at Tier 0
+     * (the allowlist, not the tag, is the boundary). APK — true Tier-1 batch install —
+     * is excluded. Display-only: this list never feeds SELECT or the apply path.
+     */
+    private val EXPECTED_KINDS = listOf(
+        ItemKind.CONTACTS_VCF, ItemKind.CALENDAR_ICS, ItemKind.CALL_LOG,
+        ItemKind.SMS, ItemKind.APP_INVENTORY, ItemKind.SETTINGS,
+    )
+
+    /**
+     * Kinds the sender did NOT advertise. The checklist shows these as disabled rows —
+     * "not on the old phone" — rather than silently omitting them (devils-advocate:
+     * unavailable items become grayed, not missing).
+     */
+    fun absentKinds(manifest: TransferManifest): List<ItemKind> {
+        val present = manifest.items.map { it.kind }.toSet()
+        return EXPECTED_KINDS.filter { it !in present }
+    }
 }
