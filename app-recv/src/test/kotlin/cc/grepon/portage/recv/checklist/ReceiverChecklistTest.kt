@@ -39,7 +39,7 @@ class ReceiverChecklistTest {
     }
 
     @Test
-    fun `SMS is not pre-checked; everything else is`() {
+    fun `SMS is not pre-checked but everything else is`() {
         val groups = ReceiverChecklist.build(manifest)
         val byKind = groups.flatMap { it.items }.associateBy { it.meta.kind }
         assertThat(byKind.getValue(ItemKind.SMS).checked).isFalse()
