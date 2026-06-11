@@ -29,6 +29,7 @@ import cc.grepon.portage.providers.contacts.AndroidContactsStore
 import cc.grepon.portage.providers.contacts.ContactsExportProvider
 import cc.grepon.portage.providers.inventory.AndroidInventorySource
 import cc.grepon.portage.providers.inventory.AppInventoryExportProvider
+import cc.grepon.portage.providers.settings.AndroidSecureGlobalSettingsStore
 import cc.grepon.portage.providers.settings.AndroidSystemSettingsStore
 import cc.grepon.portage.providers.settings.SettingsExportProvider
 import cc.grepon.portage.providers.sms.AndroidSmsStore
@@ -97,7 +98,11 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
             CallLogExportProvider(AndroidCallLogStore(resolver)),
             SmsExportProvider(AndroidSmsStore(resolver)),
             AppInventoryExportProvider(AndroidInventorySource(context.packageManager)),
-            SettingsExportProvider(AndroidSystemSettingsStore(context)),
+            // Reads SAFE keys across both namespaces (reads need no grant on either seam).
+            SettingsExportProvider(
+                AndroidSystemSettingsStore(context),
+                AndroidSecureGlobalSettingsStore(context),
+            ),
         )
         @Suppress("UNCHECKED_CAST")
         return SenderViewModel(
