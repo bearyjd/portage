@@ -122,6 +122,29 @@ class ItemStreamReceiverTest {
     }
 
     @Test
+    fun `the receiver's own byte cap refuses an item even when manifest and wire agree`() = runTest {
+        // PROTOCOL.md §5: receiver-enforced max item size REGARDLESS of manifest claims.
+        val bigMeta = ItemMeta(1, ItemKind.CONTACTS_VCF, 100, "a".repeat(64), "Contacts", "People")
+        val frames = listOf(
+            ProtocolMessage.ItemBegin(1, bigMeta.kind, bigMeta.size, 8), // wire agrees: 100 bytes
+            ProtocolMessage.ItemData(1, 0, ByteArray(100)),
+            ProtocolMessage.ItemEnd(1, bigMeta.sha256),
+            ProtocolMessage.BatchEnd(listOf(1), "done"),
+        )
+        val channel = ScriptedChannel(*frames.toTypedArray())
+        var applyCalled = false
+
+        val results = ItemStreamReceiver(tmp.newFolder(), maxItemBytes = 4)
+            .run(channel, mapOf(1 to bigMeta), { _, _ ->
+                applyCalled = true
+                ApplyOutcome(ItemStatus.OK)
+            }) { }
+
+        assertThat(applyCalled).isFalse()
+        assertThat(results.single().status).isEqualTo(ItemStatus.OVERSIZE)
+    }
+
+    @Test
     fun `an item whose size disagrees with the manifest is refused as OVERSIZE`() = runTest {
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, meta.kind, meta.size + 999, 8), // liar
@@ -244,6 +267,25 @@ class ItemStreamReceiverTest {
         ) { }
 
         assertThat(staging.listFiles().orEmpty()).isEmpty()
+    }
+
+    @Test
+    fun `a sender spraying endless unrequested items hits the item-count cap`() = runTest {
+        // PROTOCOL.md §5: the receiver enforces a max item count regardless of manifest
+        // claims. Stream far more ITEM_BEGINs than were selected and never send BATCH_END.
+        val frames = mutableListOf<ProtocolMessage>()
+        repeat(50) { n ->
+            frames += ProtocolMessage.ItemBegin(1000 + n, ItemKind.SETTINGS, 1, 8)
+            frames += ProtocolMessage.ItemEnd(1000 + n, "0".repeat(64))
+        }
+        val channel = ScriptedChannel(*frames.toTypedArray())
+
+        val thrown = runCatching {
+            receiver().run(channel, mapOf(1 to meta), { _, _ -> ApplyOutcome(ItemStatus.OK) }) { }
+        }.exceptionOrNull()
+
+        assertThat(thrown).isInstanceOf(TransportException::class.java)
+        assertThat(thrown?.message).contains("item-count")
     }
 
     @Test

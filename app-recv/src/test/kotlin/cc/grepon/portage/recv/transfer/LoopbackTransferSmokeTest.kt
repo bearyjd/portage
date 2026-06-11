@@ -149,7 +149,9 @@ class LoopbackTransferSmokeTest {
             channel.send(ProtocolMessage.ItemData(meta.itemId, seq++, piece.toByteArray()))
         }
         channel.send(ProtocolMessage.ItemEnd(meta.itemId, meta.sha256))
-        check(channel.receive() is ProtocolMessage.ItemAck) { "expected ITEM_ACK" }
+        // The receipt ack over the REAL wire must be OK — apply verdicts ride BATCH_ACK.
+        val receipt = channel.receive() as ProtocolMessage.ItemAck
+        check(receipt.result.status == ItemStatus.OK) { "receipt ack was ${receipt.result.status}" }
 
         channel.send(ProtocolMessage.BatchEnd(sent = listOf(1), summary = "sent 1"))
         return (channel.receive() as ProtocolMessage.BatchAck).results

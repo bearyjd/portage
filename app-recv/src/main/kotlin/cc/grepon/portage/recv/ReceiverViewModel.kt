@@ -44,7 +44,9 @@ class ReceiverViewModel(
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
     private val appVersion: String = "0.1.0",
     private val osFingerprint: String = android.os.Build.FINGERPRINT,
-    private val stagingDir: File = File(System.getProperty("java.io.tmpdir"), "portage-recv-staging"),
+    // Deliberately NO default: staged payloads are plaintext PII, so the staging location
+    // must be wired explicitly (production: app-private cacheDir via the factory).
+    private val stagingDir: File,
     applyRegistryFactory: ((List<InstallAction>) -> Unit) -> ApplyProviderRegistry =
         { ApplyProviderRegistry(emptyList()) },
 ) : ViewModel() {

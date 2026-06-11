@@ -56,12 +56,20 @@ class ItemStreamReceiver(
     ): List<ItemResult> {
         stagingDir.mkdirs()
         val results = linkedMapOf<Int, ItemResult>()
+        // PROTOCOL.md §5: the receiver enforces a max item count regardless of manifest
+        // claims — the selected set is known, so anything much past it is abuse, and this
+        // closes the one otherwise-unbounded loop (security review 2026-06-11, MEDIUM).
+        val maxItems = expected.size + UNREQUESTED_ITEM_SLACK
+        var begun = 0
         try {
             stream@ while (true) {
                 val message = receiveSkippingPing(channel)
                     ?: throw TransportException("connection lost mid-transfer")
                 when (message) {
                     is ProtocolMessage.ItemBegin -> {
+                        if (++begun > maxItems) {
+                            throw TransportException("sender exceeded the item-count cap")
+                        }
                         val result = receiveOneItem(channel, message, expected[message.itemId], apply, onEvent)
                         results[message.itemId] = result
                         onEvent(Event.ItemFinished(result))
@@ -132,7 +140,9 @@ class ItemStreamReceiver(
                             continue@chunks
                         }
                         received += message.bytes.size
-                        if (meta != null && received > meta.size) {
+                        // Bound on-disk bytes by BOTH the manifest and the receiver's own
+                        // cap, so staging stays bounded even if one guard ever regresses.
+                        if ((meta != null && received > meta.size) || received > maxItemBytes) {
                             failure = ItemResult(begin.itemId, ItemStatus.OVERSIZE, "more bytes than advertised")
                             continue@chunks
                         }
@@ -185,12 +195,15 @@ class ItemStreamReceiver(
         received: Long,
     ): ItemResult? {
         if (meta == null) return ItemResult(itemId, ItemStatus.SKIPPED, "not requested")
+        // Plain equality is fine here: these are integrity hashes inside the mutually
+        // authenticated AEAD channel — no observer exists for a timing side channel.
         val computed = digest.digest().joinToString("") { "%02x".format(it) }
-        val verified = computed == endSha && computed == meta.sha256 && received == meta.size
-        return if (verified) {
-            null
-        } else {
-            ItemResult(itemId, ItemStatus.HASH_MISMATCH, "staged bytes do not match the advertised hash")
+        return when {
+            endSha == null ->
+                ItemResult(itemId, ItemStatus.HASH_MISMATCH, "ITEM_END item id mismatch")
+            computed == endSha && computed == meta.sha256 && received == meta.size -> null
+            else ->
+                ItemResult(itemId, ItemStatus.HASH_MISMATCH, "staged bytes do not match the advertised hash")
         }
     }
 
@@ -204,5 +217,8 @@ class ItemStreamReceiver(
     private companion object {
         /** Tier-0 items are text; anything past this is not a parity payload. */
         const val DEFAULT_MAX_ITEM_BYTES = 64L * 1024 * 1024
+
+        /** A few unrequested/duplicate items are tolerated (drained + reported), no more. */
+        const val UNREQUESTED_ITEM_SLACK = 8
     }
 }

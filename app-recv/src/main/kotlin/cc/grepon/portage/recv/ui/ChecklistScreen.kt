@@ -90,7 +90,9 @@ fun ChecklistScreen(
                 }
             }
             if (absentKinds.isNotEmpty()) {
-                item(key = "h:absent") { GroupHeader(title = "Not on the old phone") }
+                // Distinct key namespace — a manifest group literally titled "absent"
+                // must not collide with this structural header.
+                item(key = "hdr:absent-kinds") { GroupHeader(title = "Not on the old phone") }
                 items(absentKinds, key = { "absent:${it.wire}" }) { kind ->
                     AbsentRow(kind = kind)
                 }
