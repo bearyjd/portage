@@ -1,0 +1,30 @@
+# Dependabot — supply-chain hygiene for portage.
+# Pairs with repo-level Dependabot alerts + automated security fixes (enabled out-of-band):
+# alerts surface vulnerable transitive deps; the version-update jobs below keep the version
+# catalog and CI actions current. Asked for by the Gap-2 and Gap-3 security reviews.
+version: 2
+updates:
+  # Gradle: reads gradle/libs.versions.toml (the version catalog) + the build scripts.
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # One PR for the AndroidX/Compose churn instead of a dozen.
+      androidx:
+        patterns:
+          - "androidx.*"
+          - "com.google.android.*"
+    # noise-java is VENDORED (in-tree, not a Gradle dependency), so it is out of scope here;
+    # its update path is the manual verbatim-diff review tracked in ADR-002 §Follow-ups.
+
+  # Keep the GitHub Actions in .github/workflows pinned-current (the build pins @v4 etc.).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci(deps)"
