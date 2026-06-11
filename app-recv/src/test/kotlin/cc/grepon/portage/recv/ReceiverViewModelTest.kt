@@ -29,6 +29,7 @@ import cc.grepon.portage.providers.sms.SmsRecord
 import cc.grepon.portage.providers.sms.SmsRoleGateway
 import cc.grepon.portage.providers.sms.SmsStore
 import cc.grepon.portage.recv.sms.SmsRoleCoordinator
+import cc.grepon.portage.recv.sms.SmsRoleStrand
 import cc.grepon.portage.transport.PairingCodec
 import cc.grepon.portage.transport.SecureChannel
 import com.google.common.truth.Truth.assertThat
@@ -97,9 +98,11 @@ private class FakeApply(
 private class FakeSmsRoleCoordinator(
     private val acquireResult: Boolean,
     private val prior: String? = "com.example.messages",
+    private val strand: SmsRoleStrand? = null,
 ) : SmsRoleCoordinator {
     var acquireCalls = 0
     val relinquished = mutableListOf<String?>()
+    var roleRestoredCalls = 0
     override fun priorDefaultPackage(): String? = prior
     override suspend fun acquireRole(): Boolean {
         acquireCalls++
@@ -107,6 +110,10 @@ private class FakeSmsRoleCoordinator(
     }
     override suspend fun relinquishTo(priorPackage: String?) {
         relinquished += priorPackage
+    }
+    override fun currentStrand(): SmsRoleStrand? = strand
+    override fun onRoleRestored() {
+        roleRestoredCalls++
     }
 }
 
@@ -379,6 +386,32 @@ class ReceiverViewModelTest {
 
         assertThat(coordinator.relinquished).containsExactly("com.example.messages")
         assertThat(vm.state.value).isInstanceOf(ReceiverState.Failed::class.java)
+    }
+
+    @Test
+    fun `a leftover default-SMS strand at startup surfaces a restore affordance`() = runTest(dispatcher) {
+        // Process died (or the restore prompt was dismissed) with portage still the default SMS
+        // app: the persistent backstop must surface it for a one-tap in-app restore.
+        val coordinator = FakeSmsRoleCoordinator(
+            acquireResult = true,
+            strand = SmsRoleStrand("com.example.messages"),
+        )
+        val vm = smsViewModel(smsChannel(), coordinator, FakeApply(ItemKind.SMS))
+
+        assertThat(vm.smsRoleStrand.value).isEqualTo(SmsRoleStrand("com.example.messages"))
+
+        vm.restoreSmsRole()
+        advanceUntilIdle()
+        assertThat(coordinator.relinquished).containsExactly("com.example.messages")
+    }
+
+    @Test
+    fun `no strand at startup means no affordance and the persistent marker is cleared`() = runTest(dispatcher) {
+        val coordinator = FakeSmsRoleCoordinator(acquireResult = true, strand = null)
+        val vm = smsViewModel(smsChannel(), coordinator, FakeApply(ItemKind.SMS))
+
+        assertThat(vm.smsRoleStrand.value).isNull()
+        assertThat(coordinator.roleRestoredCalls).isAtLeast(1) // ledger.disarm() ran during reconcile
     }
 
     @Test

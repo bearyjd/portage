@@ -15,6 +15,8 @@ import android.content.Intent
 import cc.grepon.portage.providers.sms.AndroidSmsRoleGateway
 import cc.grepon.portage.providers.sms.SmsRoleGateway
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 
 /**
  * Bridges the interactive ROLE_SMS grant into a suspend call. [acquireRole] launches the
@@ -23,10 +25,19 @@ import kotlinx.coroutines.CompletableDeferred
  * the result back via [onRoleResult]. Prior-holder bookkeeping and the relinquish prompt
  * delegate to the providers-layer [SmsRoleGateway], the single source of truth for the
  * default-SMS state, so this class only adds the acquisition step.
+ *
+ * Two hardening measures back DEVILS_ADVOCATE.md Q4's stranding analysis:
+ *  - [ROLE_DIALOG_TIMEOUT_MS]: the await can't hang forever (e.g. the user walks away from the
+ *    dialog). A timeout returns false → the transfer proceeds, SMS self-skips, nobody is stranded.
+ *  - [SmsRoleLedger]: a persistent marker armed when the role is taken, so a process death mid-
+ *    handoff is recoverable on the next launch via [currentStrand] (the `finally` relinquish
+ *    cannot survive a kill). This instance is meant to be process-scoped (one bridge for the
+ *    whole app) so the dialog result still lands when the host Activity is recreated mid-dialog.
  */
 class AndroidSmsRoleCoordinator(
     context: Context,
     private val gateway: SmsRoleGateway = AndroidSmsRoleGateway(context),
+    private val ledger: SmsRoleLedger = SmsRoleLedger(File(context.filesDir, LEDGER_FILE)),
 ) : SmsRoleCoordinator {
 
     private val roleManager: RoleManager? = context.getSystemService(RoleManager::class.java)
@@ -36,18 +47,31 @@ class AndroidSmsRoleCoordinator(
 
     private var pending: CompletableDeferred<Boolean>? = null
 
-    override fun priorDefaultPackage(): String? = gateway.currentDefault()
+    // Snapshotted once on priorDefaultPackage() so acquire/arm reuse a single read (no TOCTOU).
+    private var priorSnapshot: String? = null
+
+    override fun priorDefaultPackage(): String? = gateway.currentDefault().also { priorSnapshot = it }
 
     override suspend fun acquireRole(): Boolean {
         val rm = roleManager ?: return false
         if (!rm.isRoleAvailable(RoleManager.ROLE_SMS)) return false
-        if (rm.isRoleHeld(RoleManager.ROLE_SMS)) return true
+        if (rm.isRoleHeld(RoleManager.ROLE_SMS)) {
+            ledger.arm(priorSnapshot)
+            return true
+        }
         val launch = requestLauncher ?: return false
         val intent = runCatching { rm.createRequestRoleIntent(RoleManager.ROLE_SMS) }.getOrNull() ?: return false
         val deferred = CompletableDeferred<Boolean>()
         pending = deferred
         launch(intent)
-        return deferred.await()
+        val granted = try {
+            withTimeoutOrNull(ROLE_DIALOG_TIMEOUT_MS) { deferred.await() } ?: false
+        } finally {
+            // Drop the slot only if it's still ours, so a late result can't complete a newer await.
+            if (pending === deferred) pending = null
+        }
+        if (granted) ledger.arm(priorSnapshot)
+        return granted
     }
 
     /** Called by the host Activity with the role-request ActivityResult outcome. */
@@ -58,5 +82,41 @@ class AndroidSmsRoleCoordinator(
 
     override suspend fun relinquishTo(priorPackage: String?) {
         gateway.launchRestore(priorPackage)
+        // The ledger stays armed: launchRestore only *prompts*, so the role may still be held.
+        // currentStrand()/onRoleRestored() reconcile against the real state on the next launch.
     }
+
+    override fun currentStrand(): SmsRoleStrand? =
+        if (gateway.isSelfDefault()) SmsRoleStrand(ledger.prior()) else null
+
+    override fun onRoleRestored() = ledger.disarm()
+
+    companion object {
+        /** App-private marker file for the process-death safety net. */
+        const val LEDGER_FILE = "sms-role.ledger"
+
+        /**
+         * Cap on awaiting the system role dialog. Generous (a user may read it), but finite — a
+         * never-answered dialog must not hang the transfer. 2 minutes.
+         */
+        const val ROLE_DIALOG_TIMEOUT_MS = 120_000L
+    }
+}
+
+/**
+ * Process-scoped holder for the one role bridge. The host Activity is recreated on a config
+ * change (rotation, dark-mode, locale) — including mid role-dialog — but the ViewModel awaiting
+ * [AndroidSmsRoleCoordinator.acquireRole] survives. A per-Activity coordinator would route the
+ * dialog result to a fresh instance while the surviving await blocks forever (DEVILS_ADVOCATE.md
+ * Q4 stranding). Sharing ONE instance keeps result delivery and the await in sync. Holds only the
+ * application context, so there is nothing to leak.
+ */
+object SmsRoleCoordinatorHolder {
+    @Volatile
+    private var instance: AndroidSmsRoleCoordinator? = null
+
+    fun get(context: Context): AndroidSmsRoleCoordinator =
+        instance ?: synchronized(this) {
+            instance ?: AndroidSmsRoleCoordinator(context.applicationContext).also { instance = it }
+        }
 }

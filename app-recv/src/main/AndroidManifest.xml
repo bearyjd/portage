@@ -23,9 +23,17 @@
 
     <!--
       SMS restore (DEVILS_ADVOCATE.md Q4): to be ELIGIBLE for the default-SMS role, the app must
-      declare these permissions and the four SMS components below. portage holds ROLE_SMS only
-      TRANSIENTLY (acquire → write restored messages → relinquish to the prior holder, in a
-      finally — see SmsRoleCoordinator). The components are inert; portage is not a messaging app.
+      declare the default-SMS permission family AND the four SMS components below. portage holds
+      ROLE_SMS only TRANSIENTLY (acquire → write restored messages → relinquish to the prior
+      holder, in a finally — see SmsRoleCoordinator; a persistent ledger backstops process death).
+      The components are inert; portage is not a messaging app.
+
+      Per-permission rationale (least-privilege intent):
+        SEND_SMS, RECEIVE_SMS, RECEIVE_MMS, RECEIVE_WAP_PUSH — the platform's default-SMS-app
+          eligibility set; without them portage cannot appear in the role picker.
+        READ_SMS — declared for eligibility completeness. portage-recv only WRITES restored rows
+          (never reads on this side), so READ_SMS is a hardware VERIFY_FIRST: confirm on a Pixel/GOS
+          device whether the role is grantable without it and, if so, DROP it (privacy-minimal).
     -->
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.SEND_SMS" />

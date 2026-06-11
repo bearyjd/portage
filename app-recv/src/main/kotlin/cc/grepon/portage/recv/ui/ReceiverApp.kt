@@ -19,10 +19,14 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -77,8 +81,15 @@ private fun StateBody(
 ) {
     val context = LocalContext.current
     when (current) {
-        is ReceiverState.Idle ->
-            IdleScreen(onScan = viewModel::startScanning, modifier = Modifier.fillMaxSize())
+        is ReceiverState.Idle -> {
+            val strand by viewModel.smsRoleStrand.collectAsStateWithLifecycle()
+            Column(modifier = Modifier.fillMaxSize()) {
+                if (strand != null) {
+                    SmsRoleRestoreBanner(onRestore = viewModel::restoreSmsRole)
+                }
+                IdleScreen(onScan = viewModel::startScanning, modifier = Modifier.weight(1f))
+            }
+        }
 
         is ReceiverState.Scanning ->
             ScanScreen(onScanned = viewModel::onQrScanned, modifier = Modifier.fillMaxSize())
@@ -132,6 +143,41 @@ private fun launchInstall(context: Context, action: InstallAction) {
         context.startActivity(
             Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
+    }
+}
+
+/**
+ * Persistent safety net for the default-SMS handoff (DEVILS_ADVOCATE.md Q4 §3): shown on Home
+ * whenever portage is still the default texting app from an interrupted restore. A notification
+ * would be the textbook backstop, but POST_NOTIFICATIONS is denied-by-default on GrapheneOS, so an
+ * in-app affordance is the reliable path — it survives process death via the on-disk ledger and
+ * needs no extra permission.
+ */
+@Composable
+private fun SmsRoleRestoreBanner(onRestore: () -> Unit) {
+    val s = LocalSpacing.current
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = s.gutter, vertical = s.md)) {
+            Text(
+                text = "portage is still your texting app",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Spacer(Modifier.height(s.xs))
+            Text(
+                text = "It only needed that to restore your messages. Hand it back to your usual app.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(s.sm))
+            SwissPrimaryButton(
+                text = "Restore my texting app",
+                onClick = onRestore,
+                fullWidth = true,
+            )
+        }
     }
 }
 

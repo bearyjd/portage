@@ -35,6 +35,7 @@ import cc.grepon.portage.providers.sms.AndroidSmsStore
 import cc.grepon.portage.providers.sms.SmsApplyProvider
 import cc.grepon.portage.recv.sms.AndroidSmsRoleCoordinator
 import cc.grepon.portage.recv.sms.SmsRoleCoordinator
+import cc.grepon.portage.recv.sms.SmsRoleCoordinatorHolder
 import cc.grepon.portage.recv.ui.ReceiverApp
 import java.io.File
 
@@ -48,7 +49,11 @@ import java.io.File
  */
 class MainActivity : ComponentActivity() {
 
-    private val smsRoleCoordinator by lazy { AndroidSmsRoleCoordinator(applicationContext) }
+    // Process-scoped: a config change mid role-dialog recreates this Activity but not the
+    // ViewModel awaiting acquireRole(); a shared coordinator keeps the dialog result and the
+    // await in sync (DEVILS_ADVOCATE.md Q4 stranding — see SmsRoleCoordinatorHolder).
+    private val smsRoleCoordinator: AndroidSmsRoleCoordinator
+        get() = SmsRoleCoordinatorHolder.get(applicationContext)
 
     // Registered during construction (before STARTED), as the ActivityResult API requires.
     private val smsRoleLauncher =
@@ -69,6 +74,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             ReceiverApp(viewModel = viewModel)
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Returning from the system change-default prompt: re-check whether portage is still the
+        // default SMS app so the in-app "restore" affordance clears once the role is handed back.
+        viewModel.refreshSmsRoleStrand()
     }
 }
 
