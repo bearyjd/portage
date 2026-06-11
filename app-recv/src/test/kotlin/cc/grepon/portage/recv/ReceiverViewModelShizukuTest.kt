@@ -223,6 +223,43 @@ class ReceiverViewModelShizukuTest {
     }
 
     @Test
+    fun `refreshShizukuAccess picks up an out-of-app bridge change`() = runTest(dispatcher) {
+        // Shizuku absent at construction → the affordance is hidden.
+        val access = FakePrivilegedAccess(PrivilegedOps.Availability.NOT_INSTALLED)
+        val vm = viewModel(access)
+        assertThat(vm.shizukuAccess.value).isEqualTo(ShizukuAccessStrand.NOT_INSTALLED)
+
+        // User starts/authorizes-to-reachable Shizuku OUTSIDE the app: now reachable, not yet granted.
+        access.nextAvailability = PrivilegedOps.Availability.PERMISSION_DENIED
+        vm.refreshShizukuAccess()
+        assertThat(vm.shizukuAccess.value).isEqualTo(ShizukuAccessStrand.LOCKED)
+
+        // The one-shot WRITE_SECURE_SETTINGS grant lands (e.g. from a prior run): a held grant wins.
+        access.canWrite = true
+        vm.refreshShizukuAccess()
+        assertThat(vm.shizukuAccess.value).isEqualTo(ShizukuAccessStrand.UNLOCKED)
+    }
+
+    @Test
+    fun `unlockSecureSettings recovers via the derived strand on BRIDGE_UNAVAILABLE`() = runTest(dispatcher) {
+        // Authorized (requestAccess true → bridge LIVE) but the grant bind drops: BRIDGE_UNAVAILABLE.
+        // With canWrite still false, the post-failure derivation is LOCKED (LIVE + not-yet-granted).
+        val access = FakePrivilegedAccess(
+            nextAvailability = PrivilegedOps.Availability.PERMISSION_DENIED,
+            authorize = true,
+            grantResult = PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE,
+        )
+        val vm = viewModel(access)
+        assertThat(vm.shizukuAccess.value).isEqualTo(ShizukuAccessStrand.LOCKED)
+
+        vm.unlockSecureSettings()
+        advanceUntilIdle()
+
+        assertThat(vm.shizukuAccess.value).isEqualTo(ShizukuAccessStrand.LOCKED) // fell back to derived
+        assertThat(access.grantCalls).isEqualTo(1) // the grant was attempted exactly once
+    }
+
+    @Test
     fun `the inert default reports NOT_INSTALLED and unlock does nothing`() = runTest(dispatcher) {
         // No privilegedAccess wired (production default) → the affordance is inert.
         val vm = ReceiverViewModel(

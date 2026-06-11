@@ -36,4 +36,13 @@ internal interface ShizukuGate {
      * by the caller): binder alive and permission held.
      */
     suspend fun runAsShell(command: List<String>): Int?
+
+    /**
+     * Issue the Shizuku permission request and suspend until the user answers, or return false
+     * immediately if the request could not be issued. Returns true iff the user granted. Total —
+     * a dead binder / un-issuable request fails closed to false. PRECONDITION (enforced by the
+     * caller): binder alive, modern server, permission not already held. The caller bounds the wait
+     * with a timeout; cancelling this await removes the registered listener.
+     */
+    suspend fun requestPermission(): Boolean
 }

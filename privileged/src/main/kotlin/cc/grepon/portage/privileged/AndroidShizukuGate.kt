@@ -98,9 +98,40 @@ internal class AndroidShizukuGate(context: Context) : ShizukuGate {
         cont.invokeOnCancellation { runCatching { Shizuku.unbindUserService(args, connection, true) } }
     }
 
+    override suspend fun requestPermission(): Boolean = suspendCancellableCoroutine { cont ->
+        // resume() throws if called twice (issue-failure vs the async result can race), so gate it.
+        val settled = AtomicBoolean(false)
+        fun settle(granted: Boolean) {
+            if (settled.compareAndSet(false, true) && cont.isActive) cont.resume(granted)
+        }
+        // `lateinit` so the listener can unregister itself; it is assigned before the async callback
+        // can fire (addRequestPermissionResultListener is called after this line).
+        lateinit var listener: Shizuku.OnRequestPermissionResultListener
+        listener = Shizuku.OnRequestPermissionResultListener { code, grantResult ->
+            if (code != REQUEST_CODE) return@OnRequestPermissionResultListener
+            runCatching { Shizuku.removeRequestPermissionResultListener(listener) }
+            settle(grantResult == PackageManager.PERMISSION_GRANTED)
+        }
+        Shizuku.addRequestPermissionResultListener(listener)
+        cont.invokeOnCancellation {
+            runCatching { Shizuku.removeRequestPermissionResultListener(listener) }
+        }
+        // If the request itself can't be issued, fail closed now rather than waiting out the full
+        // (caller-imposed) timeout for a result that will never come.
+        val issued = runCatching { Shizuku.requestPermission(REQUEST_CODE) }.isSuccess
+        if (!issued) {
+            runCatching { Shizuku.removeRequestPermissionResultListener(listener) }
+            settle(false)
+        }
+    }
+
     private companion object {
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         const val USER_SERVICE_TAG = "portage-privileged"
         const val TAG = "PortagePrivileged"
+
+        // Arbitrary non-zero request code; the listener filters on it so a stray result for another
+        // caller's request is ignored.
+        const val REQUEST_CODE = 0x504F // 'P','O' — portage
     }
 }

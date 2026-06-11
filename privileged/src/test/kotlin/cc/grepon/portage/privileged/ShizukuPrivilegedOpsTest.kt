@@ -28,8 +28,11 @@ private class FakeShizukuGate(
     private val permission: Boolean = true,
     private val exitCode: Int? = 0,
     private val hang: Boolean = false,
+    private val permissionGranted: Boolean = false,
+    private val permissionHang: Boolean = false,
 ) : ShizukuGate {
     val commands = mutableListOf<List<String>>()
+    var permissionRequested = false
 
     override fun isInstalled(): Boolean = installed
     override fun isBinderAlive(): Boolean = binderAlive
@@ -39,6 +42,12 @@ private class FakeShizukuGate(
         commands.add(command)
         if (hang) awaitCancellation() // models a bind that is accepted but never connects
         return exitCode
+    }
+
+    override suspend fun requestPermission(): Boolean {
+        permissionRequested = true
+        if (permissionHang) awaitCancellation() // models a dialog the user never answers
+        return permissionGranted
     }
 }
 
@@ -141,6 +150,53 @@ class ShizukuPrivilegedOpsTest {
 
         assertThat(outcome).isEqualTo(GrantOutcome.BRIDGE_UNAVAILABLE)
         assertThat(gate.commands).isEmpty()
+    }
+
+    // --- requestAccess() ---
+
+    @Test
+    fun `requestAccess returns true without prompting when already authorized`() = runTest {
+        val gate = FakeShizukuGate(permission = true)
+        assertThat(ops(gate).requestAccess()).isTrue()
+        assertThat(gate.permissionRequested).isFalse()
+    }
+
+    @Test
+    fun `requestAccess returns false without prompting when the binder is dead`() = runTest {
+        val gate = FakeShizukuGate(binderAlive = false)
+        assertThat(ops(gate).requestAccess()).isFalse()
+        assertThat(gate.permissionRequested).isFalse()
+    }
+
+    @Test
+    fun `requestAccess returns false without prompting on a pre-v11 server`() = runTest {
+        val gate = FakeShizukuGate(preV11 = true)
+        assertThat(ops(gate).requestAccess()).isFalse()
+        assertThat(gate.permissionRequested).isFalse()
+    }
+
+    @Test
+    fun `requestAccess returns true when the user grants`() = runTest {
+        val gate = FakeShizukuGate(permission = false, permissionGranted = true)
+        assertThat(ops(gate).requestAccess()).isTrue()
+        assertThat(gate.permissionRequested).isTrue()
+    }
+
+    @Test
+    fun `requestAccess returns false when the user declines`() = runTest {
+        val gate = FakeShizukuGate(permission = false, permissionGranted = false)
+        assertThat(ops(gate).requestAccess()).isFalse()
+        assertThat(gate.permissionRequested).isTrue()
+    }
+
+    @Test
+    fun `requestAccess times out to false when the dialog is never answered`() = runTest {
+        // The gate suspends forever (a dialog the user never answers). The bounded wait must fail
+        // closed instead of hanging the unlock. runTest advances virtual time past the cap.
+        val gate = FakeShizukuGate(permission = false, permissionHang = true)
+        assertThat(ops(gate).requestAccess()).isFalse()
+        // The timeout must fire on the dialog-await, not on an earlier precondition exit.
+        assertThat(gate.permissionRequested).isTrue()
     }
 
     @Test

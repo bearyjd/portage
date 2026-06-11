@@ -65,6 +65,22 @@ class ShizukuPrivilegedOps internal constructor(
         }
     }
 
+    /**
+     * Drive the Shizuku authorization. Pure decision logic over [gate]; the device-only dialog
+     * plumbing lives in [ShizukuGate.requestPermission]. Mirrors [ensureWriteSecureSettingsGranted]:
+     * gate the preconditions, then bound the wait so a never-answered dialog can't hang the unlock.
+     *
+     * - Unreachable (dead binder / pre-v11) → false (the UI then shows start/update guidance).
+     * - Already authorized → true, with no second prompt.
+     * - Otherwise issue the request and await the user, failing closed to false on a decline, an
+     *   un-issuable request, or the timeout.
+     */
+    internal suspend fun requestAccess(): Boolean {
+        if (!gate.isBinderAlive() || gate.isPreV11()) return false
+        if (gate.hasPermission()) return true
+        return withTimeoutOrNull(PERMISSION_TIMEOUT_MS) { gate.requestPermission() } ?: false
+    }
+
     override suspend fun grantRuntimePermission(packageName: String, permission: String): PrivilegedOps.OpResult =
         PrivilegedOps.OpResult.BridgeUnavailable
 
@@ -86,5 +102,9 @@ class ShizukuPrivilegedOps internal constructor(
         // Mirrors the transport handshake timeout — a one-shot `pm grant` is sub-second when the
         // bridge is healthy; anything slower is a stuck bind we'd rather fail closed on.
         const val GRANT_TIMEOUT_MS = 10_000L
+
+        // Generous (the user may read the Shizuku dialog) but finite — a never-answered dialog must
+        // not hang the unlock. 2 minutes, matching AndroidSmsRoleCoordinator's role-dialog cap.
+        const val PERMISSION_TIMEOUT_MS = 120_000L
     }
 }
