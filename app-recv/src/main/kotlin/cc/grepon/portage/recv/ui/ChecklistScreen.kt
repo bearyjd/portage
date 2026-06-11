@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -40,6 +41,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cc.grepon.portage.model.ItemKind
@@ -145,7 +149,7 @@ private fun ChecklistRow(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val rowTint by animateColorAsState(
-        targetValue = if (pressed) MaterialTheme.colorScheme.surface else Color.Transparent,
+        targetValue = if (pressed) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else Color.Transparent,
         label = "rowTint",
     )
 
@@ -158,6 +162,8 @@ private fun ChecklistRow(
                 interaction = interaction,
                 onClick = { onToggle(meta.itemId) },
             )
+            .semantics(mergeDescendants = true) { toggleableState = ToggleableState(item.checked) }
+            .heightIn(min = 48.dp)
             .padding(vertical = s.md),
         verticalAlignment = Alignment.Top,
     ) {

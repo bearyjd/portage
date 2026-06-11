@@ -17,6 +17,7 @@ import cc.grepon.portage.transport.NoiseSecureChannelFactory
 import cc.grepon.portage.transport.PairingCodec
 import cc.grepon.portage.transport.PairingCodecImpl
 import cc.grepon.portage.transport.SecureChannel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -64,10 +65,12 @@ class ReceiverViewModel(
                             senderName = msg.manifest.senderName,
                             groups = ReceiverChecklist.build(msg.manifest),
                         )
-                    else -> _state.value = ReceiverState.Failed("Sender did not send a manifest")
+                    else -> fail("Sender did not send a manifest")
                 }
+            } catch (c: CancellationException) {
+                throw c
             } catch (t: Throwable) {
-                _state.value = ReceiverState.Failed(t.message ?: "Pairing failed")
+                fail(t.message ?: "Pairing failed")
             }
         }
     }
@@ -87,10 +90,15 @@ class ReceiverViewModel(
                 val ch = channel ?: error("no channel")
                 ch.send(ProtocolMessage.Select(selected.toList()))
                 // TODO(providers): receive ITEM_BEGIN/DATA/END, stage, verify sha256, and
-                // apply via Tier0Provider + settings-catalog; report per-item results.
+                // apply via Tier0Provider + settings-catalog. moved/skipped are PLACEHOLDERS
+                // until ITEM_ACK results are wired — they count requested items, not applied.
                 _state.value = ReceiverState.Done(moved = selected.size, skipped = 0)
+                channel?.close()
+                channel = null
+            } catch (c: CancellationException) {
+                throw c
             } catch (t: Throwable) {
-                _state.value = ReceiverState.Failed(t.message ?: "Transfer failed")
+                fail(t.message ?: "Transfer failed")
             }
         }
     }
@@ -101,7 +109,15 @@ class ReceiverViewModel(
         _state.value = ReceiverState.Idle
     }
 
+    /** Fail-closed terminal transition: close the live channel, then surface the reason. */
+    private fun fail(reason: String) {
+        channel?.close()
+        channel = null
+        _state.value = ReceiverState.Failed(reason)
+    }
+
     override fun onCleared() {
         channel?.close()
+        super.onCleared()
     }
 }

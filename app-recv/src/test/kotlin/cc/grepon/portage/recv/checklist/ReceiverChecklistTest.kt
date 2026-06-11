@@ -39,27 +39,28 @@ class ReceiverChecklistTest {
     }
 
     @Test
-    fun `SMS is not pre-checked but everything else is`() {
+    fun `Tier-0 non-SMS items are pre-checked; SMS and Tier-1 are opt-in`() {
         val groups = ReceiverChecklist.build(manifest)
         val byKind = groups.flatMap { it.items }.associateBy { it.meta.kind }
-        assertThat(byKind.getValue(ItemKind.SMS).checked).isFalse()
-        assertThat(byKind.getValue(ItemKind.CONTACTS_VCF).checked).isTrue()
-        assertThat(byKind.getValue(ItemKind.SETTINGS).checked).isTrue()
+        assertThat(byKind.getValue(ItemKind.CONTACTS_VCF).checked).isTrue() // Tier 0
+        assertThat(byKind.getValue(ItemKind.CALENDAR_ICS).checked).isTrue() // Tier 0
+        assertThat(byKind.getValue(ItemKind.SMS).checked).isFalse()         // Tier 0, but handoff
+        assertThat(byKind.getValue(ItemKind.SETTINGS).checked).isFalse()    // Tier 1, opt-in
     }
 
     @Test
-    fun `selectedIds reflects defaults and excludes the unchecked SMS item`() {
+    fun `selectedIds is the Tier-0 non-SMS set by default`() {
         val groups = ReceiverChecklist.build(manifest)
-        assertThat(ReceiverChecklist.selectedIds(groups)).containsExactly(1, 2, 4)
+        assertThat(ReceiverChecklist.selectedIds(groups)).containsExactly(1, 2)
     }
 
     @Test
     fun `toggle flips exactly one item immutably`() {
         val groups = ReceiverChecklist.build(manifest)
         val afterOptInSms = ReceiverChecklist.toggle(groups, itemId = 3)
-        assertThat(ReceiverChecklist.selectedIds(afterOptInSms)).containsExactly(1, 2, 3, 4)
+        assertThat(ReceiverChecklist.selectedIds(afterOptInSms)).containsExactly(1, 2, 3)
         // Original is untouched (no mutation).
-        assertThat(ReceiverChecklist.selectedIds(groups)).containsExactly(1, 2, 4)
+        assertThat(ReceiverChecklist.selectedIds(groups)).containsExactly(1, 2)
     }
 
     @Test

@@ -11,6 +11,7 @@ package cc.grepon.portage.recv.checklist
 
 import cc.grepon.portage.model.ItemKind
 import cc.grepon.portage.model.ItemMeta
+import cc.grepon.portage.model.Tier
 import cc.grepon.portage.model.TransferManifest
 
 /** One selectable line in the receiver checklist. */
@@ -27,8 +28,13 @@ data class ChecklistGroup(val title: String, val items: List<ChecklistItem>)
  */
 object ReceiverChecklist {
 
-    /** Default check state for an item. Pre-check everything except the opt-in SMS handoff. */
-    fun defaultChecked(meta: ItemMeta): Boolean = meta.kind != ItemKind.SMS
+    /**
+     * Default check state. Pre-check only Tier 0 (always works, no Shizuku) and not SMS
+     * (needs the default-SMS-app handoff). Tier 1 items (settings, APK install) are shown
+     * but OPT-IN — PRP §7: "everything in Tier 0 works without ever seeing [Tier 1]".
+     */
+    fun defaultChecked(meta: ItemMeta): Boolean =
+        meta.kind.tier == Tier.TIER0 && meta.kind != ItemKind.SMS
 
     /** Build the grouped checklist from a manifest, preserving first-seen group order. */
     fun build(manifest: TransferManifest): List<ChecklistGroup> =

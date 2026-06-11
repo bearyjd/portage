@@ -182,7 +182,7 @@ private fun PasteFallback(
     val looksValid = trimmed.startsWith(PairingPayload.SCHEME)
 
     fun submit() {
-        if (trimmed.isNotEmpty()) onScanned(trimmed)
+        if (looksValid) onScanned(trimmed)
     }
 
     Column(modifier = modifier.fillMaxWidth()) {
