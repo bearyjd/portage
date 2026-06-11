@@ -56,6 +56,22 @@
             </intent-filter>
         </activity>
 
+        <!--
+          Shizuku binder provider (Tier-1 secure-settings grant, ADR-001). Only the RECEIVER
+          escalates, so the active provider lives here, not in the shared :privileged manifest
+          (which would merge it into portage-send too). Authority is per-app via ${applicationId};
+          INTERACT_ACROSS_USERS_FULL is held by Shizuku, not normal apps, so only the Shizuku
+          server can hand us the binder. moe.shizuku.manager.permission.API_V23 is merged in
+          automatically from the Shizuku provider library.
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
         <!-- === Default-SMS-role eligibility (inert; see SmsRoleComponents.kt) === -->
 
         <!-- Incoming SMS. BROADCAST_SMS restricts the sender to the system. -->

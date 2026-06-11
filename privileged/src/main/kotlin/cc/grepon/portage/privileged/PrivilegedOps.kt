@@ -49,7 +49,8 @@ interface PrivilegedOps {
     // live-shell fallback (ADR-001 §4) is a PRIVATE implementation detail of the bridge;
     // only the typed methods above are exposed. (Security review 2026-06-10, MEDIUM.)
 
-    enum class Availability { LIVE, INSTALLED_NOT_RUNNING, NOT_INSTALLED, PERMISSION_DENIED }
+    /** [OUTDATED] = installed and running, but too old for portage to drive (pre-v11 API). */
+    enum class Availability { LIVE, INSTALLED_NOT_RUNNING, NOT_INSTALLED, PERMISSION_DENIED, OUTDATED }
 
     enum class GrantOutcome { GRANTED, GRANT_REJECTED, BRIDGE_UNAVAILABLE }
 

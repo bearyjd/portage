@@ -9,7 +9,12 @@ android {
 
     defaultConfig {
         minSdk = libs.versions.minSdk.get().toInt()
+        // Keep rules for the reflectively-instantiated Shizuku UserService propagate to the app.
+        consumerProguardFiles("consumer-rules.pro")
     }
+
+    // The Shizuku UserService binder contract (IPrivilegedService.aidl).
+    buildFeatures { aidl = true }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -27,4 +32,5 @@ dependencies {
     implementation(libs.shizuku.provider)
     testImplementation(libs.junit)
     testImplementation(libs.truth)
+    testImplementation(libs.kotlinx.coroutines.test)
 }
