@@ -60,11 +60,29 @@ Compose BOM against the **current** GrapheneOS Android version at build time.
 
 ## Status
 
-**Scaffold + design substrate.** The monorepo (all seven modules), shared wire-protocol
-model, the `PrivilegedOps` boundary, and the safety-critical settings allowlist (with
-guardrail tests) exist; the seed code encodes the design but the Shizuku bridge, Noise
-transport, providers, and UI are stubs to be implemented **after** the ADR-001 on-device
-verification. The design artifacts live in [`docs/prp/`](docs/prp/):
+**Tier 0 transfer is implemented end-to-end and on `main`.** Both apps build (`assembleDebug`
+produces both debug APKs in CI), with unit + integration tests green on every push. What
+works, phone-to-phone over the Noise/TCP channel:
+
+- **`portage-send`** — permissions → pack → pairing QR (the trust anchor, `FLAG_SECURE`) →
+  accept one receiver → stream the selected items with per-chunk AEAD + per-item SHA-256.
+- **`portage-recv`** — scan QR → handshake → checklist built from the live manifest (absent
+  kinds shown disabled) → stage, verify, apply each item → done summary with real counts.
+- **All six Tier-0 providers**: contacts (vCard 3.0), calendar (ICS), call log, SMS export
+  (apply is role-gated and **inert until the SMS-role mini-project lands**), app inventory
+  (assisted-reinstall deep links), and the SAFE `Settings.System` allowlist slice.
+
+Landed across PRs #5 (providers + receiver apply wiring), #6 (`portage-send`), #7 (receiver
+live channel) — each through TDD plus independent code-review and security-review gates.
+
+**Not yet done:** the two-phone on-device validation walk-through (the one DoD step that
+needs real hardware); **Tier 1** (Shizuku `Settings.Secure`/`Global` sync — the `privileged`
+module is still a `ShizukuPrivilegedOps` stub); and the SMS-restore default-app handoff
+(receiver declares no SMS role components yet — see `CLAUDE.md` follow-ups). Live security
+follow-ups (noise-java verbatim-diff review, CI dependency audit, port-probe TOCTOU) are
+tracked in `CLAUDE.md`.
+
+The design artifacts live in [`docs/prp/`](docs/prp/):
 
 - [`portage-prp-prompt.md`](docs/prp/portage-prp-prompt.md) — execution brief
 - [`ADR-001-privilege-feasibility.md`](docs/prp/ADR-001-privilege-feasibility.md) — Shizuku / Tier 1 go-no-go + verification procedure
