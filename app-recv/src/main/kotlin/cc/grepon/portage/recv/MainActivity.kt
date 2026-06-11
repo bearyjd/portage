@@ -9,10 +9,12 @@
  */
 package cc.grepon.portage.recv
 
+import android.app.Activity
 import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -31,22 +33,31 @@ import cc.grepon.portage.providers.settings.SettingsApplyProvider
 import cc.grepon.portage.providers.sms.AndroidSmsRoleGateway
 import cc.grepon.portage.providers.sms.AndroidSmsStore
 import cc.grepon.portage.providers.sms.SmsApplyProvider
+import cc.grepon.portage.recv.sms.AndroidSmsRoleCoordinator
+import cc.grepon.portage.recv.sms.SmsRoleCoordinator
 import cc.grepon.portage.recv.ui.ReceiverApp
 import java.io.File
 
 /**
- * Importer entry point. Real flow (portage-prp-prompt.md §7): scan QR → handshake → receive
- * manifest → single grouped checklist (SAFE pre-checked) → "Bring it over" → progress → done
- * summary (moved / app data isn't carried). [ReceiverApp] owns the whole Compose tree;
- * this Activity hosts it and assembles the Tier-0 apply registry over the Android stores.
+ * Importer entry point (portage-prp-prompt.md §7): scan QR → handshake → receive manifest →
+ * single grouped checklist (SAFE pre-checked) → "Bring it over" → progress → done summary.
  *
- * Tier 1 is an optional "Unlock advanced settings transfer (Shizuku)" step; everything in
- * Tier 0 works without it (DEVILS_ADVOCATE.md Q1).
+ * SMS restore needs the default-SMS role transiently: this Activity hosts the role-request
+ * launcher and bridges its ActivityResult into [AndroidSmsRoleCoordinator]; the ViewModel
+ * wraps the transfer in acquire → write → relinquish when SMS is selected.
  */
 class MainActivity : ComponentActivity() {
 
+    private val smsRoleCoordinator by lazy { AndroidSmsRoleCoordinator(applicationContext) }
+
+    // Registered during construction (before STARTED), as the ActivityResult API requires.
+    private val smsRoleLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            smsRoleCoordinator.onRoleResult(result.resultCode == Activity.RESULT_OK)
+        }
+
     private val viewModel: ReceiverViewModel by viewModels {
-        ReceiverViewModelFactory(applicationContext)
+        ReceiverViewModelFactory(applicationContext, smsRoleCoordinator)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,6 +65,7 @@ class MainActivity : ComponentActivity() {
         // Sweep staging orphaned by a mid-transfer process death — staged payloads are
         // plaintext PII and must never outlive a single session.
         File(cacheDir, STAGING_DIR).deleteRecursively()
+        smsRoleCoordinator.requestLauncher = { intent -> smsRoleLauncher.launch(intent) }
         setContent {
             ReceiverApp(viewModel = viewModel)
         }
@@ -63,7 +75,10 @@ class MainActivity : ComponentActivity() {
 private const val STAGING_DIR = "portage-staging"
 
 /** Builds the ViewModel with the compiled Tier-0 apply registry (one provider per kind). */
-private class ReceiverViewModelFactory(private val context: Context) : ViewModelProvider.Factory {
+private class ReceiverViewModelFactory(
+    private val context: Context,
+    private val smsRoleCoordinator: SmsRoleCoordinator,
+) : ViewModelProvider.Factory {
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         val registryFactory = { onInstallActions: (List<InstallAction>) -> Unit ->
@@ -73,11 +88,9 @@ private class ReceiverViewModelFactory(private val context: Context) : ViewModel
                     ContactsApplyProvider(AndroidContactsStore(resolver)),
                     CalendarApplyProvider(AndroidCalendarStore(resolver)),
                     CallLogApplyProvider(AndroidCallLogStore(resolver)),
-                    // INERT BY DESIGN until the SMS role mini-project lands: the manifest
-                    // declares no SMS role components, so isSelfDefault() is always false
-                    // and apply() hard-skips. Pinned end-to-end by ReceiverViewModelTest
-                    // ("a registered SMS provider is inert..."). Do NOT declare the SMS
-                    // permissions as a quick fix — the role handoff gets its own review.
+                    // SMS writes only while portage transiently holds ROLE_SMS — the ViewModel
+                    // acquires it (SmsRoleCoordinator) around the transfer when SMS is selected,
+                    // and the gateway's isSelfDefault gate self-skips outside that window.
                     SmsApplyProvider(AndroidSmsStore(resolver), AndroidSmsRoleGateway(context)),
                     AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), onInstallActions),
                     SettingsApplyProvider(AndroidSystemSettingsStore(context)),
@@ -87,6 +100,7 @@ private class ReceiverViewModelFactory(private val context: Context) : ViewModel
         @Suppress("UNCHECKED_CAST")
         return ReceiverViewModel(
             stagingDir = File(context.cacheDir, STAGING_DIR),
+            smsRoleCoordinator = smsRoleCoordinator,
             applyRegistryFactory = registryFactory,
         ) as T
     }

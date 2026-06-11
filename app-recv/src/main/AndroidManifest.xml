@@ -22,11 +22,16 @@
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
     <!--
-      SMS restore (DEVILS_ADVOCATE.md Q4): holding ROLE_SMS requires declaring the SMS
-      app components (SMS_DELIVER / WAP_PUSH_DELIVER receivers, etc.) AND a teardown that
-      hands the role back to the recorded prior holder. Intentionally NOT wired here yet —
-      treat SMS as its own mini-project with its own review.
+      SMS restore (DEVILS_ADVOCATE.md Q4): to be ELIGIBLE for the default-SMS role, the app must
+      declare these permissions and the four SMS components below. portage holds ROLE_SMS only
+      TRANSIENTLY (acquire → write restored messages → relinquish to the prior holder, in a
+      finally — see SmsRoleCoordinator). The components are inert; portage is not a messaging app.
     -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_MMS" />
+    <uses-permission android:name="android.permission.RECEIVE_WAP_PUSH" />
 
     <application
         android:allowBackup="false"
@@ -42,5 +47,58 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- === Default-SMS-role eligibility (inert; see SmsRoleComponents.kt) === -->
+
+        <!-- Incoming SMS. BROADCAST_SMS restricts the sender to the system. -->
+        <receiver
+            android:name=".sms.SmsDeliverReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_DELIVER" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Incoming MMS (WAP push). BROADCAST_WAP_PUSH restricts the sender to the system. -->
+        <receiver
+            android:name=".sms.MmsDeliverReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_WAP_PUSH">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.WAP_PUSH_DELIVER" />
+                <data android:mimeType="application/vnd.wap.mms-message" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Compose target for sms:/mms: send intents (portage closes immediately). -->
+        <activity
+            android:name=".sms.SmsComposeActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SENDTO" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+                <data android:scheme="mms" />
+                <data android:scheme="mmsto" />
+            </intent-filter>
+        </activity>
+
+        <!-- Quick-reply service. SEND_RESPOND_VIA_MESSAGE restricts the caller to the system. -->
+        <service
+            android:name=".sms.HeadlessSmsSendService"
+            android:exported="true"
+            android:permission="android.permission.SEND_RESPOND_VIA_MESSAGE">
+            <intent-filter>
+                <action android:name="android.intent.action.RESPOND_VIA_MESSAGE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+                <data android:scheme="mms" />
+                <data android:scheme="mmsto" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>
