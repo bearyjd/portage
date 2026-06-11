@@ -36,10 +36,13 @@ class AndroidSmsRoleCoordinator(
     context: Context,
     private val gateway: SmsRoleGateway = AndroidSmsRoleGateway(context),
     private val ledger: SmsRoleLedger = SmsRoleLedger(File(context.filesDir, LEDGER_FILE)),
-    private val grant: InteractiveGrant = InteractiveGrant(ROLE_DIALOG_TIMEOUT_MS),
 ) : SmsRoleCoordinator {
 
     private val roleManager: RoleManager? = context.getSystemService(RoleManager::class.java)
+
+    // The await/timeout bridge is an internal impl detail (unit-tested in isolation), so it is a
+    // private property rather than a public-constructor parameter exposing an internal type.
+    private val grant = InteractiveGrant(ROLE_DIALOG_TIMEOUT_MS)
 
     /** Set by the host Activity: launches the role-request intent. */
     var requestLauncher: ((Intent) -> Unit)? = null
