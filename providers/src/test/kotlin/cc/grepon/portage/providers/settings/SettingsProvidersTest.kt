@@ -10,7 +10,6 @@
 package cc.grepon.portage.providers.settings
 
 import cc.grepon.portage.model.ItemStatus
-import cc.grepon.portage.privileged.PrivilegedOps
 import cc.grepon.portage.settings.Namespace
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
@@ -51,35 +50,20 @@ private class FakeSecureGlobalSettingsStore(
 /**
  * Models the one-shot grant: when [outcome] is GRANTED it flips [storeToGrant]'s `canWrite`,
  * mirroring `pm grant WRITE_SECURE_SETTINGS` making Settings.Secure/Global writable. The default
- * matches the shipped stub bridge (no grant available), so Tier-1 keys self-skip.
+ * matches an unwired grant path (no bridge available), so Tier-1 keys self-skip.
  */
-private class FakePrivilegedOps(
-    private val outcome: PrivilegedOps.GrantOutcome = PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE,
+private class FakeTierOneGrant(
+    private val outcome: TierOneGrant.Outcome = TierOneGrant.Outcome.UNAVAILABLE,
     private val storeToGrant: FakeSecureGlobalSettingsStore? = null,
-) : PrivilegedOps {
+) : TierOneGrant {
     var grantCalls = 0
         private set
 
-    override fun availability(): PrivilegedOps.Availability = PrivilegedOps.Availability.NOT_INSTALLED
-
-    override suspend fun ensureWriteSecureSettingsGranted(): PrivilegedOps.GrantOutcome {
+    override suspend fun ensureWriteSecureSettingsGranted(): TierOneGrant.Outcome {
         grantCalls++
-        if (outcome == PrivilegedOps.GrantOutcome.GRANTED) storeToGrant?.writable = true
+        if (outcome == TierOneGrant.Outcome.GRANTED) storeToGrant?.writable = true
         return outcome
     }
-
-    override suspend fun grantRuntimePermission(packageName: String, permission: String) =
-        PrivilegedOps.OpResult.BridgeUnavailable
-
-    override suspend fun revokeRuntimePermission(packageName: String, permission: String) =
-        PrivilegedOps.OpResult.BridgeUnavailable
-
-    override suspend fun installApk(stagedApkPath: String) = PrivilegedOps.OpResult.BridgeUnavailable
-
-    override suspend fun setNavigationMode(mode: PrivilegedOps.NavigationMode) =
-        PrivilegedOps.OpResult.BridgeUnavailable
-
-    override suspend fun setSmsRoleHolder(packageName: String) = PrivilegedOps.OpResult.BridgeUnavailable
 }
 
 class SettingsProvidersTest {
@@ -92,8 +76,8 @@ class SettingsProvidersTest {
     private fun applyProvider(
         system: FakeSystemSettingsStore,
         secureGlobal: FakeSecureGlobalSettingsStore = FakeSecureGlobalSettingsStore(),
-        privileged: FakePrivilegedOps = FakePrivilegedOps(),
-    ) = SettingsApplyProvider(system, secureGlobal, privileged)
+        grant: FakeTierOneGrant = FakeTierOneGrant(),
+    ) = SettingsApplyProvider(system, secureGlobal, grant)
 
     // --- Export side ---
 
@@ -202,39 +186,39 @@ class SettingsProvidersTest {
     fun `apply writes a Tier-1 secure key when the grant is already held`() = runTest {
         val system = FakeSystemSettingsStore()
         val secureGlobal = FakeSecureGlobalSettingsStore(writable = true) // grant persisted
-        val privileged = FakePrivilegedOps()
+        val grant = FakeTierOneGrant()
 
-        val outcome = applyProvider(system, secureGlobal, privileged).apply(payload("ui_night_mode" to "2"))
+        val outcome = applyProvider(system, secureGlobal, grant).apply(payload("ui_night_mode" to "2"))
 
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(secureGlobal.writes).containsExactly(Namespace.SECURE to "ui_night_mode", "2")
-        assertThat(privileged.grantCalls).isEqualTo(0) // bridge not consulted when already writable
+        assertThat(grant.grantCalls).isEqualTo(0) // grant path not consulted when already writable
     }
 
     @Test
     fun `apply attempts the one-shot grant once, then writes Tier-1 when granted`() = runTest {
         val system = FakeSystemSettingsStore()
         val secureGlobal = FakeSecureGlobalSettingsStore(writable = false)
-        val privileged = FakePrivilegedOps(PrivilegedOps.GrantOutcome.GRANTED, secureGlobal)
+        val grant = FakeTierOneGrant(TierOneGrant.Outcome.GRANTED, secureGlobal)
 
-        val outcome = applyProvider(system, secureGlobal, privileged).apply(payload("ui_night_mode" to "2"))
+        val outcome = applyProvider(system, secureGlobal, grant).apply(payload("ui_night_mode" to "2"))
 
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(secureGlobal.writes).containsExactly(Namespace.SECURE to "ui_night_mode", "2")
-        assertThat(privileged.grantCalls).isEqualTo(1)
+        assertThat(grant.grantCalls).isEqualTo(1)
     }
 
     @Test
     fun `apply skips Tier-1 keys when the privilege bridge is unavailable`() = runTest {
         val system = FakeSystemSettingsStore()
         val secureGlobal = FakeSecureGlobalSettingsStore(writable = false)
-        val privileged = FakePrivilegedOps(PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE)
+        val grant = FakeTierOneGrant(TierOneGrant.Outcome.UNAVAILABLE)
 
-        val outcome = applyProvider(system, secureGlobal, privileged).apply(payload("ui_night_mode" to "2"))
+        val outcome = applyProvider(system, secureGlobal, grant).apply(payload("ui_night_mode" to "2"))
 
         assertThat(outcome.status).isEqualTo(ItemStatus.SKIPPED)
         assertThat(secureGlobal.writes).isEmpty()
-        assertThat(privileged.grantCalls).isEqualTo(1)
+        assertThat(grant.grantCalls).isEqualTo(1)
     }
 
     @Test
@@ -283,9 +267,9 @@ class SettingsProvidersTest {
         // the done-summary does not silently swallow it.
         val system = FakeSystemSettingsStore()                       // writable
         val secureGlobal = FakeSecureGlobalSettingsStore(writable = false)
-        val privileged = FakePrivilegedOps(PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE)
+        val grant = FakeTierOneGrant(TierOneGrant.Outcome.UNAVAILABLE)
 
-        val outcome = applyProvider(system, secureGlobal, privileged)
+        val outcome = applyProvider(system, secureGlobal, grant)
             .apply(payload("font_scale" to "1.0", "ui_night_mode" to "2"))
 
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)

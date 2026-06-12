@@ -20,13 +20,13 @@ import cc.grepon.portage.settings.Namespace
  * grant architecture installs via a ONE-SHOT `pm grant` (ADR-001 §1) — after which writes use
  * the normal Settings.* API with no live bridge. [canWrite] reports whether the grant is held.
  *
- * WRITE_SECURE_SETTINGS is declared in the `:privileged` library manifest (so the shell uid can
+ * WRITE_SECURE_SETTINGS is declared in the `:adb-bridge` library manifest (so the shell uid can
  * `pm grant` it) and merges into the recv APK; the declaration is dormant and grants nothing
- * until that `pm grant` runs. The bridge that performs it
- * ([cc.grepon.portage.privileged.ShizukuPrivilegedOps.ensureWriteSecureSettingsGranted]) is wired
- * up but stays dormant until the user authorizes Shizuku (an in-app affordance, still to come) and
- * the grant is verified on-device (ADR-001 V4/V5). Until then [canWrite] is false and the apply
- * provider self-skips every SECURE/GLOBAL key, leaving shipped Tier-0 behavior unchanged.
+ * until that `pm grant` runs. The bridge that performs it (the AdbBridge selfGrant, ADR-003,
+ * driven by the in-app privilege wizard or the lazy [TierOneGrant] path) requires the user to
+ * complete the Wireless Debugging setup once; hardware verification of the full chain is
+ * tracked in ADR-003. Until the grant lands [canWrite] is false and the apply provider
+ * self-skips every SECURE/GLOBAL key, leaving shipped Tier-0 behavior unchanged.
  *
  * [Namespace.SYSTEM] is never serviced here — it routes through [AndroidSystemSettingsStore]
  * (Tier 0). A SYSTEM call is a routing bug and is rejected fail-closed.

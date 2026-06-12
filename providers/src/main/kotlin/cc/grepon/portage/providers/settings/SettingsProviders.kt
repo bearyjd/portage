@@ -11,7 +11,6 @@ package cc.grepon.portage.providers.settings
 
 import cc.grepon.portage.model.ItemKind
 import cc.grepon.portage.model.ItemStatus
-import cc.grepon.portage.privileged.PrivilegedOps
 import cc.grepon.portage.providers.ApplyOutcome
 import cc.grepon.portage.providers.ApplyProvider
 import cc.grepon.portage.providers.ExportProvider
@@ -75,6 +74,22 @@ interface SecureGlobalSettingsStore {
 }
 
 /**
+ * The narrow Tier-1 grant seam: "make WRITE_SECURE_SETTINGS held, if you can" (ADR-001 Phase A,
+ * one-shot, persists across reboots). The receiver app implements this over its AdbBridge
+ * (ADR-003); providers stay privilege-agnostic and the sender never links a privilege stack.
+ * The default is [Unavailable], so Tier-1 keys self-skip wherever nothing is wired.
+ */
+fun interface TierOneGrant {
+    suspend fun ensureWriteSecureSettingsGranted(): Outcome
+
+    enum class Outcome { GRANTED, REJECTED, UNAVAILABLE }
+
+    companion object {
+        val Unavailable = TierOneGrant { Outcome.UNAVAILABLE }
+    }
+}
+
+/**
  * The SAFE keys the parity DATA PATH can carry: SYSTEM keys via [SystemSettingsStore] (Tier 0)
  * and SECURE/GLOBAL keys via [SecureGlobalSettingsStore] (Tier 1, after the one-shot grant).
  * RISKY and DEVICE_SPECIFIC keys are never in this default cut. The actual safety boundary is
@@ -135,15 +150,15 @@ class SettingsExportProvider(
  * key is a per-key skip, never a transport error (PROTOCOL.md §4).
  *
  * Tier-1 (SECURE/GLOBAL) writes need WRITE_SECURE_SETTINGS. Per ADR-001 the grant is installed
- * ONCE by [PrivilegedOps.ensureWriteSecureSettingsGranted]; thereafter writes use the normal
- * Settings.* API with no live bridge. The bridge itself is a deferred, on-device-verified
- * follow-up — until it lands [SecureGlobalSettingsStore.canWrite] is false and Tier-1 keys
- * self-skip cleanly, leaving the shipped Tier-0 behavior unchanged.
+ * ONCE — normally by the privilege wizard's capability probe (ADR-003), with [TierOneGrant] as
+ * the lazy in-apply fallback; thereafter writes use the normal Settings.* API with no live
+ * bridge. Where no grant path is wired, [SecureGlobalSettingsStore.canWrite] is false and
+ * Tier-1 keys self-skip cleanly, leaving Tier-0 behavior unchanged.
  */
 class SettingsApplyProvider(
     private val systemStore: SystemSettingsStore,
     private val secureGlobalStore: SecureGlobalSettingsStore,
-    private val privilegedOps: PrivilegedOps,
+    private val tierOneGrant: TierOneGrant = TierOneGrant.Unavailable,
 ) : ApplyProvider {
 
     override val kind = ItemKind.SETTINGS
@@ -205,14 +220,14 @@ class SettingsApplyProvider(
 
     /**
      * Whether Settings.Secure/Global is writable now — either the grant already persists from a
-     * prior run, or the one-shot bridge installs it this call. Consulted at most once per apply;
-     * ADR-001 isolates the live bridge as the deferred, on-device-verified part.
+     * prior run (the wizard's probe installs it, ADR-001 V5: survives reboots), or the lazy
+     * [TierOneGrant] path installs it this call. Consulted at most once per apply.
      */
     private suspend fun tier1Writable(): Boolean {
         if (runCatching { secureGlobalStore.canWrite() }.getOrDefault(false)) return true
-        val outcome = runCatching { privilegedOps.ensureWriteSecureSettingsGranted() }
-            .getOrDefault(PrivilegedOps.GrantOutcome.BRIDGE_UNAVAILABLE)
-        return outcome == PrivilegedOps.GrantOutcome.GRANTED &&
+        val outcome = runCatching { tierOneGrant.ensureWriteSecureSettingsGranted() }
+            .getOrDefault(TierOneGrant.Outcome.UNAVAILABLE)
+        return outcome == TierOneGrant.Outcome.GRANTED &&
             runCatching { secureGlobalStore.canWrite() }.getOrDefault(false)
     }
 }
