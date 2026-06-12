@@ -30,6 +30,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -40,6 +43,7 @@ import cc.grepon.portage.recv.ReceiverViewModel
 import cc.grepon.portage.recv.install.InstallLaunch
 import cc.grepon.portage.recv.ui.theme.LocalSpacing
 import cc.grepon.portage.recv.ui.theme.PortageTheme
+import cc.grepon.portage.wizard.PrivilegeWizard
 
 /**
  * Root of the receiver UI. Collects the single [ReceiverState] flow and crossfades the matching
@@ -47,9 +51,16 @@ import cc.grepon.portage.recv.ui.theme.PortageTheme
  * Material TopAppBar); each state renders into the body below it.
  */
 @Composable
-fun ReceiverApp(viewModel: ReceiverViewModel) {
+fun ReceiverApp(
+    viewModel: ReceiverViewModel,
+    wizard: PrivilegeWizard,
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val smsRoleStrand by viewModel.smsRoleStrand.collectAsStateWithLifecycle()
+    val wizardStep by wizard.step.collectAsStateWithLifecycle()
+    // Wizard visibility is UI chrome; the wizard's own progress lives in the process-scoped
+    // state machine and survives recreation (PrivilegeWizardHolder).
+    var wizardOpen by rememberSaveable { mutableStateOf(false) }
 
     PortageTheme {
         Scaffold(
@@ -68,19 +79,45 @@ fun ReceiverApp(viewModel: ReceiverViewModel) {
                 if (smsRoleStrand != null && state !is ReceiverState.Transferring) {
                     SmsRoleRestoreBanner(onRestore = viewModel::restoreSmsRole)
                 }
-                AnimatedContent(
-                    targetState = state,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    transitionSpec = {
-                        (fadeIn(animationSpec = tween(260)) togetherWith
-                            fadeOut(animationSpec = tween(180)))
-                    },
-                    contentKey = { it.key() },
-                    label = "receiverState",
-                ) { current ->
-                    StateBody(current = current, viewModel = viewModel)
+                if (wizardOpen) {
+                    WizardScreen(
+                        wizard = wizard,
+                        onClose = {
+                            // A finished run (Ready/Skipped) keeps its recorded outcome; an
+                            // abandoned run resets so the next entry starts clean.
+                            if (wizardStep !is PrivilegeWizard.Step.Ready &&
+                                wizardStep !is PrivilegeWizard.Step.Skipped
+                            ) {
+                                wizard.dismiss()
+                            }
+                            wizardOpen = false
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                    )
+                } else {
+                    AnimatedContent(
+                        targetState = state,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        transitionSpec = {
+                            (fadeIn(animationSpec = tween(260)) togetherWith
+                                fadeOut(animationSpec = tween(180)))
+                        },
+                        contentKey = { it.key() },
+                        label = "receiverState",
+                    ) { current ->
+                        StateBody(
+                            current = current,
+                            viewModel = viewModel,
+                            onSetup = {
+                                wizard.start()
+                                wizardOpen = true
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -92,11 +129,16 @@ fun ReceiverApp(viewModel: ReceiverViewModel) {
 private fun StateBody(
     current: ReceiverState,
     viewModel: ReceiverViewModel,
+    onSetup: () -> Unit,
 ) {
     val context = LocalContext.current
     when (current) {
         is ReceiverState.Idle ->
-            IdleScreen(onScan = viewModel::startScanning, modifier = Modifier.fillMaxSize())
+            IdleScreen(
+                onScan = viewModel::startScanning,
+                onSetup = onSetup,
+                modifier = Modifier.fillMaxSize(),
+            )
 
         is ReceiverState.Scanning ->
             ScanScreen(onScanned = viewModel::onQrScanned, modifier = Modifier.fillMaxSize())
@@ -128,6 +170,12 @@ private fun StateBody(
                 modifier = Modifier.fillMaxSize(),
                 installActions = current.installActions,
                 onInstall = { action -> launchInstall(context, action) },
+                backupActionLabel = if (seedvaultIntent(context) != null) {
+                    "Open Seedvault"
+                } else {
+                    "Open backup settings"
+                },
+                onOpenBackup = { launchBackup(context) },
             )
 
         is ReceiverState.Failed ->
@@ -152,6 +200,23 @@ private fun launchInstall(context: Context, action: InstallAction) {
         )
     }
 }
+
+/**
+ * The Seedvault handoff (division-of-labor framing, PRP §3): portage moved the parity layer;
+ * app DATA restores through the system backup. Launch Seedvault directly when present (GOS
+ * ships it), else land the user in Settings to find System → Backup.
+ */
+private fun seedvaultIntent(context: Context): Intent? = runCatching {
+    context.packageManager.getLaunchIntentForPackage(SEEDVAULT_PACKAGE)
+}.getOrNull()
+
+private fun launchBackup(context: Context) {
+    val intent = seedvaultIntent(context)
+        ?: Intent(android.provider.Settings.ACTION_SETTINGS)
+    runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+}
+
+private const val SEEDVAULT_PACKAGE = "com.stevesoltys.seedvault"
 
 /**
  * Persistent safety net for the default-SMS handoff (DEVILS_ADVOCATE.md Q4 §3): shown on Home

@@ -37,7 +37,8 @@ dependencies {
     implementation(project(":core-model"))
     implementation(project(":core-transport"))
     implementation(project(":providers"))
-    implementation(project(":privileged"))       // Tier 1 writes
+    implementation(project(":adb-bridge"))        // self-contained Tier-1 privilege (ADR-003)
+    implementation(project(":wizard"))            // privilege bootstrap state machine
     implementation(project(":settings-catalog"))  // safety-critical allowlist
 
     implementation(platform(libs.androidx.compose.bom))

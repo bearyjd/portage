@@ -29,7 +29,7 @@ data class ChecklistGroup(val title: String, val items: List<ChecklistItem>)
 object ReceiverChecklist {
 
     /**
-     * Default check state. Pre-check only Tier 0 (always works, no Shizuku) and not SMS
+     * Default check state. Pre-check only Tier 0 (always works, no privilege setup) and not SMS
      * (needs the default-SMS-app handoff). Tier 1 items (settings, APK install) are shown
      * but OPT-IN — PRP §7: "everything in Tier 0 works without ever seeing [Tier 1]".
      */
