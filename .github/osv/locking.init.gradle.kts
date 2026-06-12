@@ -26,7 +26,13 @@ gradle.allprojects {
             doLast {
                 proj.configurations
                     .filter { it.isCanBeResolved && it.name.endsWith("RuntimeClasspath") }
-                    .forEach { it.resolve() }
+                    // Force GRAPH resolution only (selected component versions) — NOT artifact
+                    // resolution. Dependency locking records the graph, and on Android a raw
+                    // `resolve()` of a *RuntimeClasspath fails with AAR variant-selection
+                    // ambiguity (android-aar-metadata / android-classes-jar / …). Touching
+                    // resolutionResult.root resolves the graph, writes the lock, and never asks
+                    // for artifact files, so the ambiguity never arises.
+                    .forEach { it.incoming.resolutionResult.root }
             }
         }
     }
