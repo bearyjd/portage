@@ -60,7 +60,8 @@ class LocalAdbBridge internal constructor(
                 } catch (n: NoRouteToHostException) {
                     AdbBridge.PairingResult.Unavailable(PAIRING_ENDPOINT_DOWN)
                 } catch (t: Throwable) {
-                    AdbBridge.PairingResult.Unavailable(t.message ?: t.javaClass.simpleName)
+                    // Fixed copy, never raw library internals (review 2026-06-12, LOW).
+                    AdbBridge.PairingResult.Unavailable(PAIRING_FAILED)
                 }
             }
         }
@@ -69,6 +70,8 @@ class LocalAdbBridge internal constructor(
         opLock.withLock {
             if (gate.isConnected()) return@withLock AdbBridge.ConnectionResult.Connected
             try {
+                // The outer guard fires TIMEOUT_SLACK_MS after the gate's own timeout so the
+                // gate gets to map its own, more specific failure first.
                 withTimeout(connectTimeoutMs + TIMEOUT_SLACK_MS) {
                     gate.connect(connectTimeoutMs)
                 }
@@ -89,10 +92,10 @@ class LocalAdbBridge internal constructor(
                 if (e.message.orEmpty().contains("find any valid host", ignoreCase = true)) {
                     AdbBridge.ConnectionResult.NoEndpoint
                 } else {
-                    AdbBridge.ConnectionResult.Rejected(e.message ?: "connection failed")
+                    AdbBridge.ConnectionResult.Rejected(KEY_REFUSED)
                 }
             } catch (t: Throwable) {
-                AdbBridge.ConnectionResult.Rejected(t.message ?: t.javaClass.simpleName)
+                AdbBridge.ConnectionResult.Rejected(CONNECT_FAILED)
             }
         }
     }
@@ -175,13 +178,17 @@ class LocalAdbBridge internal constructor(
 
         val commit = ShellArgs.command("pm", "install-commit", sessionId)
             ?: return AdbBridge.InstallResult.Failed("bad session")
-        val committed = shell(commit)
-        return when {
-            committed is AdbBridge.ShellResult.Completed && committed.ok &&
-                committed.stdout.contains("Success") -> AdbBridge.InstallResult.Installed
-
-            committed is AdbBridge.ShellResult.Completed ->
-                AdbBridge.InstallResult.Failed(committed.stdout.trim().take(200))
+        // The exit code is the authoritative verdict; matching pm's "Success" string would
+        // break on output-format drift (review 2026-06-12). A failed commit abandons the
+        // session rather than leaving it for OS reaping.
+        return when (val committed = shell(commit)) {
+            is AdbBridge.ShellResult.Completed ->
+                if (committed.ok) {
+                    AdbBridge.InstallResult.Installed
+                } else {
+                    shellQuietly("pm", "install-abandon", sessionId)
+                    AdbBridge.InstallResult.Failed(committed.stdout.trim().take(200))
+                }
 
             else -> AdbBridge.InstallResult.BridgeUnavailable
         }
@@ -272,7 +279,9 @@ class LocalAdbBridge internal constructor(
 
         const val PAIRING_ENDPOINT_DOWN =
             "pairing endpoint unreachable — keep the pairing dialog open and retry"
+        const val PAIRING_FAILED = "pairing failed — reopen the pairing dialog and retry"
         const val KEY_REFUSED = "adbd refused our key — re-pair required"
+        const val CONNECT_FAILED = "debug connection failed — toggle Wireless debugging and retry"
 
         val SESSION_ID = Regex("\\[(\\d+)]")
     }

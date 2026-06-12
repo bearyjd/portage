@@ -30,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -185,7 +186,10 @@ private fun PairingStep(
     onSkip: () -> Unit,
 ) {
     val s = LocalSpacing.current
-    var code by rememberSaveable { mutableStateOf("") }
+    // Plain remember for the code: rememberSaveable would serialize the pairing code into the
+    // saved-instance Bundle (security review 2026-06-12). Codes expire in seconds anyway —
+    // losing the field on rotation just means re-reading it from the dialog.
+    var code by remember { mutableStateOf("") }
     var portText by rememberSaveable { mutableStateOf("") }
 
     Column {

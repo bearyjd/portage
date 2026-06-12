@@ -90,10 +90,22 @@ class AdbKeyStore(private val dir: File, private val commonName: String = "porta
 
     private fun persist(identity: AdbIdentity, keyFile: File, certFile: File) {
         dir.mkdirs()
-        keyFile.writeBytes(identity.privateKey.encoded) // PKCS#8
-        keyFile.setReadable(false, false)
-        keyFile.setReadable(true, true) // owner-only, belt-and-braces inside app-private storage
-        certFile.writeBytes(identity.certificate.encoded) // DER
+        // Security review 2026-06-12 (MEDIUM): permissions are stripped BEFORE any secret byte
+        // lands, and the key is installed by atomic rename — no window where a partially
+        // written or group-readable key file exists, even inside app-private storage.
+        val staging = File(dir, keyFile.name + ".tmp")
+        staging.delete()
+        staging.createNewFile()
+        staging.setReadable(false, false)
+        staging.setReadable(true, true)
+        staging.setWritable(false, false)
+        staging.setWritable(true, true)
+        staging.writeBytes(identity.privateKey.encoded) // PKCS#8
+        if (!staging.renameTo(keyFile)) {
+            keyFile.delete()
+            check(staging.renameTo(keyFile)) { "atomic key install failed" }
+        }
+        certFile.writeBytes(identity.certificate.encoded) // DER (public half — not sensitive)
     }
 
     private companion object {

@@ -105,6 +105,10 @@ supply-chain surface than one auditable Java library.
   audit** (its own README says so). Before release: a dedicated review of the library
   source at the pinned tag (same treatment as the vendored noise-java tree), plus the CI
   dependency-audit gate (OSV-Scanner) that is already an open follow-up.
+- **Accepted-residual hardening ideas from the 2026-06-12 review** (tracked, not blocking):
+  a per-invocation nonce on the shell exit sentinel (output of trusted, fixed commands can
+  theoretically forge `__PORTAGE_EXIT__`); an explicit truncation marker when the 4 MiB
+  exec output cap is hit.
 
 ## 6. OS-integration path (the GrapheneOS contribution surface)
 

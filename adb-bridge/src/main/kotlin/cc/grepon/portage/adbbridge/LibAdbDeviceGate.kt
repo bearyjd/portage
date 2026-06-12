@@ -45,9 +45,10 @@ internal class LibAdbDeviceGate(
 
     // One ADB identity + one manager per process (libadb-android caches a static SSLContext
     // keyed to the first identity it sees). Created lazily on the IO dispatcher at first use.
-    private val manager: AbsAdbConnectionManager by lazy {
-        PortageAdbManager(keyStore.load())
-    }
+    // The Lazy handle is kept so isConnected/closeQuietly never FORCE init (key generation)
+    // just to answer "no" / tear down nothing (code review 2026-06-12, MEDIUM).
+    private val lazyManager = lazy { PortageAdbManager(keyStore.load()) }
+    private val manager: AbsAdbConnectionManager by lazyManager
 
     override suspend fun pair(port: Int, pairingCode: String) {
         runInterruptible(io) {
@@ -60,12 +61,13 @@ internal class LibAdbDeviceGate(
         manager.connectTls(appContext, timeoutMs)
     }
 
-    override fun isConnected(): Boolean = runCatching { manager.isConnected }.getOrDefault(false)
+    override fun isConnected(): Boolean =
+        lazyManager.isInitialized() && runCatching { manager.isConnected }.getOrDefault(false)
 
     override fun closeQuietly() {
         // Closes the underlying connection; an in-flight exec's read aborts with an
-        // IOException rather than blocking forever.
-        runCatching { manager.disconnect() }
+        // IOException rather than blocking forever. A never-initialized gate is a no-op.
+        if (lazyManager.isInitialized()) runCatching { manager.disconnect() }
     }
 
     override suspend fun exec(command: String): String = runInterruptible(io) {

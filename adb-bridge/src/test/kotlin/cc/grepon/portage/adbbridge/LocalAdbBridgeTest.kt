@@ -354,6 +354,24 @@ class LocalAdbBridgeTest {
     }
 
     @Test
+    fun `installApk abandons the session when the commit step fails`() = runTest {
+        val gate = FakeGate().apply { connected = true }
+        val seen = mutableListOf<String>()
+        gate.respond { inner ->
+            seen += inner
+            when {
+                inner.startsWith("pm install-create") -> 0 to "[8]"
+                inner.startsWith("pm install-write") -> 0 to "Success"
+                inner.startsWith("pm install-commit") -> 1 to "Failure [INSTALL_FAILED_INVALID_APK]"
+                else -> 0 to ""
+            }
+        }
+        val result = bridge(gate).installApk("/data/local/tmp/base.apk")
+        assertThat(result).isInstanceOf(AdbBridge.InstallResult.Failed::class.java)
+        assertThat(seen).contains("pm install-abandon 8")
+    }
+
+    @Test
     fun `installApk on a dead bridge is BridgeUnavailable`() = runTest {
         assertThat(bridge(FakeGate()).installApk("/data/local/tmp/base.apk"))
             .isEqualTo(AdbBridge.InstallResult.BridgeUnavailable)

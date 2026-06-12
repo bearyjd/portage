@@ -102,7 +102,10 @@ class SettingsProvidersTest {
         assertThat(provider.available()).isTrue()
         provider.exportTo(out)
 
-        val names = SettingsCodec.decode(ByteArrayInputStream(out.toByteArray()))!!.entries.map { it.name }
+        val snapshot = checkNotNull(SettingsCodec.decode(ByteArrayInputStream(out.toByteArray()))) {
+            "export payload should round-trip through the codec"
+        }
+        val names = snapshot.entries.map { it.name }
         assertThat(names).containsAtLeast("font_scale", "ui_night_mode", "window_animation_scale")
         assertThat(names).doesNotContain("screen_brightness")
         assertThat(names).doesNotContain("volume_alarm")
