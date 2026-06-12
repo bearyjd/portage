@@ -20,13 +20,13 @@ enum class Classification { SAFE, RISKY, DEVICE_SPECIFIC }
 
 /** How the receiver actually writes the key (ADR-001 §1 reach table). */
 enum class Reach {
-    /** Settings.System via user-granted "Modify system settings" — no Shizuku (Tier 0). */
+    /** Settings.System via user-granted "Modify system settings" — no privilege bridge (Tier 0). */
     T0_SYSTEM,
 
     /** Settings.Secure/Global after the one-shot WRITE_SECURE_SETTINGS grant. */
     T1_GRANT,
 
-    /** Needs a LIVE Shizuku shell (role/overlay/pm) at call time. */
+    /** Needs a LIVE shell-uid bridge (role/overlay/pm) at call time (AdbBridge, ADR-003). */
     T1_SHELL,
 
     /** Excluded — not written by portage. */

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  portage — GrapheneOS device-parity transfer
+  Copyright (C) 2026 Grepon Labs LLC. Licensed under AGPL-3.0.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      WRITE_SECURE_SETTINGS is declared so the shell uid can `pm grant` it to the app holding
+      this module (ADR-001 Phase A, now installed by the bridge's own selfGrant). Harmless
+      without the grant. Only portage-recv links this module; it never reaches portage-send.
+      INTERNET covers the bridge's localhost sockets (pairing + adbd TLS connect).
+    -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>

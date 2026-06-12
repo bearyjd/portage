@@ -31,10 +31,14 @@ misses, directly phone-to-phone.** They are complementary, not competitors:
   call log, SMS/MMS (via temporary default-SMS-app handoff), app inventory + assisted
   reinstall, and the `Settings.System` slice of settings sync (font scale, screen
   timeout, auto-rotate, haptics, time format) via user-granted "Modify system settings."
-- **Tier 1 — requires [Shizuku](https://shizuku.rikka.app/) (graceful-degrade):**
-  allow-listed `Settings.Secure` / `Settings.Global` sync, batched app reinstall, and
-  opt-in runtime-permission parity. See `docs/prp/ADR-001-privilege-feasibility.md` for
-  the privilege architecture and on-device verification plan.
+- **Tier 1 — one-time Wireless Debugging setup (graceful-degrade):** allow-listed
+  `Settings.Secure` / `Settings.Global` sync, batched app reinstall, and opt-in
+  runtime-permission parity. portage owns the whole privilege stack itself — enable
+  Developer options, enable Wireless debugging, type the 6-digit pairing code into the
+  in-app wizard; no companion app, no PC. See
+  `docs/prp/ADR-003-self-contained-privilege.md` (architecture) and
+  `docs/prp/ADR-001-privilege-feasibility.md` (the underlying grant model + on-device
+  verification plan).
 
 ## Building
 
@@ -76,16 +80,16 @@ Landed across PRs #5 (providers + receiver apply wiring), #6 (`portage-send`), #
 live channel) — each through TDD plus independent code-review and security-review gates.
 
 **Not yet done:** the two-phone on-device validation walk-through (the one DoD step that
-needs real hardware); **Tier 1** (Shizuku `Settings.Secure`/`Global` sync — the `privileged`
-module is still a `ShizukuPrivilegedOps` stub); and the SMS-restore default-app handoff
-(receiver declares no SMS role components yet — see `CLAUDE.md` follow-ups). Live security
-follow-ups (noise-java verbatim-diff review, CI dependency audit, port-probe TOCTOU) are
-tracked in `CLAUDE.md`.
+needs real hardware), and on-device verification of the self-contained Tier-1 privilege
+bridge (`:adb-bridge` pairing → connect → self-grant on a real GOS device — see ADR-003's
+verify-first list). Live security follow-ups (noise-java verbatim-diff review, CI
+dependency audit, libadb-android dependency review) are tracked in `CLAUDE.md`.
 
 The design artifacts live in [`docs/prp/`](docs/prp/):
 
 - [`portage-prp-prompt.md`](docs/prp/portage-prp-prompt.md) — execution brief
-- [`ADR-001-privilege-feasibility.md`](docs/prp/ADR-001-privilege-feasibility.md) — Shizuku / Tier 1 go-no-go + verification procedure
+- [`ADR-001-privilege-feasibility.md`](docs/prp/ADR-001-privilege-feasibility.md) — Tier 1 go-no-go + verification procedure (grant architecture; originally verified via Shizuku)
+- [`ADR-003-self-contained-privilege.md`](docs/prp/ADR-003-self-contained-privilege.md) — self-contained ADB bridge replacing Shizuku
 - [`VERIFICATION-RUNBOOK.md`](docs/prp/VERIFICATION-RUNBOOK.md) — phone-ready V1–V8 checklist + results template (Tier 1 privilege feasibility)
 - [`TRANSFER-RUNBOOK.md`](docs/prp/TRANSFER-RUNBOOK.md) — two-phone Tier-0 transfer acceptance test (the DoD gate)
 - [`PROTOCOL.md`](docs/prp/PROTOCOL.md) — pairing + transfer wire format (QR anchor, Noise XXpsk3)

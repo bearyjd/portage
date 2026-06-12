@@ -175,6 +175,8 @@ fun DoneScreen(
     modifier: Modifier = Modifier,
     installActions: List<InstallAction> = emptyList(),
     onInstall: (InstallAction) -> Unit = {},
+    backupActionLabel: String = "Open backup settings",
+    onOpenBackup: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
     if (installActions.isEmpty()) {
@@ -184,7 +186,12 @@ fun DoneScreen(
                 .padding(horizontal = s.gutter),
             verticalArrangement = Arrangement.Center,
         ) {
-            DoneSummary(moved = moved, skipped = skipped)
+            DoneSummary(
+                moved = moved,
+                skipped = skipped,
+                backupActionLabel = backupActionLabel,
+                onOpenBackup = onOpenBackup,
+            )
             Spacer(Modifier.height(s.xl))
             SwissPrimaryButton(text = "Done", onClick = onDone, fullWidth = true)
         }
@@ -198,7 +205,14 @@ fun DoneScreen(
                 .weight(1f),
             contentPadding = PaddingValues(start = s.gutter, end = s.gutter, top = s.lg, bottom = s.lg),
         ) {
-            item { DoneSummary(moved = moved, skipped = skipped) }
+            item {
+                DoneSummary(
+                    moved = moved,
+                    skipped = skipped,
+                    backupActionLabel = backupActionLabel,
+                    onOpenBackup = onOpenBackup,
+                )
+            }
             item {
                 Spacer(Modifier.height(s.lg))
                 Text(
@@ -236,7 +250,12 @@ fun DoneScreen(
 
 /** The moved-count summary, shared by the plain and reinstall-list Done layouts. */
 @Composable
-private fun DoneSummary(moved: Int, skipped: Int) {
+private fun DoneSummary(
+    moved: Int,
+    skipped: Int,
+    backupActionLabel: String = "Open backup settings",
+    onOpenBackup: (() -> Unit)? = null,
+) {
     val s = LocalSpacing.current
     Column {
         Text(
@@ -274,6 +293,12 @@ private fun DoneSummary(moved: Int, skipped: Int) {
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onBackground,
         )
+        // The Seedvault handoff (PRP §3 division of labor): point at the system backup that
+        // owns app DATA, right where the user is wondering about it.
+        onOpenBackup?.let {
+            Spacer(Modifier.height(s.sm))
+            SwissTextAction(text = backupActionLabel, onClick = it)
+        }
     }
 }
 

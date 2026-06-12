@@ -1,11 +1,10 @@
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
-    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
-    namespace = "cc.grepon.portage.providers"
+    namespace = "cc.grepon.portage.wizard"
     compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
@@ -21,10 +20,11 @@ android {
 kotlin { jvmToolchain(17) }
 
 dependencies {
-    implementation(project(":core-model"))
-    implementation(project(":settings-catalog")) // SAFE-allowlist gate for the settings provider
+    // The wizard drives the privilege bootstrap THROUGH the bridge interface — it never touches
+    // the ADB wire protocol itself (ADR-003 boundary rule).
+    implementation(project(":adb-bridge"))
     implementation(libs.kotlinx.coroutines.core)
-    implementation(libs.kotlinx.serialization.json)
+
     testImplementation(libs.junit)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)

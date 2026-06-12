@@ -40,21 +40,43 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.13'
-      - name: Unit tests (core-model + core-transport + privileged + providers + app-recv + app-send)
-        run: gradle :core-model:test :core-transport:testDebugUnitTest :privileged:testDebugUnitTest :providers:testDebugUnitTest :app-recv:testDebugUnitTest :app-send:testDebugUnitTest --no-daemon --stacktrace
+      - name: Unit tests (core-model + core-transport + adb-bridge + wizard + providers + app-recv + app-send)
+        run: gradle :core-model:test :core-transport:testDebugUnitTest :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest :app-recv:testDebugUnitTest :app-send:testDebugUnitTest --no-daemon --stacktrace
       - name: Assemble debug APKs
         run: gradle assembleDebug --no-daemon --stacktrace
       - name: Assert portage-send carries no escalation surface
-        # Least-privilege gate: the sender must never declare secure-settings write, the Shizuku
-        # API permission, or the Shizuku provider — all of which can reach it only by transitive
-        # manifest merge (app-send → :providers → :privileged). app-send strips them via
-        # tools:node="remove"; this fails the build if the merged manifest regresses.
+        # Least-privilege gate: the sender must never declare secure-settings write or carry the
+        # self-contained ADB bridge (ADR-003) — :adb-bridge links only into portage-recv, so any
+        # hit here means a dependency edge regressed. The native-lib check runs as a
+        # positive+negative pair: the receiver MUST match the pattern (proves the pattern is
+        # still meaningful) and the sender MUST NOT (review 2026-06-12).
         run: |
           set -euo pipefail
           manifest=$(find app-send/build/intermediates -path '*merged_manifest*/AndroidManifest.xml' | head -1)
           test -n "$manifest" || { echo "::error::merged sender manifest not found"; exit 1; }
-          if grep -qE 'WRITE_SECURE_SETTINGS|shizuku.manager.permission.API_V23|rikka\.shizuku\.ShizukuProvider' "$manifest"; then
-            echo "::error::portage-send merged manifest leaks an escalation permission or the Shizuku provider"
+          if grep -qE 'WRITE_SECURE_SETTINGS|cc\.grepon\.portage\.adbbridge' "$manifest"; then
+            echo "::error::portage-send merged manifest leaks an escalation permission or the ADB bridge"
+            exit 1
+          fi
+          send_apk=$(find app-send/build/outputs/apk/debug -name '*.apk' | head -1)
+          recv_apk=$(find app-recv/build/outputs/apk/debug -name '*.apk' | head -1)
+          test -f "$send_apk" || { echo "::error::sender debug APK not found"; exit 1; }
+          test -f "$recv_apk" || { echo "::error::receiver debug APK not found"; exit 1; }
+          if ! unzip -l "$recv_apk" | grep -qiE 'conscrypt|spake2'; then
+            echo "::error::receiver APK lacks the expected ADB-bridge native libs — the sender leak check pattern is stale"
+            exit 1
+          fi
+          if unzip -l "$send_apk" | grep -qiE 'conscrypt|spake2'; then
+            echo "::error::portage-send APK contains ADB-bridge native libraries — a privilege dependency leaked into the sender"
+            exit 1
+          fi
+      - name: Assert raw AdbBridge.shell() stays inside the privilege modules
+        # ADR-003 §1 call-site rule, made durable: only :adb-bridge (and :wizard via typed ops)
+        # may touch the raw shell. Typed operations are the public surface everywhere else.
+        run: |
+          set -euo pipefail
+          if grep -rn '\.shell(' --include='*.kt' app-recv app-send providers core-model core-transport settings-catalog wizard | grep -v '/test/'; then
+            echo "::error::raw AdbBridge.shell() call outside :adb-bridge — use a typed operation"
             exit 1
           fi
       - name: Upload debug APKs

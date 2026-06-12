@@ -21,8 +21,10 @@ composeBom = "2026.05.01"     # verify latest
 coroutines = "1.11.0"
 serialization = "1.8.1"
 cbor = "1.8.1"                # kotlinx-serialization-cbor
-# Privilege bridge
-shizuku = "13.1.5"
+# Self-contained privilege bridge (ADR-003): wireless-debugging pairing + TLS self-connect.
+libadb = "3.1.1"              # com.github.MuntashirAkon (JitPack); dual GPL-3.0+/Apache-2.0, Apache elected
+conscrypt = "2.5.3"           # public-API Conscrypt: pairing EKM export without hidden platform APIs
+bcpkix = "1.81"               # X509v3CertificateBuilder for the ADB identity; matches transitive bcprov 1.81
 # QR
 zxingCore = "3.5.4"           # QR generation (sender)
 zxingEmbedded = "4.3.0"       # journeyapps wrapper: BarcodeEncoder (send) + BarcodeView (recv); no GMS
@@ -53,8 +55,9 @@ kotlinx-serialization-core = { module = "org.jetbrains.kotlinx:kotlinx-serializa
 kotlinx-serialization-cbor = { module = "org.jetbrains.kotlinx:kotlinx-serialization-cbor", version.ref = "cbor" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 
-shizuku-api = { module = "dev.rikka.shizuku:api", version.ref = "shizuku" }
-shizuku-provider = { module = "dev.rikka.shizuku:provider", version.ref = "shizuku" }
+libadb-android = { module = "com.github.MuntashirAkon:libadb-android", version.ref = "libadb" }
+conscrypt-android = { module = "org.conscrypt:conscrypt-android", version.ref = "conscrypt" }
+bouncycastle-bcpkix = { module = "org.bouncycastle:bcpkix-jdk15to18", version.ref = "bcpkix" }
 
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxingCore" }
 zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxingEmbedded" }

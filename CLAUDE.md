@@ -27,14 +27,27 @@ branch-per-feature  →  author  →  independent review  →  fix findings  →
 
 CI gates on every push/PR: `:settings-catalog:test` (safety-critical allowlist invariant),
 `:core-model:test` + `:core-transport:testDebugUnitTest` (Noise loopback + adversarial),
-`assembleDebug` (both APKs). See `.github/workflows/build.yml`.
+`:adb-bridge:testDebugUnitTest` + `:wizard:testDebugUnitTest` (privilege bridge + bootstrap
+state machine), `assembleDebug` (both APKs), and the app-send no-escalation assert.
+See `.github/workflows/build.yml`.
 
 ## Established facts (don't re-litigate; verified on real hardware / in CI)
 
 - **Privilege model = grant architecture** (ADR-001, verified on Pixel 9 Pro XL / GOS
-  Android 16). Shizuku is a ONE-SHOT at Tier 1 unlock: `pm grant WRITE_SECURE_SETTINGS`
-  persists across reboot, then settings writes use the normal `Settings.*` API with no
-  live bridge. `Settings.System` needs no Shizuku at all (Tier 0). Owner-profile only.
+  Android 16): the ONE-SHOT `pm grant WRITE_SECURE_SETTINGS` persists across reboot, then
+  settings writes use the normal `Settings.*` API with no live bridge. `Settings.System`
+  needs no privilege at all (Tier 0). Owner-profile only.
+- **Privilege delivery = self-contained ADB bridge** (ADR-003; replaced Shizuku entirely).
+  `:adb-bridge` pairs with this device's own Wireless Debugging service (libadb-android
+  3.1.1, Apache-2.0 elected, via JitPack), self-connects to adbd over localhost TLS, and
+  runs shell-uid ops. **`AdbBridge` is the only allowed entry point to privileged
+  operations. No module other than `:adb-bridge` may speak the ADB wire protocol.** Raw
+  `shell()` call sites outside `:adb-bridge`/`:wizard` are review blockers. The in-app
+  `PrivilegeWizard` (`:wizard` + `WizardScreen` in app-recv) owns the bootstrap flow and
+  MUST disconnect right after the capability probe — never hold shell uid open.
+  LADB (tytydraco/LADB) is acknowledged prior art for the *architecture* (it bundles the
+  adb binary; no code was derived from it — see ADR-003 §3 for the license facts).
+  On-device verification of the full pair→connect→grant chain is STILL OPEN (ADR-003 §7).
 - **Transport crypto = `NoisePSK_XX`** via vendored noise-java (ADR-002). No audited JVM
   lib does modern `pskN`; legacy PSK placement is security-sufficient (PSK-gated mutual
   auth + ephemeral FS). Crypto stays behind `SecureChannel` so it's swappable.
@@ -54,9 +67,11 @@ agreement with the manifest, item-count cap).
 STILL OPEN: dedicated verbatim-diff review of the vendored noise-java tree before
 release; a CI dependency-audit step that FAILS the build on a known CVE (OSV-Scanner
 or equivalent — `.github/dependabot.yml` opens update PRs but is NOT a build gate;
-re-asked by the PR #21 security re-review). CLOSED since: port-probe TOCTOU — the
-sender probe-and-releases, then `acceptAsSender` rebinds with `SO_REUSEADDR` so the
-race is benign (`SenderViewModel` ~L186).
+re-asked by the PR #21 security re-review); a dedicated source review of the pinned
+libadb-android 3.1.1 + spake2-android dependency (never security-audited upstream —
+ADR-003 §5) before release. CLOSED since: port-probe TOCTOU — the sender
+probe-and-releases, then `acceptAsSender` rebinds with `SO_REUSEADDR` so the race is
+benign (`SenderViewModel` ~L186).
 
 ## Post-Tier-0 follow-ups
 

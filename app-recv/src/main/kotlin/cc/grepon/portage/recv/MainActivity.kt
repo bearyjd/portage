@@ -18,7 +18,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import cc.grepon.portage.privileged.ShizukuPrivilegedOps
+import cc.grepon.portage.adbbridge.AdbBridge
+import cc.grepon.portage.adbbridge.AdbBridges
 import cc.grepon.portage.providers.ApplyProviderRegistry
 import cc.grepon.portage.providers.calendar.AndroidCalendarStore
 import cc.grepon.portage.providers.calendar.CalendarApplyProvider
@@ -32,9 +33,11 @@ import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.providers.settings.AndroidSecureGlobalSettingsStore
 import cc.grepon.portage.providers.settings.AndroidSystemSettingsStore
 import cc.grepon.portage.providers.settings.SettingsApplyProvider
+import cc.grepon.portage.providers.settings.TierOneGrant
 import cc.grepon.portage.providers.sms.AndroidSmsRoleGateway
 import cc.grepon.portage.providers.sms.AndroidSmsStore
 import cc.grepon.portage.providers.sms.SmsApplyProvider
+import cc.grepon.portage.recv.privilege.PrivilegeWizardHolder
 import cc.grepon.portage.recv.sms.AndroidSmsRoleCoordinator
 import cc.grepon.portage.recv.sms.SmsRoleCoordinator
 import cc.grepon.portage.recv.sms.SmsRoleCoordinatorHolder
@@ -74,7 +77,10 @@ class MainActivity : ComponentActivity() {
         File(cacheDir, STAGING_DIR).deleteRecursively()
         smsRoleCoordinator.requestLauncher = { intent -> smsRoleLauncher.launch(intent) }
         setContent {
-            ReceiverApp(viewModel = viewModel)
+            ReceiverApp(
+                viewModel = viewModel,
+                wizard = PrivilegeWizardHolder.get(applicationContext),
+            )
         }
     }
 
@@ -83,6 +89,9 @@ class MainActivity : ComponentActivity() {
         // Returning from the system change-default prompt: re-check whether portage is still the
         // default SMS app so the in-app "restore" affordance clears once the role is handed back.
         viewModel.refreshSmsRoleStrand()
+        // Returning from Settings mid-wizard: Developer options / Wireless debugging may have
+        // just been toggled — let the privilege wizard advance (ADR-003).
+        PrivilegeWizardHolder.get(applicationContext).recheck()
     }
 }
 
@@ -108,13 +117,14 @@ private class ReceiverViewModelFactory(
                     SmsApplyProvider(AndroidSmsStore(resolver), AndroidSmsRoleGateway(context)),
                     AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), onInstallActions),
                     // Tier-0 SYSTEM keys write today. Tier-1 SECURE/GLOBAL keys go live once the
-                    // user authorizes Shizuku and the one-shot WRITE_SECURE_SETTINGS grant lands;
-                    // until then ShizukuPrivilegedOps reports the bridge unavailable and they
-                    // self-skip. (The in-app "unlock secure settings" affordance is a follow-up.)
+                    // one-shot WRITE_SECURE_SETTINGS grant lands — normally installed by the
+                    // privilege wizard's probe (ADR-003); this lazy TierOneGrant adapter is the
+                    // in-apply fallback when the bridge happens to still be connected. With no
+                    // grant and no live bridge, Tier-1 keys self-skip.
                     SettingsApplyProvider(
                         AndroidSystemSettingsStore(context),
                         AndroidSecureGlobalSettingsStore(context),
-                        ShizukuPrivilegedOps(context),
+                        tierOneGrant = adbTierOneGrant(AdbBridges.local(context)),
                     ),
                 ),
             )
@@ -127,3 +137,14 @@ private class ReceiverViewModelFactory(
         ) as T
     }
 }
+
+/** Adapt the AdbBridge self-grant (ADR-003) to the providers' narrow [TierOneGrant] seam. */
+private fun adbTierOneGrant(bridge: AdbBridge) = TierOneGrant {
+    when (bridge.selfGrant(WRITE_SECURE_SETTINGS_PERMISSION)) {
+        AdbBridge.GrantResult.GRANTED -> TierOneGrant.Outcome.GRANTED
+        AdbBridge.GrantResult.REJECTED -> TierOneGrant.Outcome.REJECTED
+        AdbBridge.GrantResult.BRIDGE_UNAVAILABLE -> TierOneGrant.Outcome.UNAVAILABLE
+    }
+}
+
+private const val WRITE_SECURE_SETTINGS_PERMISSION = "android.permission.WRITE_SECURE_SETTINGS"

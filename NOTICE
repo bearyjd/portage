@@ -1,0 +1,25 @@
+portage — GrapheneOS device-parity transfer
+Copyright (C) 2026 Grepon Labs LLC. Licensed under AGPL-3.0 (see LICENSE).
+
+This product includes third-party software:
+
+libadb-android (https://github.com/MuntashirAkon/libadb-android)
+  Copyright (c) Muntashir Al-Islam and contributors.
+  Dual-licensed GPL-3.0-or-later OR Apache-2.0; portage elects the Apache License 2.0
+  (docs/prp/ADR-003-self-contained-privilege.md §4). Portions of that library carry
+  additional BSD-3-Clause notices (Copyright (c) Cameron Gutman, Sam Palmer) in
+  AdbStream/AdbAuthenticationFailedException.
+  Transitive: spake2-java / spake2-android (LGPL-3.0, JNI port of BoringSSL SPAKE2),
+  Bouncy Castle (MIT-style license).
+
+Conscrypt (https://github.com/google/conscrypt) — Apache License 2.0.
+
+noise-java (vendored under core-transport; see that tree's headers) — used for the
+transfer channel handshake per ADR-002.
+
+Acknowledged prior art (no code derived):
+  LADB (https://github.com/tytydraco/LADB) demonstrated production on-device ADB
+  self-connection over Wireless Debugging — the architecture :adb-bridge implements
+  with a protocol library instead of a bundled adb binary.
+  Shizuku (https://github.com/RikkaApps/Shizuku) was portage's previous privilege
+  bridge (ADR-001) and its manager's pairing client informed the feasibility analysis.

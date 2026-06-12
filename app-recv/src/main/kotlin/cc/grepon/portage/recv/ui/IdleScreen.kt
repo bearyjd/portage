@@ -36,6 +36,7 @@ import cc.grepon.portage.recv.ui.theme.LocalSpacing
 @Composable
 fun IdleScreen(
     onScan: () -> Unit,
+    onSetup: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val s = LocalSpacing.current
@@ -98,6 +99,14 @@ fun IdleScreen(
             text = "Scan the other phone",
             onClick = onScan,
             fullWidth = true,
+        )
+
+        Spacer(Modifier.height(s.lg))
+
+        // The privilege bootstrap (ADR-003): optional, re-runnable, never required for Tier 0.
+        SwissTextAction(
+            text = "Advanced transfer setup",
+            onClick = onSetup,
         )
 
         Spacer(Modifier.height(s.xl))

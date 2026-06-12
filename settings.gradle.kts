@@ -17,9 +17,9 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // Shizuku artifacts (dev.rikka.*) are published here.
+        // libadb-android + its spake2-java dependency (ADR-003) are published here.
         maven("https://jitpack.io") {
-            content { includeGroupByRegex("dev\\.rikka.*") }
+            content { includeGroupByRegex("com\\.github\\.MuntashirAkon.*") }
         }
     }
 }
@@ -31,5 +31,6 @@ include(":app-recv")
 include(":core-model")
 include(":core-transport")
 include(":providers")
-include(":privileged")
+include(":adb-bridge")
+include(":wizard")
 include(":settings-catalog")
