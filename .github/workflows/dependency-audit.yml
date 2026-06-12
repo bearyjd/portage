@@ -1,0 +1,63 @@
+name: dependency-audit
+
+# Build-failing CVE gate (CLAUDE.md "Open security follow-ups"): Dependabot opens update PRs
+# and raises alerts, but is NOT a gate. This job resolves the real transitive dependency graph
+# that ships in the APKs and FAILS the build if OSV reports a known advisory against any of it —
+# the de-risking step the libadb-android / spake2 introduction (ADR-003) made overdue.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a CVE newly disclosed against an UNCHANGED dependency still trips the gate.
+    - cron: '17 6 * * 1'
+
+concurrency:
+  group: dependency-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  osv-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.13'
+
+      - name: Generate dependency lockfiles (CI-only, not committed)
+        # The init script enables locking + a resolve task ONLY for the two APK modules; their
+        # runtime classpaths transitively cover every shipped dependency. Writes
+        # app-recv/gradle.lockfile and app-send/gradle.lockfile. --no-configuration-cache is
+        # required by --write-locks.
+        run: |
+          gradle --init-script .github/osv/locking.init.gradle.kts \
+            :app-recv:osvResolveForLocks :app-send:osvResolveForLocks \
+            --write-locks --no-configuration-cache --no-daemon --stacktrace
+
+      - name: Verify lockfiles were produced
+        # Fail loudly if lock generation silently produced nothing — otherwise the scan below
+        # would pass vacuously (a green gate that audits nothing is worse than no gate).
+        run: |
+          set -euo pipefail
+          test -s app-recv/gradle.lockfile || { echo "::error::app-recv/gradle.lockfile missing or empty — the audit would scan nothing"; exit 1; }
+          test -s app-send/gradle.lockfile || { echo "::error::app-send/gradle.lockfile missing or empty — the audit would scan nothing"; exit 1; }
+
+      - name: OSV-Scanner (fails the build on a known advisory)
+        # Recursive scan of the tree picks up the two gradle.lockfiles generated above. The
+        # action exits non-zero when OSV reports a vulnerability, which fails this required check.
+        # Triaged false positives / accepted residuals go in osv-scanner.toml with justification.
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
+        with:
+          scan-args: |-
+            --recursive
+            ./
