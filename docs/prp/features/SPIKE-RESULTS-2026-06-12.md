@@ -55,7 +55,19 @@ Probed real keys via `settings list global/secure/system`:
   below PRP-06; do `device_name` as a quick follow-up (it rides the existing `ItemKind.SETTINGS`,
   no new wire). The guardrail invariant + a string validator are the only controls needed.
 
-## Revised implementation priority (value × CONFIRMED feasibility)
-1. PRP-02 Wallpaper  2. PRP-04 Sound selection  3. PRP-03 Secure-settings expansion
-4. PRP-06 App-backup relay  5. PRP-01 Wi-Fi (reframed: list + guided re-add)
-6. PRP-07 Bluetooth (list + manual checklist)  7. PRP-05 Notifications (reduce to DND-per-app or decline)
+## FINAL disposition (2026-06-13, after spikes + user decisions)
+- **PRP-02 Wallpaper — SHIPPED** (#34).
+- **PRP-04 Sound selection — SHIPPED** (#35, Phase 1).
+- **PRP-03 → `device_name` — SHIPPED** (#36); rest of PRP-03 declined per key probe above.
+- **PRP-07 Bluetooth — IN PROGRESS** via the PUBLIC `BluetoothAdapter.getBondedDevices()` +
+  `BLUETOOTH_CONNECT` runtime perm (NOT the privileged `bt_config.conf`/`dumpsys` path this doc first
+  assumed — that's denied to shell anyway). Sender-feasible, no bridge, no escalation. List + re-pair
+  checklist; no key transfer (keys are controller-bound).
+- **PRP-01 Wi-Fi — DECLINED** (user, 2026-06-13). Definitive: passwords are unreadable at **shell uid**
+  (the max portage's bridge reaches) — `WifiConfigStore.xml` denied, `cmd wifi`/`dumpsys wifi` never
+  expose the PSK; only **root** can, and GOS is unrooted. Even a sender-side bridge escalation yields
+  only an SSID list, not passwords — not worth breaking ADR-003. Seedvault's domain. See PRP-01.
+- **PRP-05 Notifications — DECLINED** (user, 2026-06-13). No per-channel shell verb; channels are
+  app-owned. See PRP-05.
+- **PRP-06 App-backup relay — HELD** for a product/scope decision (relay app-owned encrypted backups?
+  + raises the 64 MiB cap). Not yet built.

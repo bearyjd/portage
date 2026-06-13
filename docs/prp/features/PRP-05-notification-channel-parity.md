@@ -1,8 +1,11 @@
 # PRP-05 — Notification channel / per-app notification parity
 
-Status: **DRAFT — spike-gated**. Source: backlog #5 (`docs/prp/feature-research-2026-06.md:19`).
-Tier: **Privileged (Tier 1, shell-uid at apply time)**. Owner profile only. No root, no cloud.
-Drafted by planning agent, 2026-06-12. Feasibility is the crux; this PRP is honest about it.
+Status: **DECLINED — 2026-06-13 (per-channel parity infeasible via shell).** On-device probe
+(rango, GOS A16): `cmd notification` exposes **no per-channel importance/block verb** (only
+listeners, DND-per-app, bubbles), and per-app `NotificationChannel`s are app-owned and created at
+runtime — not externally writable. The only reachable surface (DND-per-app) is too thin to justify
+a new `ItemKind` + wire bump. DROPPED per user decision; see `SPIKE-RESULTS-2026-06-12.md`. Original
+draft retained below for the record.
 
 ---
 

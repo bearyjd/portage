@@ -1,8 +1,15 @@
 # PRP-01 — Wi-Fi saved networks + passphrases
 
-Status: **DRAFT — spike-gated.** Backlog #1 (`docs/prp/feature-research-2026-06.md` §"Ranked
-backlog", row 1). No code lands until the §3 feasibility spike returns GO with a chosen restore
-path. Privilege tier: **1** (privileged read; restore path TBD by spike).
+Status: **DECLINED — 2026-06-13 (not feasible on unrooted GOS; do not re-litigate).** On-device
+probe (rango, GOS A16, **shell uid 2000 — the MAX privilege portage's bridge can reach, NOT root**):
+the saved-network store `/data/misc/apexdata/com.android.wifi/` is Permission-denied even to shell;
+`cmd wifi list-networks` shows SSID + security type but **never a passphrase** and has no get/export
+verb; `dumpsys wifi` **redacts** PSKs (only flags like `HasEncryptedPreSharedKey: false`, never the
+value). Passwords are readable **only by root**, and GOS is unrooted (no `su`). Even escalating the
+**sender** to shell-uid — which would break ADR-003's recv-only-bridge invariant and add an exporter
+attack surface — yields only a **list of SSIDs, never the passwords**, so the trade isn't worth it.
+This is Seedvault's domain (it holds the system backup privilege portage deliberately lacks). See
+`SPIKE-RESULTS-2026-06-12.md`. Original draft retained below for the record.
 
 Grounding: this PRP was written against the live tree. It mirrors the call-log provider
 (`providers/.../calllog/CallLogProviders.kt`), the Tier-1 settings provider

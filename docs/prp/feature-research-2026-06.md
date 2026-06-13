@@ -12,11 +12,11 @@ app-*data* blobs (Seedvault's territory — the no-`seedvault.blob` discipline h
 
 | # | Feature | Tier / privilege | Source signal | Seedvault gap |
 |---|---------|------------------|---------------|---------------|
-| 1 | Wi-Fi saved networks + passphrases | Tier 1 — privileged read of `/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml`; restore via `WifiManager`/suggestions | Every competitor (Google cable, Smart Switch, Swift, Migrate); top "did my stuff move?" question | Yes — skips/flaky |
+| 1 | Wi-Fi saved networks + passphrases — **DECLINED** (passwords unreadable at any non-root privilege on GOS; see PRP-01) | Tier 1 — privileged read of `/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml`; restore via `WifiManager`/suggestions | Every competitor (Google cable, Smart Switch, Swift, Migrate); top "did my stuff move?" question | Yes — skips/flaky |
 | 2 | Wallpaper (home + lock) | Tier 0 — `WallpaperManager` get/set `FLAG_SYSTEM`/`FLAG_LOCK`, no privilege | Nearly every competitor moves it | Yes — image bytes ≠ setting |
 | 3 | Secure-settings allowlist expansion (Panic config, USB-peripheral hardening, Bluetooth timeout, priority conversations, emergency owner info, starred-contact status, DND/Zen global) | Tier 1 — `settings-catalog` allowlist entries | CalyxOS Seedvault docs name these as explicit exclusions; on-brand for privacy audience | Yes — named exclusions |
 | 4 | Ringtone / notification / alarm sound selection (+ custom sound files) | Tier 0 — `Settings.System` `RINGTONE`/`NOTIFICATION_SOUND`/`ALARM_ALERT` + media copy | Smart Switch (Clock/preferences) | Partial |
-| 5 | Notification channel / per-app notification parity | Privileged — adjacent to existing runtime-permission parity | Seedvault/CalyxOS: "planned, not currently available"; loud, broad annoyance | Yes — named gap |
+| 5 | Notification channel / per-app notification parity — **DECLINED** (no per-channel shell verb; channels are app-owned; see PRP-05) | Privileged — adjacent to existing runtime-permission parity | Seedvault/CalyxOS: "planned, not currently available"; loud, broad annoyance | Yes — named gap |
 | 6 | Guided LAN relay for app-owned encrypted backups (Signal/Molly, Aegis) | Tier 0 orchestration — ferries the app's OWN encrypted export file + passphrase prompt over LAN; does NOT own the blob | Very high demand (Signal/Molly + Aegis are flagship de-Googled apps); no good no-cloud answer today | Adjacent (not owned) |
 | 7 | Bluetooth pairing list + assisted re-pair (feasibility spike) | Tier 1 — privileged `/data/misc/bluedroid/bt_config.conf` | Recurring migration annoyance; CalyxOS names BT among Seedvault exclusions | Yes — named gap |
 
