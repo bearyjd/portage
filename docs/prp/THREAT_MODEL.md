@@ -61,6 +61,14 @@ double-wrapped under the Noise transport in transit).
    GENERATED name. That copy is the user's own file in their chosen location; the opaque
    bytes are never logged or interpreted. A longer-lived copy is an accepted, documented
    residual — prefer delete-after-import.
+8. **Persisted SAF read grant for a relay pick** (PRP-06): so a pick survives the
+   export-then-return-to-portage workflow (incl. activity recreation), the sender takes a
+   persistable read grant on the user-picked backup Uri and releases it on remove / reset /
+   successful ship. If the process is killed mid-flow before any release, that read grant can
+   orphan across sessions. Accepted, bounded residual: it is the user's OWN read-only file,
+   never the passphrase, releasable, and bounded by Android's per-app persisted-grant cap —
+   same "on-device process compromise out of scope" boundary as the QR-PSK residual (§1).
+   Optional future hardening: a release-on-start sweep of orphaned persisted grants.
 
 ## 4. Properties summary (what the design *guarantees*)
 
