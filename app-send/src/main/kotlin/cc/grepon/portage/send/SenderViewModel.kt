@@ -14,7 +14,12 @@ import androidx.lifecycle.viewModelScope
 import cc.grepon.portage.model.ItemStatus
 import cc.grepon.portage.model.PairingPayload
 import cc.grepon.portage.providers.ExportProvider
+import cc.grepon.portage.providers.inventory.InventorySource
+import cc.grepon.portage.providers.relay.RelayAppDetector
+import cc.grepon.portage.providers.relay.RelayCandidate
 import cc.grepon.portage.send.pairing.LanAddresses
+import cc.grepon.portage.send.relay.RelayFile
+import cc.grepon.portage.send.relay.relayExportProviders
 import cc.grepon.portage.send.transfer.ManifestBuilder
 import cc.grepon.portage.send.transfer.StagedManifest
 import cc.grepon.portage.send.transfer.TransferEngine
@@ -57,21 +62,71 @@ class SenderViewModel(
     private val addressHints: () -> List<String> = { LanAddresses.hints(LanAddresses.enumerate()) },
     private val portFinder: () -> Int = ::findFreePort,
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
+    // The PackageManager seam used to detect installed relay-capable apps (Signal/Molly/Aegis,
+    // PRP-06). Null (default) ⇒ no relay suggestions, the flow is unaffected — relay is purely
+    // additive. Detection only SUGGESTS which apps have a backup the user can relay; the user still
+    // exports the file IN the app and picks it via SAF.
+    private val inventorySource: InventorySource? = null,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<SenderState>(SenderState.Home)
     val state: StateFlow<SenderState> = _state.asStateFlow()
 
+    /**
+     * Installed relay-capable apps (Signal/Molly/Aegis) the user can offer to ferry a backup for
+     * (PRP-06 §3). Detected once via the inventory seam; the Home screen renders one "pick your
+     * exported file" affordance per candidate. Empty when no relay app is installed (or no seam).
+     */
+    private val _relayCandidates = MutableStateFlow<List<RelayCandidate>>(emptyList())
+    val relayCandidates: StateFlow<List<RelayCandidate>> = _relayCandidates.asStateFlow()
+
+    /**
+     * The user-picked, app-encrypted backup files staged for relay (PRP-06 §4). Each is appended to
+     * the export-provider list at [onStartTransfer] so [ManifestBuilder] stages it as its own item
+     * (distinct id + file). portage holds only each pick's COORDINATES and a re-open seam — never the
+     * opaque bytes, never the passphrase. The list is the UI source of truth for "files to carry".
+     */
+    private val _relayPicks = MutableStateFlow<List<RelayFile>>(emptyList())
+    val relayPicks: StateFlow<List<RelayFile>> = _relayPicks.asStateFlow()
+
     private var channel: SecureChannel? = null
     private var staged: StagedManifest? = null
     private var transferJob: Job? = null
+
+    init {
+        inventorySource?.let { source ->
+            _relayCandidates.value = runCatching { RelayAppDetector.detect(source) }.getOrDefault(emptyList())
+        }
+    }
+
+    /**
+     * Record a user-picked relay file. Called by the SAF picker layer after the user exported a
+     * backup IN the app and pointed portage at the resulting file. Appended to [_relayPicks] so it
+     * rides into the next manifest; a blank/empty pick still self-omits at staging time (the export
+     * provider's available() gate). Re-picking the same content Uri adds a distinct entry (distinct
+     * [RelayFile.pickId]) rather than collapsing — two backups for one app stay distinct.
+     */
+    fun onRelayFilePicked(file: RelayFile) {
+        _relayPicks.value = _relayPicks.value + file
+    }
+
+    /** Remove a previously-picked relay file (user changed their mind before starting). */
+    fun removeRelayPick(pickId: Long) {
+        _relayPicks.value = _relayPicks.value.filterNot { it.pickId == pickId }
+    }
 
     fun onStartTransfer() {
         if (_state.value !is SenderState.Home && _state.value !is SenderState.Failed) return
         _state.value = SenderState.Preparing
         transferJob = viewModelScope.launch {
             try {
-                val built = ManifestBuilder(providers, stagingDir, senderName).build()
+                // Append the user-driven relay staging path (PRP-06 §4): each user-picked app-backup
+                // file becomes an APP_BACKUP_RELAY export provider, so ManifestBuilder stages it as its
+                // own item — distinct id + file — alongside the auto-detected Tier-0 providers. A
+                // half-finished pick self-omits (the provider's available() gate). This is the single
+                // integration point that gives APP_BACKUP_RELAY a producer.
+                val allProviders = providers + relayExportProviders(_relayPicks.value)
+                val built = ManifestBuilder(allProviders, stagingDir, senderName).build()
                     .also { staged = it }
                 if (built.items.isEmpty()) {
                     fail("Nothing to carry yet — grant the read permissions on this phone")
@@ -153,6 +208,9 @@ class SenderViewModel(
         transferJob = null
         closeChannel()
         cleanupStaging()
+        // Drop the relay picks too: returning Home is a fresh start, and a SAF Uri grant taken for a
+        // prior run may not survive — the user re-picks from the live app export each session.
+        _relayPicks.value = emptyList()
         _state.value = SenderState.Home
     }
 

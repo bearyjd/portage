@@ -15,6 +15,11 @@ import cc.grepon.portage.model.ItemStatus
 import cc.grepon.portage.model.PairingPayload
 import cc.grepon.portage.model.ProtocolMessage
 import cc.grepon.portage.providers.ExportProvider
+import cc.grepon.portage.providers.inventory.AppRecord
+import cc.grepon.portage.providers.inventory.InventorySource
+import cc.grepon.portage.providers.relay.RelayApp
+import cc.grepon.portage.send.relay.RelayFile
+import cc.grepon.portage.send.relay.RelayRestoreNotes
 import cc.grepon.portage.transport.PairingCodecImpl
 import cc.grepon.portage.transport.SecureChannel
 import cc.grepon.portage.transport.TransportException
@@ -65,6 +70,12 @@ private class ScriptedChannel(vararg incoming: ProtocolMessage?) : SecureChannel
     override fun close() { closed = true }
 }
 
+/** Fake inventory seam reporting a fixed installed-package set for relay detection. */
+private class FakeInventorySource(private val packages: Set<String>) : InventorySource {
+    override fun installedUserApps(): List<AppRecord> = emptyList()
+    override fun installedPackageNames(): Set<String> = packages
+}
+
 private class FakeFactory(
     private val channel: SecureChannel? = null,
     private val acceptError: Throwable? = null,
@@ -108,6 +119,7 @@ class SenderViewModelTest {
         factory: SecureChannel.Factory,
         providers: List<ExportProvider> = listOf(BytesExport(ItemKind.CONTACTS_VCF, "vcard".toByteArray())),
         hints: List<String> = listOf("192.168.1.2"),
+        inventorySource: InventorySource? = null,
     ) = SenderViewModel(
         providers = providers,
         stagingDir = tmp.root,
@@ -118,6 +130,20 @@ class SenderViewModelTest {
         addressHints = { hints },
         portFinder = { 40123 },
         nowEpochSeconds = { 1_000 },
+        inventorySource = inventorySource,
+    )
+
+    private fun signalPick(
+        pickId: Long = 1L,
+        bytes: ByteArray = "signal-backup-bytes".toByteArray(),
+    ) = RelayFile(
+        pickId = pickId,
+        app = RelayApp.SIGNAL,
+        targetPackage = "org.thoughtcrime.securesms",
+        originalName = "signal.backup",
+        restoreNote = RelayRestoreNotes.defaultFor(RelayApp.SIGNAL),
+        byteLength = bytes.size.toLong(),
+        openStream = { java.io.ByteArrayInputStream(bytes) },
     )
 
     @Test
@@ -232,5 +258,81 @@ class SenderViewModelTest {
 
         assertThat(vm.state.value).isEqualTo(SenderState.Home)
         assertThat(tmp.root.listFiles().orEmpty()).isEmpty()
+    }
+
+    // ---- app-backup relay (PRP-06): detection + user-driven staging into the manifest ----
+
+    @Test
+    fun `relay detection populates candidates from the inventory seam`() = runTest(dispatcher) {
+        val vm = viewModel(
+            FakeFactory(happyChannel()),
+            inventorySource = FakeInventorySource(
+                setOf("org.thoughtcrime.securesms", "com.unrelated.app"),
+            ),
+        )
+        assertThat(vm.relayCandidates.value.map { it.app }).containsExactly(RelayApp.SIGNAL)
+    }
+
+    @Test
+    fun `relay candidates are empty when no inventory seam is wired`() = runTest(dispatcher) {
+        val vm = viewModel(FakeFactory(happyChannel()))
+        assertThat(vm.relayCandidates.value).isEmpty()
+    }
+
+    @Test
+    fun `a picked relay file rides into the manifest as a distinct APP_BACKUP_RELAY item`() = runTest(dispatcher) {
+        val channel = happyChannel()
+        val vm = viewModel(FakeFactory(channel))
+        vm.onRelayFilePicked(signalPick())
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        val manifest = channel.sent.filterIsInstance<ProtocolMessage.Manifest>().single().manifest
+        // The base contacts item plus the relay item — distinct ids, the relay kind present.
+        assertThat(manifest.items.map { it.kind })
+            .containsExactly(ItemKind.CONTACTS_VCF, ItemKind.APP_BACKUP_RELAY)
+        assertThat(manifest.items.map { it.itemId }.toSet()).hasSize(2)
+    }
+
+    @Test
+    fun `two picked relays produce two distinct relay items in the manifest`() = runTest(dispatcher) {
+        val channel = happyChannel()
+        val vm = viewModel(FakeFactory(channel))
+        vm.onRelayFilePicked(signalPick(pickId = 1L, bytes = "first".toByteArray()))
+        vm.onRelayFilePicked(signalPick(pickId = 2L, bytes = "second".toByteArray()))
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        val manifest = channel.sent.filterIsInstance<ProtocolMessage.Manifest>().single().manifest
+        val relayItems = manifest.items.filter { it.kind == ItemKind.APP_BACKUP_RELAY }
+        assertThat(relayItems).hasSize(2)
+        assertThat(relayItems.map { it.itemId }.toSet()).hasSize(2)
+    }
+
+    @Test
+    fun `removing a pick keeps it out of the manifest`() = runTest(dispatcher) {
+        val channel = happyChannel()
+        val vm = viewModel(FakeFactory(channel))
+        vm.onRelayFilePicked(signalPick(pickId = 7L))
+        vm.removeRelayPick(7L)
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        val manifest = channel.sent.filterIsInstance<ProtocolMessage.Manifest>().single().manifest
+        assertThat(manifest.items.map { it.kind }).containsExactly(ItemKind.CONTACTS_VCF)
+    }
+
+    @Test
+    fun `reset clears picked relay files`() = runTest(dispatcher) {
+        val vm = viewModel(FakeFactory(happyChannel()))
+        vm.onRelayFilePicked(signalPick())
+        assertThat(vm.relayPicks.value).hasSize(1)
+
+        vm.reset()
+
+        assertThat(vm.relayPicks.value).isEmpty()
     }
 }

@@ -149,7 +149,7 @@ private class ReceiverViewModelFactory(
                     // Tier 0: COURIER for a user-exported, app-encrypted backup (Signal/Molly/Aegis;
                     // PRP-06). portage relays the OPAQUE file the user picked — it NEVER decrypts,
                     // parses, or imports it, and never holds the passphrase. The apply path validates
-                    // the typed header (derive-never-trust the advisory package/note), writes the
+                    // the typed header (derive-never-trust the advisory package/note), streams the
                     // opaque bytes to a user-visible location via [AndroidRelayHandoff], and surfaces
                     // a guided "open this in <app>" reminder. No app data is written by portage.
                     AppBackupRelayApplyProvider(

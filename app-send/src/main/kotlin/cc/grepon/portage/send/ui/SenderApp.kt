@@ -22,8 +22,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import cc.grepon.portage.providers.relay.RelayCandidate
 import cc.grepon.portage.send.SenderState
 import cc.grepon.portage.send.SenderViewModel
+import cc.grepon.portage.send.relay.RelayFile
 import cc.grepon.portage.send.ui.theme.PortageTheme
 
 /**
@@ -33,6 +35,8 @@ import cc.grepon.portage.send.ui.theme.PortageTheme
 @Composable
 fun SenderApp(viewModel: SenderViewModel, summary: DeviceSummary) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val relayCandidates by viewModel.relayCandidates.collectAsStateWithLifecycle()
+    val relayPicks by viewModel.relayPicks.collectAsStateWithLifecycle()
 
     PortageTheme {
         Scaffold(
@@ -51,7 +55,13 @@ fun SenderApp(viewModel: SenderViewModel, summary: DeviceSummary) {
                 contentKey = { it.key() },
                 label = "senderState",
             ) { current ->
-                StateBody(current = current, viewModel = viewModel, summary = summary)
+                StateBody(
+                    current = current,
+                    viewModel = viewModel,
+                    summary = summary,
+                    relayCandidates = relayCandidates,
+                    relayPicks = relayPicks,
+                )
             }
         }
     }
@@ -63,6 +73,8 @@ private fun StateBody(
     current: SenderState,
     viewModel: SenderViewModel,
     summary: DeviceSummary,
+    relayCandidates: List<RelayCandidate>,
+    relayPicks: List<RelayFile>,
 ) {
     when (current) {
         is SenderState.Home ->
@@ -70,6 +82,10 @@ private fun StateBody(
                 summary = summary,
                 onStart = viewModel::onStartTransfer,
                 modifier = Modifier.fillMaxSize(),
+                relayCandidates = relayCandidates,
+                relayPicks = relayPicks,
+                onRelayFilePicked = viewModel::onRelayFilePicked,
+                onRemoveRelayPick = viewModel::removeRelayPick,
             )
 
         is SenderState.Preparing ->
