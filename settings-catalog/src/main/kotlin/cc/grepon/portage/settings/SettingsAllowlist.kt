@@ -89,6 +89,15 @@ object SettingsAllowlist {
         SettingKey("adb_enabled", GLOBAL, DEVICE_SPECIFIC, NA,
             "TRAP: security state; never auto-enable debugging on a fresh device."),
 
+        // --- Identity ---
+        SettingKey("device_name", GLOBAL, SAFE, T1_GRANT,
+            "User-chosen device / Bluetooth display name (Settings.Global.DEVICE_NAME, e.g. " +
+                "\"Pixel 10 Pro Fold\"). A preference, not hardware-bound — migration continuity. " +
+                "Treat as hostile input (THREAT_MODEL §10): the validator bounds length 1..256 and " +
+                "rejects blank, control characters, and newlines so a single-line display string " +
+                "cannot inject into the lock screen / Bluetooth / settings UI.",
+            Validator.StringPattern("""(?=.*\S)[^\p{Cntrl}]{1,256}""")),
+
         // --- System UI ---
         SettingKey("sysui_qs_tiles", SECURE, RISKY, T1_GRANT,
             "References tile specs that may not exist on the new build. Filter to resolvable.",

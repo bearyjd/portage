@@ -71,6 +71,19 @@ class SettingsAllowlistTest {
     }
 
     @Test
+    fun `device_name is present and classified GLOBAL SAFE via the one-shot grant`() {
+        // The user-chosen device/Bluetooth display name is a portable preference, not
+        // hardware-bound, so it rides the default SAFE cut over the existing T1_GRANT path.
+        val key = SettingsAllowlist.byName("device_name")
+        assertThat(key).isNotNull()
+        assertThat(key?.namespace).isEqualTo(Namespace.GLOBAL)
+        assertThat(key?.classification).isEqualTo(Classification.SAFE)
+        assertThat(key?.reach).isEqualTo(Reach.T1_GRANT)
+        // Being SAFE, it must be in the default sync set.
+        assertThat(SettingsAllowlist.defaultSyncSet).contains(key)
+    }
+
+    @Test
     fun `every applied key has a concrete validator (None is reserved for excluded keys)`() {
         // The documented invariant: every value applied to the device is validated. A
         // SAFE/RISKY key with Validator.None is a bug (e.g. the volume_alarm 0-hazard).

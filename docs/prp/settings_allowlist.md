@@ -85,6 +85,12 @@ source of truth; the `.kt` file is generated/checked against it.
 | `Secure SYSUI_QS_TILES` (quick-settings layout/order) | Secure | RISKY | T1-grant | References tile specs that may not all exist on the new build (esp. GOS-specific tiles) → missing tiles. Filter to tiles that resolve; opt-in. |
 | `Secure DOZE_*` / always-on display | Secure | RISKY | T1-grant | Behavioral + battery; opt-in. |
 
+## Identity
+
+| Key | Namespace | Class | Reach | Reason / Validate |
+|---|---|---|---|---|
+| `Global DEVICE_NAME` (`device_name`) | Global | SAFE | T1-grant | User-chosen device / Bluetooth display name (e.g. "Pixel 10 Pro Fold"). A preference, not hardware-bound → migration continuity. `StringPattern` bounded length 1–256; rejects blank, control chars, newlines (single-line display string; no lock-screen/BT/UI injection). Treat as hostile input (THREAT_MODEL §10). |
+
 ## Connectivity (mostly excluded)
 
 | Key | Namespace | Class | Reach | Reason / Validate |
