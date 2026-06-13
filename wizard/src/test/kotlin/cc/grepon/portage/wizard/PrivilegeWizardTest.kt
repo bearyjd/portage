@@ -154,6 +154,30 @@ class PrivilegeWizardTest {
     }
 
     @Test
+    fun `toggle on with a reconnectable bridge reaches Ready via the post-gate connect`() = runTest {
+        // Explicit cover for route()'s post-gate connect-success branch. It was only covered
+        // transitively by the default environment happening to pass both gates; pin it here with
+        // an explicit toggle-on env so the branch stays covered even if the default ever changes.
+        // Both gates pass → the persisted pairing key reconnects → Ready WITHOUT pairing → the
+        // connection is torn down after the probe (the security invariant).
+        val bridge = FakeBridge().apply {
+            connectResult = { AdbBridge.ConnectionResult.Connected }
+            capabilities = setOf(AdbBridge.PrivilegedCapability.SHELL)
+        }
+        val environment = FakeEnvironment(devOptions = true, wirelessDebug = true)
+        val w = wizard(bridge, environment)
+
+        w.start()
+        advanceUntilIdle()
+
+        assertThat(w.step.value).isInstanceOf(PrivilegeWizard.Step.Ready::class.java)
+        assertThat(bridge.connectCalls).isEqualTo(1)
+        assertThat(bridge.pairCalls).isEmpty()
+        assertThat(bridge.disconnectCalls).isEqualTo(1)
+        assertThat(bridge.connected).isFalse()
+    }
+
+    @Test
     fun `progresses dev-options then wireless-debug as the user enables them`() = runTest {
         val bridge = FakeBridge()
         val environment = FakeEnvironment(devOptions = false, wirelessDebug = false)

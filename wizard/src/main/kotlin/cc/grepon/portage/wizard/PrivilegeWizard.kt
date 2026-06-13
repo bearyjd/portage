@@ -31,8 +31,11 @@ import kotlinx.coroutines.launch
  *    persisted here.
  *
  * Reboot recovery (devils-advocate Q1): pairing keys persist; only the Wireless Debugging
- *  toggle resets. [start]/[recheck] always try a plain [AdbBridge.connect] BEFORE asking the
- * user to pair, so a rebooted device walks: enable toggle → reconnect → probe, with no re-pair.
+ * toggle resets. Once the toggle is back on, [start]/[recheck] try a plain [AdbBridge.connect]
+ * before asking the user to pair, so a rebooted device walks: enable toggle → reconnect →
+ * probe, with no re-pair. That connect is gated behind the toggle on purpose: with it off
+ * there is no endpoint and libadb's mDNS wait ignores the connect timeout, so it would hang
+ * (found on-device, GOS A16). See [route].
  */
 class PrivilegeWizard(
     private val bridge: AdbBridge,
