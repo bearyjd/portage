@@ -19,7 +19,7 @@ activityCompose = "1.13.0"
 composeBom = "2026.05.01"     # verify latest
 # Kotlin libraries
 coroutines = "1.11.0"
-serialization = "1.8.1"
+serialization = "1.11.0"
 cbor = "1.8.1"                # kotlinx-serialization-cbor
 # Self-contained privilege bridge (ADR-003): wireless-debugging pairing + TLS self-connect.
 libadb = "3.1.1"              # com.github.MuntashirAkon (JitPack); dual GPL-3.0+/Apache-2.0, Apache elected
