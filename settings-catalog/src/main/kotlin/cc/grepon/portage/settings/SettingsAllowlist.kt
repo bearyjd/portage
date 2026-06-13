@@ -57,7 +57,10 @@ object SettingsAllowlist {
                 "layer further clamps to the device's max alarm-stream volume.",
             Validator.IntRange(1, 25)),
         SettingKey("ringtone", SYSTEM, DEVICE_SPECIFIC, NA,
-            "TRAP: content URI to on-device media absent on the new phone → silent/crash."),
+            "TRAP: content URI to on-device media absent on the new phone → silent/crash. The " +
+                "ringtone/notification/alarm SELECTIONS travel via the dedicated SOUND_SELECTION " +
+                "item kind (PRP-04), which carries the built-in's portable IDENTITY and re-resolves " +
+                "it to a local URI on the target — never as this raw key. Stays NA here."),
 
         // --- Accessibility ---
         SettingKey("accessibility_display_daltonizer_enabled", SECURE, SAFE, T1_GRANT,

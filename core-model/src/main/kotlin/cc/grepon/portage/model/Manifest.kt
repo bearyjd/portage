@@ -36,6 +36,16 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     // PROTOCOL_VERSION (Pairing.kt) is NOT bumped: it versions the QR trust anchor, not the
     // append-only kind vocabulary, and bumping it would reject every existing v1 pairing QR.
     WALLPAPER("wallpaper", Tier.TIER0),
+    // APPEND-ONLY wire bump (PRP-04 §4): the three default-sound role selections (ringtone /
+    // notification / alarm) as a small TEXT snapshot. Tier 0 — applied via the normal
+    // Settings.System "modify system settings" special access, no privilege bridge. Phase 1
+    // carries built-in/system selections ONLY: the receiver re-resolves each built-in to a LOCAL
+    // URI by title and never writes a sender-supplied URI verbatim (THREAT_MODEL.md). Phase 2
+    // (custom user-supplied sound FILES → a SOUND_FILE binary kind + MediaStore re-register + URI
+    // remap) is DEFERRED to a follow-up PR. As with WALLPAPER, an older receiver lacking this
+    // handler degrades via UNKNOWN_KIND (Providers.kt, ApplyProviderRegistry); PROTOCOL_VERSION
+    // (Pairing.kt) is NOT bumped — it versions the QR trust anchor, not the kind vocabulary.
+    SOUND_SELECTION("sound.selection", Tier.TIER0),
     // NOTE: no SEEDVAULT_BLOB. Couriering a Seedvault file would imply app-DATA transfer,
     // which contradicts the Seedvault division of labor (PRP §2, DEVILS_ADVOCATE Q5). If
     // ever wanted, it goes in a v2 protocol bump behind explicit "carrying, not backing up"

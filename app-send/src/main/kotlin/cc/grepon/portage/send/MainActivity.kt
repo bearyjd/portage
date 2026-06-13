@@ -34,6 +34,8 @@ import cc.grepon.portage.providers.settings.AndroidSystemSettingsStore
 import cc.grepon.portage.providers.settings.SettingsExportProvider
 import cc.grepon.portage.providers.sms.AndroidSmsStore
 import cc.grepon.portage.providers.sms.SmsExportProvider
+import cc.grepon.portage.providers.sound.AndroidSoundStore
+import cc.grepon.portage.providers.sound.SoundSelectionExportProvider
 import cc.grepon.portage.providers.wallpaper.AndroidWallpaperStore
 import cc.grepon.portage.providers.wallpaper.WallpaperExportProvider
 import cc.grepon.portage.providers.wallpaper.WallpaperSurface
@@ -112,6 +114,11 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
             // item is emitted in the mirror case.
             WallpaperExportProvider(AndroidWallpaperStore(context), WallpaperSurface.HOME),
             WallpaperExportProvider(AndroidWallpaperStore(context), WallpaperSurface.LOCK),
+            // Default ringtone/notification/alarm selections as a tiny text snapshot (PRP-04).
+            // Reads need no permission; Phase 1 carries built-in selections only (custom sound
+            // FILES are deferred to a follow-up PR). The receiver re-resolves each built-in to a
+            // local URI by title, so nothing dangles on a device that lacks the source's sound.
+            SoundSelectionExportProvider(AndroidSoundStore(context)),
         )
         @Suppress("UNCHECKED_CAST")
         return SenderViewModel(

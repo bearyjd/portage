@@ -20,6 +20,15 @@
     -->
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
     <!--
+      Apply the default ringtone/notification/alarm SELECTIONS (PRP-04). WRITE_SETTINGS is a
+      SPECIAL-ACCESS permission (the "Modify system settings" toggle), NOT a privileged one: it is
+      declared so the app is ELIGIBLE to request the access via ACTION_MANAGE_WRITE_SETTINGS, then
+      the user grants it per-app. setActualDefaultRingtoneUri writes Settings.System under this
+      access — Tier 0, no WRITE_SECURE_SETTINGS and no ADB bridge, so the no-escalation CI gate is
+      untouched. Declared recv-only (the sender reads these keys with no permission).
+    -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <!--
       Assisted reinstall opens each app's store page via ACTION_VIEW — the store performs the
       install, so NO install permission is needed here. QUERY_ALL_PACKAGES lets the receiver
       skip apps already present. REQUEST_INSTALL_PACKAGES is intentionally NOT declared: it is
