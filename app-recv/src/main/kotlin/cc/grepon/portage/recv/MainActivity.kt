@@ -37,6 +37,8 @@ import cc.grepon.portage.providers.settings.TierOneGrant
 import cc.grepon.portage.providers.sms.AndroidSmsRoleGateway
 import cc.grepon.portage.providers.sms.AndroidSmsStore
 import cc.grepon.portage.providers.sms.SmsApplyProvider
+import cc.grepon.portage.providers.wallpaper.AndroidWallpaperStore
+import cc.grepon.portage.providers.wallpaper.WallpaperApplyProvider
 import cc.grepon.portage.recv.privilege.PrivilegeWizardHolder
 import cc.grepon.portage.recv.sms.AndroidSmsRoleCoordinator
 import cc.grepon.portage.recv.sms.SmsRoleCoordinator
@@ -126,6 +128,10 @@ private class ReceiverViewModelFactory(
                         AndroidSecureGlobalSettingsStore(context),
                         tierOneGrant = adbTierOneGrant(AdbBridges.local(context)),
                     ),
+                    // Tier 0: sets home/lock wallpaper via the normal SET_WALLPAPER permission.
+                    // The provider's bounds-only decode gate rejects decompression bombs before
+                    // any bitmap is allocated (PRP-02 §7).
+                    WallpaperApplyProvider(AndroidWallpaperStore(context)),
                 ),
             )
         }

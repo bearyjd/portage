@@ -59,4 +59,15 @@ class ApplyProviderRegistryTest {
         assertThat(registry.forKind(ItemKind.CONTACTS_VCF)).isSameInstanceAs(contacts)
         assertThat(registry.forKind(ItemKind.SMS)).isNull()
     }
+
+    @Test
+    fun `routes a WALLPAPER payload to its registered provider`() = runTest {
+        val wallpaper = StubApply(ItemKind.WALLPAPER, ApplyOutcome(ItemStatus.OK, "wallpaper"))
+        val registry = ApplyProviderRegistry(listOf(wallpaper))
+
+        val outcome = registry.apply(ItemKind.WALLPAPER, empty)
+
+        assertThat(outcome.detail).isEqualTo("wallpaper")
+        assertThat(wallpaper.calls).isEqualTo(1)
+    }
 }

@@ -120,8 +120,15 @@ close
 ```
 
 `ItemMeta = {item_id (u32), kind (tstr: "contacts.vcf" | "calendar.ics" | "calllog" |
-"sms" | "inventory" | "apk" | "settings" | …), tier (0|1),
+"sms" | "inventory" | "apk" | "settings" | "wallpaper" | …), tier (0|1),
 size, sha256, display_name, group}`.
+
+> The `wallpaper` kind (PRP-02) is the first binary-blob payload (a home/lock wallpaper
+> image, not structured text). Its item stream is a one-line JSON `WallpaperHeader`
+> (surface + advisory format/bounds) followed by the raw image bytes. The receiver
+> re-derives format from magic bytes and runs a bounds-only decode gate before setting the
+> wallpaper — see THREAT_MODEL §2 row 10. Adding the kind is append-only and needs no
+> pairing-`v` bump: an older receiver returns `ITEM_ACK{status:SKIPPED}` (UNKNOWN_KIND).
 
 > No `seedvault.blob` kind in v1: couriering a Seedvault file would imply app-data
 > transfer, which the Seedvault division of labor explicitly excludes (PRP §2,
