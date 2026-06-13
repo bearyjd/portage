@@ -28,6 +28,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -192,6 +193,14 @@ private fun PairingStep(
     var code by remember { mutableStateOf("") }
     var portText by rememberSaveable { mutableStateOf("") }
 
+    // mDNS auto-fills the port when it resolves, but NEVER blocks: GOS NsdManager is flaky, and
+    // the pairing dialog shows the port in plain text, so manual entry is always available and
+    // Pair enables on a valid code+port regardless of the search (found on-device, GOS A16).
+    LaunchedEffect(step.detectedPort) {
+        if (portText.isBlank()) step.detectedPort?.let { portText = it.toString() }
+    }
+    val port = portText.toIntOrNull()
+
     Column {
         Text(
             text = "Enter the\npairing code.",
@@ -203,17 +212,17 @@ private fun PairingStep(
         Spacer(Modifier.height(s.lg))
         Text(
             text = "In Developer options → Wireless debugging, tap \"Pair device with pairing " +
-                "code\". A 6-digit code appears — keep that dialog open (split screen helps) " +
-                "and type the code here.",
+                "code\". The dialog shows a 6-digit code and a port — keep it open (split " +
+                "screen helps) and type both in below.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onBackground,
         )
         Spacer(Modifier.height(s.md))
         Text(
             text = when {
-                step.detecting -> "LOOKING FOR THE PAIRING SERVICE…"
                 step.detectedPort != null -> "PAIRING SERVICE FOUND · PORT ${step.detectedPort}"
-                else -> "SERVICE NOT FOUND — ENTER THE PORT FROM THE PAIRING DIALOG"
+                step.detecting -> "LOOKING FOR THE PAIRING SERVICE… OR ENTER THE PORT BELOW"
+                else -> "ENTER THE PORT SHOWN IN THE PAIRING DIALOG"
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -227,17 +236,16 @@ private fun PairingStep(
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
-        if (step.detectedPort == null && !step.detecting) {
-            Spacer(Modifier.height(s.sm))
-            OutlinedTextField(
-                value = portText,
-                onValueChange = { if (it.length <= 5 && it.all(Char::isDigit)) portText = it },
-                label = { Text("Pairing port (under the code in the dialog)") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
+        // Always available — manual entry is the reliable path; mDNS only auto-fills it.
+        Spacer(Modifier.height(s.sm))
+        OutlinedTextField(
+            value = portText,
+            onValueChange = { if (it.length <= 5 && it.all(Char::isDigit)) portText = it },
+            label = { Text("Pairing port (shown in the dialog)") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
         step.error?.let {
             Spacer(Modifier.height(s.sm))
             Text(
@@ -249,9 +257,10 @@ private fun PairingStep(
         Spacer(Modifier.height(s.lg))
         SwissPrimaryButton(
             text = "Pair",
-            onClick = { onSubmit(code, portText.toIntOrNull()) },
+            onClick = { onSubmit(code, port) },
             fullWidth = true,
-            enabled = code.length == 6 && !step.detecting,
+            // Enabled on a valid code + port — never gated on the mDNS search finishing.
+            enabled = code.length == 6 && port != null && port in 1..65535,
         )
         Spacer(Modifier.height(s.md))
         SwissTextAction(text = "Open Developer options", onClick = onOpenSettings)
