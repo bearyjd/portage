@@ -10,6 +10,7 @@
 package cc.grepon.portage.send
 
 import android.content.Context
+import android.content.Intent
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -69,6 +70,7 @@ class MainActivity : ComponentActivity() {
         // Sweep staging orphaned by a mid-transfer process death — staged exports are
         // plaintext PII and must never outlive a single session (security review 2026-06-11).
         File(cacheDir, STAGING_DIR).deleteRecursively()
+        sweepOrphanedRelayGrantsOnce()
         val summary = deviceSummary()
         setContent {
             SenderApp(viewModel = viewModel, summary = summary)
@@ -84,6 +86,38 @@ class MainActivity : ComponentActivity() {
             batteryPercent = battery,
             freeStorage = formatBytes(freeBytes),
         )
+    }
+
+    /**
+     * Release SAF read grants orphaned by a process death that struck a relay flow before any
+     * release ran (THREAT_MODEL §3.8 — "release-on-start sweep of orphaned persisted grants").
+     *
+     * Runs exactly ONCE per process: on a cold start no relay pick exists in memory yet (the
+     * ViewModel is being constructed fresh), so every persisted grant is necessarily stale and
+     * safe to drop — a later pick re-takes its own grant in [AndroidRelayFileResolver]. The
+     * cold-start guard is what makes this safe: an activity recreation (e.g. rotation) keeps the
+     * ViewModel's live picks AND the grants they still depend on, so we must NOT sweep then.
+     *
+     * The only persisted grants app-send ever holds are relay READ grants, but the mode flags are
+     * read back from each permission so the release matches exactly what was taken. Best-effort and
+     * bounded regardless by Android's per-app persisted-grant cap.
+     */
+    private fun sweepOrphanedRelayGrantsOnce() {
+        if (relayGrantsSwept) return
+        relayGrantsSwept = true
+        contentResolver.persistedUriPermissions.forEach { perm ->
+            val modeFlags = (if (perm.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or
+                (if (perm.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
+            if (modeFlags != 0) {
+                runCatching { contentResolver.releasePersistableUriPermission(perm.uri, modeFlags) }
+            }
+        }
+    }
+
+    private companion object {
+        // Process-scoped cold-start guard (onCreate is always main-thread). A config-change
+        // recreation must keep the live picks' grants, so the sweep fires only on a fresh process.
+        var relayGrantsSwept = false
     }
 }
 
