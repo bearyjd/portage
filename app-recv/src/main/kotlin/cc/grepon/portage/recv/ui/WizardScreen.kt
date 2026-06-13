@@ -214,8 +214,8 @@ private fun PairingStep(
             text = "Open portage and Settings side by side in SPLIT SCREEN first — the " +
                 "pairing dialog must stay visible while you type. Then in Settings → Developer " +
                 "options → Wireless debugging, tap \"Pair device with pairing code\" and enter " +
-                "the 6-digit code and port it shows below. Don't close or reopen the dialog: " +
-                "the port changes every time it opens.",
+                "the 6-digit code and the port it shows, in the fields below. Don't close or " +
+                "reopen the dialog: the port changes every time it opens.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onBackground,
         )
