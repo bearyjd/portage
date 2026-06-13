@@ -232,7 +232,9 @@ private fun PairingStep(
         Spacer(Modifier.height(s.md))
         OutlinedTextField(
             value = code,
-            onValueChange = { if (it.length <= 6 && it.all(Char::isDigit)) code = it },
+            onValueChange = {
+                if (it.length <= PrivilegeWizard.PAIRING_CODE_LENGTH && it.all(Char::isDigit)) code = it
+            },
             label = { Text("6-digit pairing code") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
             singleLine = true,
@@ -262,7 +264,8 @@ private fun PairingStep(
             onClick = { onSubmit(code, port) },
             fullWidth = true,
             // Enabled on a valid code + port — never gated on the mDNS search finishing.
-            enabled = code.length == 6 && port != null && port in 1..65535,
+            enabled = code.length == PrivilegeWizard.PAIRING_CODE_LENGTH &&
+                port != null && port in 1..PrivilegeWizard.MAX_PORT,
         )
         Spacer(Modifier.height(s.md))
         SwissTextAction(text = "Open Developer options", onClick = onOpenSettings)

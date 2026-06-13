@@ -228,9 +228,11 @@ class PrivilegeWizard(
         detection = null
     }
 
-    private companion object {
-        const val DETECT_TIMEOUT_MS = 120_000L // the user is busy reading the pairing dialog
+    companion object {
+        private const val DETECT_TIMEOUT_MS = 120_000L // the user is busy reading the pairing dialog
+        // Android Wireless Debugging pairing-code length; the app-recv renderer validates against this.
         const val PAIRING_CODE_LENGTH = 6
+        // Highest valid TCP port; the app-recv renderer reuses this to gate Pair (no second literal).
         const val MAX_PORT = 65535
     }
 }
