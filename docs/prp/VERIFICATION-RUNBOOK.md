@@ -5,6 +5,10 @@ results decide the `privileged` module's architecture and which features are in 
 Run it on a **real, current-release GrapheneOS Pixel**. Nothing here is destructive, but
 each step has a cleanup line where state changes.
 
+> This is the *pre-build feasibility* gate. For the *post-build*, two-device end-to-end
+> verification of the shipped apps (per-feature transfer checks, sign-off table), see
+> [`E2E-VERIFICATION-RUNBOOK.md`](./E2E-VERIFICATION-RUNBOOK.md).
+
 ## Setup (once)
 
 1. Settings → About phone → tap build number 7× → Developer options on.
