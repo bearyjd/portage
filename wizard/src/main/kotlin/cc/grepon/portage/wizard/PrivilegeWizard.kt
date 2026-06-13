@@ -137,17 +137,34 @@ class PrivilegeWizard(
     }
 
     private suspend fun route() {
-        // A live bridge or a silent reconnect (pairing key persists across reboots) skips
-        // every user-facing step.
-        if (bridge.isConnected() || bridge.connect() is AdbBridge.ConnectionResult.Connected) {
+        // A live connection trumps everything (rare — we disconnect right after probing).
+        if (bridge.isConnected()) {
             finishProbe()
             return
         }
-        when {
-            !environment.developerOptionsEnabled() -> _step.value = Step.EnableDevOptions
-            !environment.wirelessDebuggingEnabled() -> _step.value = Step.EnableWirelessDebug
-            else -> enterPairing()
+        // Detect prerequisites BEFORE attempting a silent reconnect. A reconnect is only
+        // possible once Wireless debugging is on: with the toggle off there is no
+        // _adb-tls-connect endpoint, and attempting connect() would block on mDNS discovery
+        // that the connect timeout CANNOT interrupt (libadb's NsdManager wait ignores thread
+        // interruption) — the wizard would hang on "Checking" with no escape (found on-device,
+        // GOS A16). Gating on the toggle loses nothing: post-reboot recovery re-attempts
+        // connect() via recheck() once the toggle is turned back on, reconnecting with the
+        // persisted pairing key (no re-pair).
+        if (!environment.developerOptionsEnabled()) {
+            _step.value = Step.EnableDevOptions
+            return
         }
+        if (!environment.wirelessDebuggingEnabled()) {
+            _step.value = Step.EnableWirelessDebug
+            return
+        }
+        // Wireless debugging is on, so a real endpoint may exist — the persisted pairing key
+        // skips every user-facing step.
+        if (bridge.connect() is AdbBridge.ConnectionResult.Connected) {
+            finishProbe()
+            return
+        }
+        enterPairing()
     }
 
     private fun enterPairing() {

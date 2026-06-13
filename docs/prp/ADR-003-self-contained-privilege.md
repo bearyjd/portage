@@ -149,6 +149,15 @@ This is the property GrapheneOS reviewers should evaluate.
 - **The toggle resets on reboot / network change** (stock behavior, ADR-001 §2 #1). The
   wizard's recheck + silent-reconnect path is the designed recovery; the exact GOS warning
   copy ships in the Ready step (`WizardCopy.GOS_REBOOT_WARNING`).
+- **`connect()` can hang past its own timeout when no endpoint exists.** Found on-device
+  (GOS A16, 2026-06-12): with Wireless debugging OFF there is no `_adb-tls-connect`
+  service, and libadb's `connectTls` blocks on an NsdManager wait that ignores thread
+  interruption, so the coroutine `withTimeout` cannot cancel it — the wizard hung on
+  "Checking" indefinitely. Fix: `PrivilegeWizard.route()` now detects the toggle BEFORE
+  attempting a silent reconnect and only calls `connect()` when Wireless debugging is on
+  (post-reboot recovery still reconnects via `recheck()`). The deeper bridge-level
+  robustness (a `connect()` that cannot hang regardless of caller) remains a tracked
+  follow-up — hard to fully solve since a stuck uninterruptible native wait can't be killed.
 - **mDNS flakiness** (libadb issues #5/#7/#15): timeouts everywhere, manual port entry,
   and "reopen the pairing dialog" copy.
 - **Long command lines** can hit a known `BufferOverflowException` in the library's OPEN
