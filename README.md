@@ -91,8 +91,9 @@ The design artifacts live in [`docs/prp/`](docs/prp/):
 - [`portage-prp-prompt.md`](docs/prp/portage-prp-prompt.md) — execution brief
 - [`ADR-001-privilege-feasibility.md`](docs/prp/ADR-001-privilege-feasibility.md) — Tier 1 go-no-go + verification procedure (grant architecture; originally verified via Shizuku)
 - [`ADR-003-self-contained-privilege.md`](docs/prp/ADR-003-self-contained-privilege.md) — self-contained ADB bridge replacing Shizuku
-- [`VERIFICATION-RUNBOOK.md`](docs/prp/VERIFICATION-RUNBOOK.md) — phone-ready V1–V8 checklist + results template (Tier 1 privilege feasibility)
+- [`VERIFICATION-RUNBOOK.md`](docs/prp/VERIFICATION-RUNBOOK.md) — **pre-build** Tier-1 privilege *feasibility* probes (V1–V8 + results template)
 - [`TRANSFER-RUNBOOK.md`](docs/prp/TRANSFER-RUNBOOK.md) — two-phone Tier-0 transfer acceptance test (the DoD gate)
+- [`E2E-VERIFICATION-RUNBOOK.md`](docs/prp/E2E-VERIFICATION-RUNBOOK.md) — **post-build** two-phone end-to-end verification across the full current feature set (wizard, settings, wallpaper, sound, bluetooth, relay); superset of the Tier-0 transfer test
 - [`PROTOCOL.md`](docs/prp/PROTOCOL.md) — pairing + transfer wire format (QR anchor, Noise XXpsk3)
 - [`THREAT_MODEL.md`](docs/prp/THREAT_MODEL.md) — semi-trusted-LAN adversary, attack→defense table
 - [`settings_allowlist.md`](docs/prp/settings_allowlist.md) — SAFE / RISKY / DEVICE_SPECIFIC key classification

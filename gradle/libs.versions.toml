@@ -7,7 +7,6 @@
 # Build
 agp = "8.9.1"                 # verify latest stable at build time
 kotlin = "2.4.0"             # K2; Compose compiler is bundled via the kotlin compose plugin
-ksp = "2.1.21-2.0.1"
 # SDK levels — Pixel 6 and newer (Tensor era)
 minSdk = "31"                 # Android 12 = Pixel 6 launch floor
 compileSdk = "36"             # Android 16 = verified target device (ADR-001); re-check per GOS release
