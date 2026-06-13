@@ -169,7 +169,9 @@ private fun StateBody(
                 onDone = viewModel::reset,
                 modifier = Modifier.fillMaxSize(),
                 installActions = current.installActions,
+                repairEntries = current.repairEntries,
                 onInstall = { action -> launchInstall(context, action) },
+                onOpenBluetoothSettings = { launchBluetoothSettings(context) },
                 backupActionLabel = if (seedvaultIntent(context) != null) {
                     "Open Seedvault"
                 } else {
@@ -214,6 +216,18 @@ private fun launchBackup(context: Context) {
     val intent = seedvaultIntent(context)
         ?: Intent(android.provider.Settings.ACTION_SETTINGS)
     runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+}
+
+/**
+ * Phase 1 re-pair assist (PRP-07): open the SYSTEM Bluetooth settings so the user re-pairs each
+ * listed device themselves — the OS owns bonding. Phase 1 does NOT call createBond and carries no
+ * link keys; this is a single, validated intent into the platform, no per-device extras. Assisted
+ * per-row createBond is deferred to a Phase 2 follow-up.
+ */
+private fun launchBluetoothSettings(context: Context) {
+    val intent = Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(intent) }
 }
 
 private const val SEEDVAULT_PACKAGE = "com.stevesoltys.seedvault"

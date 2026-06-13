@@ -10,6 +10,7 @@
 package cc.grepon.portage.recv
 
 import cc.grepon.portage.model.ItemKind
+import cc.grepon.portage.providers.bluetooth.RePairEntry
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.recv.checklist.ChecklistGroup
 
@@ -52,11 +53,14 @@ sealed interface ReceiverState {
      * Done summary: what moved, what to do next. [installActions] is the per-app reinstall
      * list produced when App Inventory was applied (empty otherwise) — the receiver presents
      * these as one-tap install deep links; it never installs anything silently (PRP §2).
+     * [repairEntries] is the bonded-Bluetooth roster surfaced when BLUETOOTH_DEVICES was applied
+     * (empty otherwise) — a "re-pair each here" checklist; Phase 1 only displays, never bonds.
      */
     data class Done(
         val moved: Int,
         val skipped: Int,
         val installActions: List<InstallAction> = emptyList(),
+        val repairEntries: List<RePairEntry> = emptyList(),
     ) : ReceiverState
 
     /** Fail-closed terminal state with a user-facing reason. */

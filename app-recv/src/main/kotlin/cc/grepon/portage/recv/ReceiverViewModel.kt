@@ -18,6 +18,7 @@ import cc.grepon.portage.model.ItemStatus
 import cc.grepon.portage.model.ProtocolMessage
 import cc.grepon.portage.providers.ApplyOutcome
 import cc.grepon.portage.providers.ApplyProviderRegistry
+import cc.grepon.portage.providers.bluetooth.RePairEntry
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.recv.checklist.ReceiverChecklist
 import cc.grepon.portage.recv.sms.SmsRoleCoordinator
@@ -54,8 +55,11 @@ class ReceiverViewModel(
     // Inert by default: without a real coordinator (or its manifest role components) SMS
     // can never be granted, so the apply path always self-skips.
     private val smsRoleCoordinator: SmsRoleCoordinator = SmsRoleCoordinator.Inert,
-    applyRegistryFactory: ((List<InstallAction>) -> Unit) -> ApplyProviderRegistry =
-        { ApplyProviderRegistry(emptyList()) },
+    // The factory is handed the providers' two list-producing sinks: app-inventory reinstall
+    // actions and bonded-Bluetooth re-pair entries. Both surface their list on the Done screen;
+    // neither performs a silent side effect (install/bond) — they produce user-driven checklists.
+    applyRegistryFactory: ApplyRegistryFactory =
+        ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(emptyList()) },
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ReceiverState>(ReceiverState.Idle)
@@ -64,6 +68,10 @@ class ReceiverViewModel(
     /** Reinstall checklist produced by the app-inventory apply (one user tap per app). */
     private val _installActions = MutableStateFlow<List<InstallAction>>(emptyList())
     val installActions: StateFlow<List<InstallAction>> = _installActions.asStateFlow()
+
+    /** Re-pair checklist produced by the bonded-Bluetooth apply (PRP-07 Phase 1: display only). */
+    private val _repairEntries = MutableStateFlow<List<RePairEntry>>(emptyList())
+    val repairEntries: StateFlow<List<RePairEntry>> = _repairEntries.asStateFlow()
 
     /**
      * Non-null ⇒ portage is still the default SMS app from an interrupted handoff (process death,
@@ -74,7 +82,10 @@ class ReceiverViewModel(
     val smsRoleStrand: StateFlow<SmsRoleStrand?> = _smsRoleStrand.asStateFlow()
 
     private val applyRegistry: ApplyProviderRegistry =
-        applyRegistryFactory { actions -> _installActions.value = actions }
+        applyRegistryFactory.create(
+            onInstallActions = { actions -> _installActions.value = actions },
+            onRepairEntries = { entries -> _repairEntries.value = entries },
+        )
 
     private var channel: SecureChannel? = null
 
@@ -148,6 +159,7 @@ class ReceiverViewModel(
                     moved = moved,
                     skipped = results.size - moved,
                     installActions = _installActions.value,
+                    repairEntries = _repairEntries.value,
                 )
                 channel?.close()
                 channel = null
@@ -234,6 +246,7 @@ class ReceiverViewModel(
         channel?.close()
         channel = null
         _installActions.value = emptyList()
+        _repairEntries.value = emptyList()
         _state.value = ReceiverState.Idle
         // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
         refreshSmsRoleStrand()
@@ -270,4 +283,18 @@ class ReceiverViewModel(
         channel?.close()
         super.onCleared()
     }
+}
+
+/**
+ * Builds the compiled apply registry, wired to the receiver's two list-producing sinks. Both are
+ * checklists the user works through, never silent side effects: [onInstallActions] feeds the
+ * app-inventory reinstall list, [onRepairEntries] the bonded-Bluetooth re-pair list (PRP-07 Phase 1
+ * — display only, never createBond). A `fun interface` so production wires real providers while
+ * tests pass a trivial lambda.
+ */
+fun interface ApplyRegistryFactory {
+    fun create(
+        onInstallActions: (List<InstallAction>) -> Unit,
+        onRepairEntries: (List<RePairEntry>) -> Unit,
+    ): ApplyProviderRegistry
 }

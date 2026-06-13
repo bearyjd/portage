@@ -21,6 +21,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import cc.grepon.portage.providers.bluetooth.AndroidBluetoothStore
+import cc.grepon.portage.providers.bluetooth.BtPairingsExportProvider
 import cc.grepon.portage.providers.calendar.AndroidCalendarStore
 import cc.grepon.portage.providers.calendar.CalendarExportProvider
 import cc.grepon.portage.providers.calllog.AndroidCallLogStore
@@ -119,6 +121,13 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
             // FILES are deferred to a follow-up PR). The receiver re-resolves each built-in to a
             // local URI by title, so nothing dangles on a device that lacks the source's sound.
             SoundSelectionExportProvider(AndroidSoundStore(context)),
+            // The bonded Bluetooth roster (name + MAC + type/class) via the PUBLIC, NON-PRIVILEGED
+            // BluetoothAdapter.getBondedDevices() API, guarded by the normal BLUETOOTH_CONNECT
+            // runtime permission (PRP-07 public-API approach — NO ADB bridge, NO escalation). Phase
+            // 1 transfers the LIST ONLY; the receiver shows a "re-pair each here" checklist. No link
+            // keys are carried (non-transferable) and the roster is never logged. available() is
+            // false when BT is off or the permission was denied, so the item self-omits gracefully.
+            BtPairingsExportProvider(AndroidBluetoothStore(context)),
         )
         @Suppress("UNCHECKED_CAST")
         return SenderViewModel(

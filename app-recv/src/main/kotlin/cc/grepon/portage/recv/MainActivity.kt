@@ -21,6 +21,7 @@ import androidx.lifecycle.ViewModelProvider
 import cc.grepon.portage.adbbridge.AdbBridge
 import cc.grepon.portage.adbbridge.AdbBridges
 import cc.grepon.portage.providers.ApplyProviderRegistry
+import cc.grepon.portage.providers.bluetooth.BtPairingsApplyProvider
 import cc.grepon.portage.providers.calendar.AndroidCalendarStore
 import cc.grepon.portage.providers.calendar.CalendarApplyProvider
 import cc.grepon.portage.providers.calllog.AndroidCallLogStore
@@ -29,7 +30,6 @@ import cc.grepon.portage.providers.contacts.AndroidContactsStore
 import cc.grepon.portage.providers.contacts.ContactsApplyProvider
 import cc.grepon.portage.providers.inventory.AndroidInventorySource
 import cc.grepon.portage.providers.inventory.AppInventoryApplyProvider
-import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.providers.settings.AndroidSecureGlobalSettingsStore
 import cc.grepon.portage.providers.settings.AndroidSystemSettingsStore
 import cc.grepon.portage.providers.settings.SettingsApplyProvider
@@ -108,7 +108,7 @@ private class ReceiverViewModelFactory(
 ) : ViewModelProvider.Factory {
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        val registryFactory = { onInstallActions: (List<InstallAction>) -> Unit ->
+        val registryFactory = ApplyRegistryFactory { onInstallActions, onRepairEntries ->
             val resolver = context.contentResolver
             ApplyProviderRegistry(
                 listOf(
@@ -139,6 +139,11 @@ private class ReceiverViewModelFactory(
                     // each carried built-in title to a LOCAL URI and never writes a sender-supplied
                     // URI — an unmatched built-in leaves that role at the device default (PRP-04 §3).
                     SoundSelectionApplyProvider(AndroidSoundStore(context)),
+                    // Tier 0: the bonded-Bluetooth roster (PRP-07 public-API approach). Phase 1
+                    // SURFACES the list as a "re-pair each here" checklist and applies nothing —
+                    // it never calls createBond (deferred to Phase 2) and carries no link keys
+                    // (non-transferable). No platform dependency, so it cannot bond by construction.
+                    BtPairingsApplyProvider(onRepairEntries),
                 ),
             )
         }

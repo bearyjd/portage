@@ -10,8 +10,10 @@ Out of scope (documented, not defended): a compromised OS on either phone; an ad
 with camera view of the QR; coercion of the user; GOS supply chain.
 
 Assets: contacts/calendar/SMS/call-log content, app inventory (fingerprintable),
-settings values, APK payloads (integrity, not confidentiality), the Seedvault blob if
-couriered (already Seedvault-encrypted; we protect it anyway).
+Bluetooth device roster — names + MAC addresses (fingerprintable; no link keys, which are
+controller-bound and never carried), settings values, APK payloads (integrity, not
+confidentiality), the Seedvault blob if couriered (already Seedvault-encrypted; we protect
+it anyway).
 
 ## 2. Attacks and the property that stops each
 
