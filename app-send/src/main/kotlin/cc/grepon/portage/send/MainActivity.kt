@@ -34,6 +34,8 @@ import cc.grepon.portage.providers.settings.AndroidSystemSettingsStore
 import cc.grepon.portage.providers.settings.SettingsExportProvider
 import cc.grepon.portage.providers.sms.AndroidSmsStore
 import cc.grepon.portage.providers.sms.SmsExportProvider
+import cc.grepon.portage.providers.wallpaper.AndroidWallpaperStore
+import cc.grepon.portage.providers.wallpaper.WallpaperExportProvider
 import cc.grepon.portage.send.ui.DeviceSummary
 import cc.grepon.portage.send.ui.SenderApp
 import cc.grepon.portage.send.ui.formatBytes
@@ -103,6 +105,8 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
                 AndroidSystemSettingsStore(context),
                 AndroidSecureGlobalSettingsStore(context),
             ),
+            // Active home/lock wallpaper bytes (Tier 0, no permission to read one's own).
+            WallpaperExportProvider(AndroidWallpaperStore(context)),
         )
         @Suppress("UNCHECKED_CAST")
         return SenderViewModel(

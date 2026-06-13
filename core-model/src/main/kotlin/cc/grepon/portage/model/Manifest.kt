@@ -29,6 +29,13 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     APP_INVENTORY("inventory", Tier.TIER0),
     APK("apk", Tier.TIER1),
     SETTINGS("settings", Tier.TIER1),
+    // APPEND-ONLY wire bump (PRP-02 §4): the active home/lock wallpaper image, the first kind
+    // whose payload is a large binary blob rather than structured text. Adding an enum entry is
+    // backward-compatible by design — an older receiver lacking this handler returns UNKNOWN_KIND
+    // (Providers.kt, ApplyProviderRegistry) rather than crashing (PROTOCOL.md §3-5). The pairing
+    // PROTOCOL_VERSION (Pairing.kt) is NOT bumped: it versions the QR trust anchor, not the
+    // append-only kind vocabulary, and bumping it would reject every existing v1 pairing QR.
+    WALLPAPER("wallpaper", Tier.TIER0),
     // NOTE: no SEEDVAULT_BLOB. Couriering a Seedvault file would imply app-DATA transfer,
     // which contradicts the Seedvault division of labor (PRP §2, DEVILS_ADVOCATE Q5). If
     // ever wanted, it goes in a v2 protocol bump behind explicit "carrying, not backing up"

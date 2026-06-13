@@ -14,6 +14,12 @@
     <!-- Camera scans the pairing QR (the out-of-band trust anchor). -->
     <uses-permission android:name="android.permission.CAMERA" />
     <!--
+      Set the home/lock wallpaper (PRP-02). SET_WALLPAPER is a NORMAL, install-time permission:
+      no runtime prompt, no privilege bridge — the wallpaper path stays entirely Tier 0. Reading
+      the sender's own active wallpaper (app-send) needs no permission, so this is recv-only.
+    -->
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
+    <!--
       Assisted reinstall opens each app's store page via ACTION_VIEW — the store performs the
       install, so NO install permission is needed here. QUERY_ALL_PACKAGES lets the receiver
       skip apps already present. REQUEST_INSTALL_PACKAGES is intentionally NOT declared: it is
