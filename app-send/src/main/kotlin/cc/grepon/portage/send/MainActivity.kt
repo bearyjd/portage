@@ -10,6 +10,7 @@
 package cc.grepon.portage.send
 
 import android.content.Context
+import android.content.Intent
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -45,6 +46,7 @@ import cc.grepon.portage.send.ui.DeviceSummary
 import cc.grepon.portage.send.ui.SenderApp
 import cc.grepon.portage.send.ui.formatBytes
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Exporter entry point (portage-prp-prompt.md §7): "Transfer to new phone" → permissions →
@@ -69,6 +71,7 @@ class MainActivity : ComponentActivity() {
         // Sweep staging orphaned by a mid-transfer process death — staged exports are
         // plaintext PII and must never outlive a single session (security review 2026-06-11).
         File(cacheDir, STAGING_DIR).deleteRecursively()
+        sweepOrphanedRelayGrantsOnce()
         val summary = deviceSummary()
         setContent {
             SenderApp(viewModel = viewModel, summary = summary)
@@ -84,6 +87,42 @@ class MainActivity : ComponentActivity() {
             batteryPercent = battery,
             freeStorage = formatBytes(freeBytes),
         )
+    }
+
+    /**
+     * Release SAF read grants orphaned by a process death that struck a relay flow before any
+     * release ran (THREAT_MODEL §3.8 — "release-on-start sweep of orphaned persisted grants").
+     *
+     * Runs exactly ONCE per process: on a cold start no relay pick exists in memory yet (the
+     * ViewModel is being constructed fresh), so every persisted grant is necessarily stale and
+     * safe to drop — a later pick re-takes its own grant in [AndroidRelayFileResolver]. The
+     * cold-start guard is what makes this safe: an activity recreation (e.g. rotation) keeps the
+     * ViewModel's live picks AND the grants they still depend on, so we must NOT sweep then.
+     *
+     * The only persisted grants app-send ever holds are relay READ grants, but the mode flags are
+     * read back from each permission so the release matches exactly what was taken. Best-effort and
+     * bounded regardless by Android's per-app persisted-grant cap.
+     */
+    private fun sweepOrphanedRelayGrantsOnce() {
+        if (!relayGrantsSwept.compareAndSet(false, true)) return
+        // Releasing EVERY persisted grant here is safe only because app-send's sole
+        // takePersistableUriPermission site is AndroidRelayFileResolver (relay READ grants). A
+        // future feature that persists a grant which must survive a cold start would need this
+        // sweep to learn to exclude it.
+        contentResolver.persistedUriPermissions.forEach { perm ->
+            val modeFlags = (if (perm.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or
+                (if (perm.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
+            if (modeFlags != 0) {
+                runCatching { contentResolver.releasePersistableUriPermission(perm.uri, modeFlags) }
+            }
+        }
+    }
+
+    private companion object {
+        // Process-scoped cold-start latch: a config-change recreation keeps the ViewModel's live
+        // picks AND the grants they depend on, so the sweep must fire only once, on a fresh process.
+        // AtomicBoolean makes the one-way semantics explicit and stays correct off the main thread.
+        val relayGrantsSwept = AtomicBoolean(false)
     }
 }
 

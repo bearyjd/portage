@@ -68,7 +68,9 @@ double-wrapped under the Noise transport in transit).
    orphan across sessions. Accepted, bounded residual: it is the user's OWN read-only file,
    never the passphrase, releasable, and bounded by Android's per-app persisted-grant cap —
    same "on-device process compromise out of scope" boundary as the QR-PSK residual (§1).
-   Optional future hardening: a release-on-start sweep of orphaned persisted grants.
+   CLOSED (PR #42): `MainActivity.sweepOrphanedRelayGrantsOnce()` releases all persisted SAF
+   grants on a cold process start (guarded once-per-process so a config-change recreation keeps
+   live picks' grants), bounding the orphan window to a single process lifetime.
 
 ## 4. Properties summary (what the design *guarantees*)
 
