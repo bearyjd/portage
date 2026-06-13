@@ -20,6 +20,8 @@ import cc.grepon.portage.providers.ApplyOutcome
 import cc.grepon.portage.providers.ApplyProviderRegistry
 import cc.grepon.portage.providers.bluetooth.RePairEntry
 import cc.grepon.portage.providers.inventory.InstallAction
+import cc.grepon.portage.providers.relay.AppBackupRelayApplyProvider
+import cc.grepon.portage.providers.relay.RelayRestorePrompt
 import cc.grepon.portage.recv.checklist.ReceiverChecklist
 import cc.grepon.portage.recv.sms.SmsRoleCoordinator
 import cc.grepon.portage.recv.sms.SmsRoleStrand
@@ -59,7 +61,7 @@ class ReceiverViewModel(
     // actions and bonded-Bluetooth re-pair entries. Both surface their list on the Done screen;
     // neither performs a silent side effect (install/bond) — they produce user-driven checklists.
     applyRegistryFactory: ApplyRegistryFactory =
-        ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(emptyList()) },
+        ApplyRegistryFactory { _, _, _ -> ApplyProviderRegistry(emptyList()) },
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ReceiverState>(ReceiverState.Idle)
@@ -74,6 +76,14 @@ class ReceiverViewModel(
     val repairEntries: StateFlow<List<RePairEntry>> = _repairEntries.asStateFlow()
 
     /**
+     * Guided re-link prompts produced by the app-backup relay apply (PRP-06): "open this in <app>
+     * and enter your passphrase". portage hands the OPAQUE file to the user / target app and never
+     * imports it or holds the passphrase. Empty unless an APP_BACKUP_RELAY item was applied.
+     */
+    private val _relayPrompts = MutableStateFlow<List<RelayRestorePrompt>>(emptyList())
+    val relayPrompts: StateFlow<List<RelayRestorePrompt>> = _relayPrompts.asStateFlow()
+
+    /**
      * Non-null ⇒ portage is still the default SMS app from an interrupted handoff (process death,
      * dismissed restore prompt). Drives an in-app one-tap restore — the persistent backstop to the
      * `finally` relinquish, which cannot survive a kill (DEVILS_ADVOCATE.md Q4 §3).
@@ -85,7 +95,19 @@ class ReceiverViewModel(
         applyRegistryFactory.create(
             onInstallActions = { actions -> _installActions.value = actions },
             onRepairEntries = { entries -> _repairEntries.value = entries },
+            // Relay items arrive one per apply call; append each prompt so multiple relayed backups
+            // (e.g. Signal AND Aegis in one session) all surface on the Done screen.
+            onRelayPrompt = { prompt -> _relayPrompts.value = _relayPrompts.value + prompt },
         )
+
+    /**
+     * Reference to the relay apply provider, extracted from the registry after construction.
+     * Used by [applyStaged] to set the current item id before each apply call so that two relay
+     * items for the same package get distinct [RelayRestorePrompt] row keys and distinct filenames.
+     * Null when no relay provider is registered (e.g. in tests that don't exercise relay).
+     */
+    private val relayApplyProvider: AppBackupRelayApplyProvider? =
+        applyRegistry.forKind(ItemKind.APP_BACKUP_RELAY) as? AppBackupRelayApplyProvider
 
     private var channel: SecureChannel? = null
 
@@ -146,7 +168,13 @@ class ReceiverViewModel(
                 val ch = channel ?: error("no channel")
                 val results = withSmsRoleIfNeeded(needsSmsRole) {
                     ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
-                    ItemStreamReceiver(stagingDir).run(
+                    ItemStreamReceiver(
+                        stagingDir = stagingDir,
+                        // Raise the per-item cap FOR THE RELAY KIND ONLY (PRP-06 §5): app backups
+                        // (Signal/Aegis) routinely exceed the 64 MiB Tier-0 default. Every other
+                        // kind keeps the default — the raise never leaks into the PII item paths.
+                        maxBytesByKind = mapOf(ItemKind.APP_BACKUP_RELAY to MAX_RELAY_ITEM_BYTES),
+                    ).run(
                         channel = ch,
                         expected = selected.associateBy { it.itemId },
                         apply = ::applyStaged,
@@ -160,6 +188,7 @@ class ReceiverViewModel(
                     skipped = results.size - moved,
                     installActions = _installActions.value,
                     repairEntries = _repairEntries.value,
+                    relayPrompts = _relayPrompts.value,
                 )
                 channel?.close()
                 channel = null
@@ -223,6 +252,9 @@ class ReceiverViewModel(
      */
     internal suspend fun applyStaged(meta: ItemMeta, source: InputStream): ApplyOutcome {
         updateItem(meta.itemId) { it.copy(phase = ItemPhase.APPLYING) }
+        // Thread the item id into the relay provider so each relay item gets a distinct prompt key
+        // and a distinct handoff filename — prevents same-app overwrite and Compose duplicate-key crash.
+        if (meta.kind == ItemKind.APP_BACKUP_RELAY) relayApplyProvider?.setNextItemId(meta.itemId)
         val outcome = try {
             applyRegistry.apply(meta.kind, source)
         } catch (c: CancellationException) {
@@ -247,6 +279,7 @@ class ReceiverViewModel(
         channel = null
         _installActions.value = emptyList()
         _repairEntries.value = emptyList()
+        _relayPrompts.value = emptyList()
         _state.value = ReceiverState.Idle
         // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
         refreshSmsRoleStrand()
@@ -286,15 +319,25 @@ class ReceiverViewModel(
 }
 
 /**
- * Builds the compiled apply registry, wired to the receiver's two list-producing sinks. Both are
- * checklists the user works through, never silent side effects: [onInstallActions] feeds the
+ * Builds the compiled apply registry, wired to the receiver's list-producing sinks. All are
+ * checklists/prompts the user works through, never silent side effects: [onInstallActions] feeds the
  * app-inventory reinstall list, [onRepairEntries] the bonded-Bluetooth re-pair list (PRP-07 Phase 1
- * — display only, never createBond). A `fun interface` so production wires real providers while
- * tests pass a trivial lambda.
+ * — display only, never createBond), [onRelayPrompt] the per-app-backup re-link reminder (PRP-06 —
+ * portage hands off the OPAQUE file and never imports it). A `fun interface` so production wires real
+ * providers while tests pass a trivial lambda.
  */
 fun interface ApplyRegistryFactory {
     fun create(
         onInstallActions: (List<InstallAction>) -> Unit,
         onRepairEntries: (List<RePairEntry>) -> Unit,
+        onRelayPrompt: (RelayRestorePrompt) -> Unit,
     ): ApplyProviderRegistry
 }
+
+/**
+ * Raised per-item ceiling for the APP_BACKUP_RELAY kind ONLY (PRP-06 §5). Signal backups can run to
+ * multiple GiB; 2 GiB is a documented, finite ceiling — large enough for real backups, small enough
+ * to keep the staging write bounded. This is applied via [ItemStreamReceiver.maxBytesByKind] and
+ * MUST NOT be the default cap: Tier-0/PII items keep the 64 MiB DEFAULT_MAX_ITEM_BYTES.
+ */
+private const val MAX_RELAY_ITEM_BYTES = 2L * 1024 * 1024 * 1024

@@ -29,6 +29,10 @@ import cc.grepon.portage.providers.inventory.AppRecord
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.providers.inventory.InstallStore
 import cc.grepon.portage.providers.inventory.InventorySource
+import cc.grepon.portage.providers.relay.AppBackupRelayApplyProvider
+import cc.grepon.portage.providers.relay.RelayApp
+import cc.grepon.portage.providers.relay.RelayCodec
+import cc.grepon.portage.providers.relay.RelayHeader
 import cc.grepon.portage.providers.sms.SmsApplyProvider
 import cc.grepon.portage.providers.sms.SmsRecord
 import cc.grepon.portage.providers.sms.SmsRoleGateway
@@ -183,7 +187,7 @@ class ReceiverViewModelTest {
         osFingerprint = "test-fingerprint",
         stagingDir = tmp.root,
         smsRoleCoordinator = coordinator,
-        applyRegistryFactory = ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(listOf(sms)) },
+        applyRegistryFactory = ApplyRegistryFactory { _, _, _ -> ApplyProviderRegistry(listOf(sms)) },
     )
 
     @Before
@@ -199,7 +203,7 @@ class ReceiverViewModelTest {
     private fun viewModel(
         channel: SecureChannel = happyChannel(),
         registryFactory: ApplyRegistryFactory =
-            ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(emptyList()) },
+            ApplyRegistryFactory { _, _, _ -> ApplyProviderRegistry(emptyList()) },
     ) = ReceiverViewModel(
         pairingCodec = FakeCodec(),
         channelFactory = FakeFactory(channel),
@@ -227,6 +231,7 @@ class ReceiverViewModelTest {
         assertThat(reviewing.absentKinds).containsExactly(
             ItemKind.CALENDAR_ICS, ItemKind.SMS, ItemKind.APP_INVENTORY, ItemKind.SETTINGS,
             ItemKind.WALLPAPER, ItemKind.SOUND_SELECTION, ItemKind.BLUETOOTH_DEVICES,
+            ItemKind.APP_BACKUP_RELAY,
         ).inOrder()
     }
 
@@ -245,7 +250,7 @@ class ReceiverViewModelTest {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
         val calls = FakeApply(ItemKind.CALL_LOG)
         val channel = happyChannel()
-        val vm = viewModel(channel, registryFactory = ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(listOf(contacts, calls)) })
+        val vm = viewModel(channel, registryFactory = ApplyRegistryFactory { _, _, _ -> ApplyProviderRegistry(listOf(contacts, calls)) })
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -277,7 +282,7 @@ class ReceiverViewModelTest {
     @Test
     fun `an item without a registered handler counts as skipped, not moved`() = runTest(dispatcher) {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
-        val vm = viewModel(happyChannel(), registryFactory = ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(listOf(contacts)) })
+        val vm = viewModel(happyChannel(), registryFactory = ApplyRegistryFactory { _, _, _ -> ApplyProviderRegistry(listOf(contacts)) })
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -314,7 +319,7 @@ class ReceiverViewModelTest {
     @Test
     fun `applyStaged routes the payload to the provider registered for the kind`() = runTest(dispatcher) {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
-        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(listOf(contacts)) })
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, _, _ -> ApplyProviderRegistry(listOf(contacts)) })
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -439,7 +444,7 @@ class ReceiverViewModelTest {
             override fun currentDefault(): String? = "com.example.messages"
             override fun launchRestore(priorHolderPackage: String?) = true
         }
-        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, _ ->
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, _, _ ->
             ApplyProviderRegistry(listOf(SmsApplyProvider(store, noRole)))
         })
         vm.startScanning()
@@ -476,7 +481,7 @@ class ReceiverViewModelTest {
             appVersion = "test",
             osFingerprint = "test",
             stagingDir = tmp.root,
-            applyRegistryFactory = ApplyRegistryFactory { onActions, _ ->
+            applyRegistryFactory = ApplyRegistryFactory { onActions, _, _ ->
                 ApplyProviderRegistry(listOf(AppInventoryApplyProvider(source, onActions)))
             },
         )
@@ -495,7 +500,7 @@ class ReceiverViewModelTest {
     @Test
     fun `install actions surfaced by the inventory provider reach the UI flow`() = runTest(dispatcher) {
         var sink: ((List<InstallAction>) -> Unit)? = null
-        val vm = viewModel(registryFactory = ApplyRegistryFactory { onActions, _ ->
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { onActions, _, _ ->
             sink = onActions
             ApplyProviderRegistry(emptyList())
         })
@@ -533,7 +538,7 @@ class ReceiverViewModelTest {
             appVersion = "test",
             osFingerprint = "test",
             stagingDir = tmp.root,
-            applyRegistryFactory = ApplyRegistryFactory { _, onRepairEntries ->
+            applyRegistryFactory = ApplyRegistryFactory { _, onRepairEntries, _ ->
                 ApplyProviderRegistry(listOf(BtPairingsApplyProvider(onRepairEntries)))
             },
         )
@@ -553,7 +558,7 @@ class ReceiverViewModelTest {
     @Test
     fun `re-pair entries surfaced by the bluetooth provider reach the UI flow`() = runTest(dispatcher) {
         var sink: ((List<RePairEntry>) -> Unit)? = null
-        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, onRepairEntries ->
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, onRepairEntries, _ ->
             sink = onRepairEntries
             ApplyProviderRegistry(emptyList())
         })
@@ -562,5 +567,70 @@ class ReceiverViewModelTest {
         sink?.invoke(listOf(entry))
 
         assertThat(vm.repairEntries.value).containsExactly(entry)
+    }
+
+    @Test
+    fun `an app-backup relay transfer surfaces a restore prompt on the Done state`() = runTest(dispatcher) {
+        // Build a real relay item (header + opaque bytes) and run it end-to-end through the receiver.
+        val opaque = "OPAQUE-SIGNAL-CIPHERTEXT".toByteArray()
+        val relayBytes = ByteArrayOutputStream().use { out ->
+            RelayCodec.writeTo(
+                out,
+                RelayHeader(
+                    RelayApp.SIGNAL, "org.thoughtcrime.securesms", "signal.backup",
+                    "Open Signal and restore from backup.", opaque.size.toLong(),
+                ),
+                opaque,
+            )
+            out.toByteArray()
+        }
+        val relayMeta = ItemMeta(
+            6, ItemKind.APP_BACKUP_RELAY, relayBytes.size.toLong(), sha256(relayBytes),
+            "signal.backup", "App backups",
+        )
+        val handedOff = mutableListOf<ByteArray>()
+        val channel = FakeChannel(
+            ProtocolMessage.Manifest(TransferManifest("old phone", listOf(relayMeta), relayBytes.size.toLong())),
+            ProtocolMessage.ItemBegin(6, ItemKind.APP_BACKUP_RELAY, relayMeta.size, relayBytes.size),
+            ProtocolMessage.ItemData(6, 0, relayBytes),
+            ProtocolMessage.ItemEnd(6, relayMeta.sha256),
+            ProtocolMessage.BatchEnd(listOf(6), "done"),
+        )
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(channel),
+            nowEpochSeconds = { 1_000 },
+            appVersion = "test",
+            osFingerprint = "test",
+            stagingDir = tmp.root,
+            applyRegistryFactory = ApplyRegistryFactory { _, _, onRelayPrompt ->
+                ApplyProviderRegistry(
+                    listOf(
+                        AppBackupRelayApplyProvider(
+                            onPrompt = onRelayPrompt,
+                            handoff = { _, source, declaredLen, _ ->
+                                val buf = ByteArrayOutputStream()
+                                RelayCodec.streamBlob(source, buf, declaredLen)
+                                handedOff += buf.toByteArray()
+                                true
+                            },
+                        ),
+                    ),
+                )
+            },
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        val done = vm.state.value as ReceiverState.Done
+        assertThat(done.moved).isEqualTo(1)
+        assertThat(done.relayPrompts).hasSize(1)
+        assertThat(done.relayPrompts.single().app).isEqualTo(RelayApp.SIGNAL)
+        assertThat(done.relayPrompts.single().targetPackage).isEqualTo("org.thoughtcrime.securesms")
+        // The OPAQUE bytes were handed off byte-exact — never imported, never interpreted.
+        assertThat(handedOff.single()).isEqualTo(opaque)
     }
 }

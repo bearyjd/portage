@@ -145,6 +145,84 @@ class ItemStreamReceiverTest {
     }
 
     @Test
+    fun `a per-kind cap raises the ceiling for the relay kind only — a Tier-0 item of the same size is still refused`() = runTest {
+        // The relay path raises the per-item cap FOR THE RELAY KIND ONLY. A relay item just above the
+        // 64 MiB Tier-0 default is accepted, while a Tier-0 PII item of the EXACT SAME size on the
+        // SAME receiver is still OVERSIZE — the proof the raised cap does not leak (PRP-06 §5).
+        val tierZeroDefault = 64L * 1024 * 1024
+        val big = tierZeroDefault + 1
+        val relayMeta = ItemMeta(1, ItemKind.APP_BACKUP_RELAY, big, "a".repeat(64), "Signal backup", "App backups")
+        val piiMeta = ItemMeta(2, ItemKind.CONTACTS_VCF, big, "b".repeat(64), "Contacts", "People")
+        val frames = listOf(
+            // Relay item: wire + manifest agree at `big`; relay cap allows it. We don't deliver the
+            // bytes (no need to materialize 64 MiB) — the up-front begin.size cap is what we assert,
+            // so it's drained as a mismatch later; what matters is it is NOT rejected up front.
+            ProtocolMessage.ItemBegin(1, ItemKind.APP_BACKUP_RELAY, big, 8),
+            ProtocolMessage.ItemEnd(1, relayMeta.sha256),
+            // Tier-0 PII item of the SAME oversize: must be refused before staging a byte.
+            ProtocolMessage.ItemBegin(2, ItemKind.CONTACTS_VCF, big, 8),
+            ProtocolMessage.ItemEnd(2, piiMeta.sha256),
+            ProtocolMessage.BatchEnd(listOf(1, 2), "done"),
+        )
+        val channel = ScriptedChannel(*frames.toTypedArray())
+
+        val results = ItemStreamReceiver(
+            tmp.newFolder(),
+            maxBytesByKind = mapOf(ItemKind.APP_BACKUP_RELAY to (2L * 1024 * 1024 * 1024)),
+        ).run(channel, mapOf(1 to relayMeta, 2 to piiMeta), { _, _ -> ApplyOutcome(ItemStatus.OK) }) { }
+
+        // The relay item passed the up-front cap (it fails later only on the empty-vs-advertised
+        // hash, NOT on OVERSIZE); the PII item is rejected by the unchanged 64 MiB Tier-0 cap.
+        assertThat(results.first { it.itemId == 1 }.status).isNotEqualTo(ItemStatus.OVERSIZE)
+        assertThat(results.first { it.itemId == 2 }.status).isEqualTo(ItemStatus.OVERSIZE)
+    }
+
+    @Test
+    fun `a relay item over its own raised ceiling is still refused as OVERSIZE`() = runTest {
+        // The relay cap is finite: an item above the raised ceiling is still rejected (no unbounded
+        // writes). Use a tiny explicit relay cap so the test stays cheap.
+        val relayCap = 16L
+        val overMeta = ItemMeta(1, ItemKind.APP_BACKUP_RELAY, 100L, "a".repeat(64), "Backup", "App backups")
+        val frames = listOf(
+            ProtocolMessage.ItemBegin(1, ItemKind.APP_BACKUP_RELAY, 100L, 8), // wire agrees
+            ProtocolMessage.ItemData(1, 0, ByteArray(100)),
+            ProtocolMessage.ItemEnd(1, overMeta.sha256),
+            ProtocolMessage.BatchEnd(listOf(1), "done"),
+        )
+        val channel = ScriptedChannel(*frames.toTypedArray())
+        var applyCalled = false
+
+        val results = ItemStreamReceiver(
+            tmp.newFolder(),
+            maxBytesByKind = mapOf(ItemKind.APP_BACKUP_RELAY to relayCap),
+        ).run(channel, mapOf(1 to overMeta), { _, _ -> applyCalled = true; ApplyOutcome(ItemStatus.OK) }) { }
+
+        assertThat(applyCalled).isFalse()
+        assertThat(results.single().status).isEqualTo(ItemStatus.OVERSIZE)
+    }
+
+    @Test
+    fun `a relay item under its raised ceiling stages, verifies, and applies`() = runTest {
+        // A 65 MiB-shaped relay item (modeled small to keep the test fast, but above the Tier-0
+        // default would be rejected without the per-kind raise) flows end to end under the raise.
+        val blob = "OPAQUE-CIPHERTEXT".toByteArray()
+        val relayMeta = ItemMeta(1, ItemKind.APP_BACKUP_RELAY, blob.size.toLong(), sha256(blob), "Signal backup", "App backups")
+        val frames = itemFrames(relayMeta, blob) + ProtocolMessage.BatchEnd(listOf(1), "done")
+        val channel = ScriptedChannel(*frames.toTypedArray())
+        val applied = mutableListOf<ByteArray>()
+
+        val results = ItemStreamReceiver(
+            tmp.newFolder(),
+            // Default Tier-0 cap kept tiny to PROVE the relay raise is what admits this item.
+            maxItemBytes = 4,
+            maxBytesByKind = mapOf(ItemKind.APP_BACKUP_RELAY to (2L * 1024 * 1024 * 1024)),
+        ).run(channel, mapOf(1 to relayMeta), { _, source -> applied += source.readBytes(); ApplyOutcome(ItemStatus.OK) }) { }
+
+        assertThat(results.single().status).isEqualTo(ItemStatus.OK)
+        assertThat(applied.single()).isEqualTo(blob) // byte-exact opaque bytes through staging
+    }
+
+    @Test
     fun `an item whose size disagrees with the manifest is refused as OVERSIZE`() = runTest {
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, meta.kind, meta.size + 999, 8), // liar

@@ -120,7 +120,7 @@ close
 ```
 
 `ItemMeta = {item_id (u32), kind (tstr: "contacts.vcf" | "calendar.ics" | "calllog" |
-"sms" | "inventory" | "apk" | "settings" | "wallpaper" | …), tier (0|1),
+"sms" | "inventory" | "apk" | "settings" | "wallpaper" | "app.backup.relay" | …), tier (0|1),
 size, sha256, display_name, group}`.
 
 > The `wallpaper` kind (PRP-02) is the first binary-blob payload (a home/lock wallpaper
@@ -129,6 +129,17 @@ size, sha256, display_name, group}`.
 > re-derives format from magic bytes and runs a bounds-only decode gate before setting the
 > wallpaper — see THREAT_MODEL §2 row 10. Adding the kind is append-only and needs no
 > pairing-`v` bump: an older receiver returns `ITEM_ACK{status:SKIPPED}` (UNKNOWN_KIND).
+
+> The `app.backup.relay` kind (PRP-06) carries an OPAQUE, user-exported app backup
+> (Signal/Molly message history, Aegis 2FA vault) device-to-device. Its item stream is a
+> one-line JSON `RelayHeader` (typed app id + advisory package/note, re-validated on the
+> receiver) followed by the app-encrypted bytes — which portage NEVER decrypts, parses, or
+> interprets. portage is a COURIER for a file the USER made, not a backup engine: this is
+> categorically NOT the forbidden `seedvault.blob` below (PRP-06 §2 — "portage must never
+> be the thing that creates the backup"). The per-item byte cap is raised FOR THIS KIND
+> ONLY (app backups exceed the 64 MiB Tier-0 ceiling); the raise never touches the Tier-0
+> PII paths. Adding the kind is append-only and needs no pairing-`v` bump: an older
+> receiver returns `ITEM_ACK{status:SKIPPED}` (UNKNOWN_KIND).
 
 > No `seedvault.blob` kind in v1: couriering a Seedvault file would imply app-data
 > transfer, which the Seedvault division of labor explicitly excludes (PRP §2,
