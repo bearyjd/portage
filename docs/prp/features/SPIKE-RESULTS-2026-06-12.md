@@ -41,6 +41,20 @@ PRP-01/05/07; build to these verdicts, not the original PRP guesses.
 - **PRP-03 Secure-settings expansion** — Tier 1 allowlisted writes via existing grant. ✅ (scope already trimmed to zen_mode + device_name + a settings-key spike.)
 - **PRP-06 App-backup relay** — Tier 0 orchestration/file transfer. ✅ (scope-discipline review is the gate, not feasibility.)
 
+## PRP-03 secure-settings — key probe (2026-06-12, rango) ⚠️ scope collapses
+Probed real keys via `settings list global/secure/system`:
+- `device_name` (GLOBAL, = "Pixel 10 Pro Fold") — the ONLY solid survivor. User-chosen device/BT
+  display name; SAFE to transfer with a string validator. Worth one allowlist row.
+- `zen_mode` (GLOBAL, =2) — this is the LIVE DND state, not config; transferring "currently
+  silenced" is harmful, and the real DND rules are `AutomaticZenRule` objects (not a Settings key).
+  DECLINE. `zen_mode_config_etag` is an opaque etag, not portable.
+- Emergency owner info / Bluetooth-discoverability timeout — NOT present as writable settings on
+  GOS (CalyxOS named them, but they're not plain keys here). OUT.
+- Panic config / USB-peripheral hardening — already DEVICE_SPECIFIC-excluded (PRP-03 found this).
+- **Verdict:** PRP-03 reduces to a single `device_name` allowlist row — low value. Deprioritized
+  below PRP-06; do `device_name` as a quick follow-up (it rides the existing `ItemKind.SETTINGS`,
+  no new wire). The guardrail invariant + a string validator are the only controls needed.
+
 ## Revised implementation priority (value × CONFIRMED feasibility)
 1. PRP-02 Wallpaper  2. PRP-04 Sound selection  3. PRP-03 Secure-settings expansion
 4. PRP-06 App-backup relay  5. PRP-01 Wi-Fi (reframed: list + guided re-add)
