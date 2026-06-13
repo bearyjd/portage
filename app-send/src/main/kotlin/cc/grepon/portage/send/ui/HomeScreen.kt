@@ -64,7 +64,7 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
     relayCandidates: List<RelayCandidate> = emptyList(),
     relayPicks: List<RelayFile> = emptyList(),
-    onRelayFilePicked: (RelayFile) -> Unit = {},
+    onResolveRelayPick: (resolve: () -> RelayFile?) -> Unit = {},
     onRemoveRelayPick: (Long) -> Unit = {},
 ) {
     val s = LocalSpacing.current
@@ -115,7 +115,7 @@ fun HomeScreen(
             RelayPickSection(
                 candidates = relayCandidates,
                 picks = relayPicks,
-                onFilePicked = onRelayFilePicked,
+                onResolvePick = onResolveRelayPick,
                 onRemovePick = onRemoveRelayPick,
             )
         }

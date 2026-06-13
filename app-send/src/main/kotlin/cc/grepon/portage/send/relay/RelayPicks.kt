@@ -11,6 +11,7 @@ package cc.grepon.portage.send.relay
 
 import cc.grepon.portage.providers.relay.AppBackupRelayExportProvider
 import cc.grepon.portage.providers.relay.RelayApp
+import cc.grepon.portage.providers.relay.RelayHeader
 import java.io.InputStream
 
 /**
@@ -33,6 +34,13 @@ import java.io.InputStream
  * advisory package the receiver re-validates against [app]. [originalName] is display-only (never a
  * path). [restoreNote] is the human reminder shown on the new phone — defaulted per app
  * ([RelayRestoreNotes]) but always carried so the receiver's blank-note gate is satisfied.
+ *
+ * [releaseGrant] releases the persistable SAF read grant taken at pick time (so it survives an
+ * activity recreation). The VM calls it when the pick is removed, on reset, and after a successful
+ * transfer. Defaulted to a no-op so JVM tests/constructors stay Android-free. [expired] is set true
+ * only as a visible backstop: if the file's stream cannot be opened at transfer time (the grant was
+ * revoked / lost to process death), the pick is excluded from the manifest AND flagged so the UI can
+ * say "Expired — re-pick this file" — it must NEVER silently self-omit without telling the user.
  */
 data class RelayFile(
     val pickId: Long,
@@ -42,7 +50,18 @@ data class RelayFile(
     val restoreNote: String,
     val byteLength: Long,
     val openStream: () -> InputStream,
+    val releaseGrant: () -> Unit = {},
+    val expired: Boolean = false,
 )
+
+/**
+ * Bound a SAF display name to a safe, wire-acceptable [RelayFile.originalName]: strip control chars
+ * (incl. newlines/tabs), trim, cap at [RelayHeader.MAX_NAME_LENGTH] (mirroring the receiver's bound so
+ * a long/odd name never gets the relay item rejected), and collapse a blank result to null so the
+ * caller can substitute a usable label. Pure + JVM-testable — the Android resolver calls it.
+ */
+fun sanitizeRelayDisplayName(raw: String?): String? =
+    raw?.filter { !it.isISOControl() }?.trim()?.take(RelayHeader.MAX_NAME_LENGTH)?.ifBlank { null }
 
 /**
  * Per-app default restore note shown to the user on the NEW phone (PRP-06 §4). portage never holds

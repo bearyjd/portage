@@ -131,11 +131,16 @@ class SenderViewModelTest {
         portFinder = { 40123 },
         nowEpochSeconds = { 1_000 },
         inventorySource = inventorySource,
+        // Resolve relay picks on the SAME test dispatcher so advanceUntilIdle() drives the off-main
+        // resolution deterministically (in production this is Dispatchers.IO, off the UI thread).
+        relayResolveDispatcher = dispatcher,
     )
 
     private fun signalPick(
         pickId: Long = 1L,
         bytes: ByteArray = "signal-backup-bytes".toByteArray(),
+        releaseGrant: () -> Unit = {},
+        openStream: () -> java.io.InputStream = { java.io.ByteArrayInputStream(bytes) },
     ) = RelayFile(
         pickId = pickId,
         app = RelayApp.SIGNAL,
@@ -143,7 +148,8 @@ class SenderViewModelTest {
         originalName = "signal.backup",
         restoreNote = RelayRestoreNotes.defaultFor(RelayApp.SIGNAL),
         byteLength = bytes.size.toLong(),
-        openStream = { java.io.ByteArrayInputStream(bytes) },
+        openStream = openStream,
+        releaseGrant = releaseGrant,
     )
 
     @Test
@@ -332,6 +338,104 @@ class SenderViewModelTest {
         assertThat(vm.relayPicks.value).hasSize(1)
 
         vm.reset()
+
+        assertThat(vm.relayPicks.value).isEmpty()
+    }
+
+    // ---- robustness: SAF grant release, off-main resolve, expired backstop, clear-on-success ----
+
+    @Test
+    fun `removing a pick releases its persistable SAF grant`() = runTest(dispatcher) {
+        var released = false
+        val vm = viewModel(FakeFactory(happyChannel()))
+        vm.onRelayFilePicked(signalPick(pickId = 9L, releaseGrant = { released = true }))
+
+        vm.removeRelayPick(9L)
+
+        assertThat(released).isTrue()
+    }
+
+    @Test
+    fun `reset releases the SAF grant of every picked file`() = runTest(dispatcher) {
+        var releasedA = false
+        var releasedB = false
+        val vm = viewModel(FakeFactory(happyChannel()))
+        vm.onRelayFilePicked(signalPick(pickId = 1L, releaseGrant = { releasedA = true }))
+        vm.onRelayFilePicked(signalPick(pickId = 2L, releaseGrant = { releasedB = true }))
+
+        vm.reset()
+
+        assertThat(releasedA).isTrue()
+        assertThat(releasedB).isTrue()
+    }
+
+    @Test
+    fun `a successful transfer clears picks and releases their SAF grants`() = runTest(dispatcher) {
+        var released = false
+        val channel = happyChannel()
+        val vm = viewModel(FakeFactory(channel))
+        vm.onRelayFilePicked(signalPick(releaseGrant = { released = true }))
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        assertThat(vm.state.value).isInstanceOf(SenderState.Done::class.java)
+        assertThat(vm.relayPicks.value).isEmpty()
+        assertThat(released).isTrue()
+    }
+
+    @Test
+    fun `a relay pick whose stream cannot open is marked expired and excluded from the manifest`() = runTest(dispatcher) {
+        val channel = happyChannel()
+        val vm = viewModel(FakeFactory(channel))
+        // Grant gone after process death / revoke: opening the picked file throws at transfer time.
+        vm.onRelayFilePicked(
+            signalPick(openStream = { throw java.io.IOException("grant revoked") }),
+        )
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        // The relay item NEVER silently ships — the manifest carries only the non-relay item.
+        val manifest = channel.sent.filterIsInstance<ProtocolMessage.Manifest>().single().manifest
+        assertThat(manifest.items.map { it.kind }).containsExactly(ItemKind.CONTACTS_VCF)
+        // The pick survives, flagged expired, so the user sees it did NOT ship and can re-pick.
+        val pick = vm.relayPicks.value.single()
+        assertThat(pick.expired).isTrue()
+    }
+
+    @Test
+    fun `a healthy relay pick is never flagged expired`() = runTest(dispatcher) {
+        val channel = happyChannel()
+        val vm = viewModel(FakeFactory(channel))
+        vm.onRelayFilePicked(signalPick())
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        // It shipped, so it (and its grant) is cleared on success — no lingering expired flag.
+        assertThat(vm.relayPicks.value).isEmpty()
+    }
+
+    @Test
+    fun `resolveAndAddRelayPick resolves off the calling thread and appends the file`() = runTest(dispatcher) {
+        val vm = viewModel(FakeFactory(happyChannel()))
+        val resolved = signalPick(pickId = 5L)
+
+        // The resolve lambda stands in for AndroidRelayFileResolver.resolve (a large-file read that
+        // must not run on the main thread). The VM dispatches it; the test dispatcher runs it.
+        vm.resolveAndAddRelayPick { resolved }
+        advanceUntilIdle()
+
+        assertThat(vm.relayPicks.value.map { it.pickId }).containsExactly(5L)
+    }
+
+    @Test
+    fun `resolveAndAddRelayPick drops a null resolution without adding a pick`() = runTest(dispatcher) {
+        val vm = viewModel(FakeFactory(happyChannel()))
+
+        vm.resolveAndAddRelayPick { null }
+        advanceUntilIdle()
 
         assertThat(vm.relayPicks.value).isEmpty()
     }

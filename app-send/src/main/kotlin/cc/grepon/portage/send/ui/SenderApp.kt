@@ -84,7 +84,7 @@ private fun StateBody(
                 modifier = Modifier.fillMaxSize(),
                 relayCandidates = relayCandidates,
                 relayPicks = relayPicks,
-                onRelayFilePicked = viewModel::onRelayFilePicked,
+                onResolveRelayPick = viewModel::resolveAndAddRelayPick,
                 onRemoveRelayPick = viewModel::removeRelayPick,
             )
 
