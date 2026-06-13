@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import cc.grepon.portage.providers.bluetooth.RePairEntry
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.providers.inventory.InstallStore
 import cc.grepon.portage.recv.ItemPhase
@@ -163,9 +164,12 @@ private fun DeterminateRule(fraction: Float) {
 }
 
 /**
- * Done summary. The moved count dominates, then a line noting app data isn't carried. When
- * App Inventory was applied, the per-app reinstall list follows as one-tap store deep links
- * (the receiver never installs silently, PRP §2); the layout scrolls so a long list fits.
+ * Done summary. The moved count dominates, then a line noting app data isn't carried. When App
+ * Inventory was applied, the per-app reinstall list follows as one-tap store deep links (the
+ * receiver never installs silently, PRP §2); when a bonded-Bluetooth roster was applied, the
+ * "re-pair each here" list follows (PRP-07 Phase 1: the receiver shows the list and never bonds —
+ * link keys are non-transferable, so re-pairing each device is unavoidable and honest). The layout
+ * scrolls so a long list fits.
  */
 @Composable
 fun DoneScreen(
@@ -174,12 +178,14 @@ fun DoneScreen(
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
     installActions: List<InstallAction> = emptyList(),
+    repairEntries: List<RePairEntry> = emptyList(),
     onInstall: (InstallAction) -> Unit = {},
+    onOpenBluetoothSettings: () -> Unit = {},
     backupActionLabel: String = "Open backup settings",
     onOpenBackup: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
-    if (installActions.isEmpty()) {
+    if (installActions.isEmpty() && repairEntries.isEmpty()) {
         Column(
             modifier = modifier
                 .fillMaxSize()
@@ -213,26 +219,51 @@ fun DoneScreen(
                     onOpenBackup = onOpenBackup,
                 )
             }
-            item {
-                Spacer(Modifier.height(s.lg))
-                Text(
-                    text = "REINSTALL · ${installActions.size} ${if (installActions.size == 1) "APP" else "APPS"}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(bottom = s.sm),
-                )
-                HairlineDivider()
+            if (installActions.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(s.lg))
+                    Text(
+                        text = "REINSTALL · ${installActions.size} ${if (installActions.size == 1) "APP" else "APPS"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = s.sm),
+                    )
+                    HairlineDivider()
+                }
+                items(installActions, key = { "install:${it.packageName}" }) { action ->
+                    ReinstallRow(action = action, onInstall = onInstall)
+                }
+                item {
+                    Spacer(Modifier.height(s.md))
+                    Text(
+                        text = "Each opens its store — one tap to install. Nothing installs on its own.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
-            items(installActions, key = { it.packageName }) { action ->
-                ReinstallRow(action = action, onInstall = onInstall)
-            }
-            item {
-                Spacer(Modifier.height(s.md))
-                Text(
-                    text = "Each opens its store — one tap to install. Nothing installs on its own.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            if (repairEntries.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(s.lg))
+                    Text(
+                        text = "RE-PAIR · ${repairEntries.size} ${if (repairEntries.size == 1) "DEVICE" else "DEVICES"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = s.sm),
+                    )
+                    HairlineDivider()
+                }
+                items(repairEntries, key = { "bt:${it.address}" }) { entry ->
+                    RePairRow(entry = entry, onOpenBluetoothSettings = onOpenBluetoothSettings)
+                }
+                item {
+                    Spacer(Modifier.height(s.md))
+                    Text(
+                        text = "You were paired to these. Bluetooth pairings can't move between phones — open Bluetooth settings and pair each one again.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
         Column(
@@ -345,4 +376,54 @@ private fun storeName(store: InstallStore): String = when (store) {
     InstallStore.FDROID -> "F-Droid"
     InstallStore.AURORA -> "Aurora Store"
     InstallStore.UNKNOWN -> "Any store"
+}
+
+/**
+ * One re-pair row: device name over its MAC, the whole row a tap that opens system Bluetooth
+ * settings (PRP-07 Phase 1 — the OS owns bonding; portage never bonds and carries no link keys).
+ * The name and MAC are pre-validated/sanitized by [RePairEntry.from]; nothing here is shown raw.
+ */
+@Composable
+private fun RePairRow(entry: RePairEntry, onOpenBluetoothSettings: () -> Unit) {
+    val s = LocalSpacing.current
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onOpenBluetoothSettings() }
+                .padding(vertical = s.md),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = entry.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(s.xs))
+                Text(
+                    text = "${btKindLabel(entry.devType)} · ${entry.address}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = "RE-PAIR",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        HairlineDivider()
+    }
+}
+
+/** Human hint from BluetoothDevice.getType(): 1=CLASSIC, 2=LE, 3=DUAL, else unknown. */
+private fun btKindLabel(devType: Int): String = when (devType) {
+    1 -> "Bluetooth"
+    2 -> "Bluetooth LE"
+    3 -> "Bluetooth (dual)"
+    else -> "Bluetooth device"
 }

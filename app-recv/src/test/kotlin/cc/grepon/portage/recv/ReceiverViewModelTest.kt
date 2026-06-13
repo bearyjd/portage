@@ -18,6 +18,11 @@ import cc.grepon.portage.model.TransferManifest
 import cc.grepon.portage.providers.ApplyOutcome
 import cc.grepon.portage.providers.ApplyProvider
 import cc.grepon.portage.providers.ApplyProviderRegistry
+import cc.grepon.portage.providers.bluetooth.BtPairingRoster
+import cc.grepon.portage.providers.bluetooth.BondedDevice
+import cc.grepon.portage.providers.bluetooth.BtPairingsApplyProvider
+import cc.grepon.portage.providers.bluetooth.BtRosterCodec
+import cc.grepon.portage.providers.bluetooth.RePairEntry
 import cc.grepon.portage.providers.inventory.AppInventoryApplyProvider
 import cc.grepon.portage.providers.inventory.AppInventoryExportProvider
 import cc.grepon.portage.providers.inventory.AppRecord
@@ -178,7 +183,7 @@ class ReceiverViewModelTest {
         osFingerprint = "test-fingerprint",
         stagingDir = tmp.root,
         smsRoleCoordinator = coordinator,
-        applyRegistryFactory = { ApplyProviderRegistry(listOf(sms)) },
+        applyRegistryFactory = ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(listOf(sms)) },
     )
 
     @Before
@@ -193,8 +198,8 @@ class ReceiverViewModelTest {
 
     private fun viewModel(
         channel: SecureChannel = happyChannel(),
-        registryFactory: ((List<InstallAction>) -> Unit) -> ApplyProviderRegistry =
-            { ApplyProviderRegistry(emptyList()) },
+        registryFactory: ApplyRegistryFactory =
+            ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(emptyList()) },
     ) = ReceiverViewModel(
         pairingCodec = FakeCodec(),
         channelFactory = FakeFactory(channel),
@@ -221,7 +226,7 @@ class ReceiverViewModelTest {
         // Kinds the sender did not advertise surface as disabled rows, not gaps.
         assertThat(reviewing.absentKinds).containsExactly(
             ItemKind.CALENDAR_ICS, ItemKind.SMS, ItemKind.APP_INVENTORY, ItemKind.SETTINGS,
-            ItemKind.WALLPAPER, ItemKind.SOUND_SELECTION,
+            ItemKind.WALLPAPER, ItemKind.SOUND_SELECTION, ItemKind.BLUETOOTH_DEVICES,
         ).inOrder()
     }
 
@@ -240,7 +245,7 @@ class ReceiverViewModelTest {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
         val calls = FakeApply(ItemKind.CALL_LOG)
         val channel = happyChannel()
-        val vm = viewModel(channel, registryFactory = { ApplyProviderRegistry(listOf(contacts, calls)) })
+        val vm = viewModel(channel, registryFactory = ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(listOf(contacts, calls)) })
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -272,7 +277,7 @@ class ReceiverViewModelTest {
     @Test
     fun `an item without a registered handler counts as skipped, not moved`() = runTest(dispatcher) {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
-        val vm = viewModel(happyChannel(), registryFactory = { ApplyProviderRegistry(listOf(contacts)) })
+        val vm = viewModel(happyChannel(), registryFactory = ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(listOf(contacts)) })
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -309,7 +314,7 @@ class ReceiverViewModelTest {
     @Test
     fun `applyStaged routes the payload to the provider registered for the kind`() = runTest(dispatcher) {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
-        val vm = viewModel(registryFactory = { ApplyProviderRegistry(listOf(contacts)) })
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, _ -> ApplyProviderRegistry(listOf(contacts)) })
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -434,7 +439,7 @@ class ReceiverViewModelTest {
             override fun currentDefault(): String? = "com.example.messages"
             override fun launchRestore(priorHolderPackage: String?) = true
         }
-        val vm = viewModel(registryFactory = {
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, _ ->
             ApplyProviderRegistry(listOf(SmsApplyProvider(store, noRole)))
         })
         vm.startScanning()
@@ -471,7 +476,7 @@ class ReceiverViewModelTest {
             appVersion = "test",
             osFingerprint = "test",
             stagingDir = tmp.root,
-            applyRegistryFactory = { onActions ->
+            applyRegistryFactory = ApplyRegistryFactory { onActions, _ ->
                 ApplyProviderRegistry(listOf(AppInventoryApplyProvider(source, onActions)))
             },
         )
@@ -490,7 +495,7 @@ class ReceiverViewModelTest {
     @Test
     fun `install actions surfaced by the inventory provider reach the UI flow`() = runTest(dispatcher) {
         var sink: ((List<InstallAction>) -> Unit)? = null
-        val vm = viewModel(registryFactory = { onActions ->
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { onActions, _ ->
             sink = onActions
             ApplyProviderRegistry(emptyList())
         })
@@ -502,5 +507,60 @@ class ReceiverViewModelTest {
         sink?.invoke(listOf(action))
 
         assertThat(vm.installActions.value).containsExactly(action)
+    }
+
+    @Test
+    fun `bonded Bluetooth transfer surfaces the re-pair entries on the Done state`() = runTest(dispatcher) {
+        val roster = BtPairingRoster(
+            listOf(
+                BondedDevice("AA:BB:CC:DD:EE:01", "WH-1000XM5", devType = 1, majorClass = 1024),
+                BondedDevice("AA:BB:CC:DD:EE:02", "Pixel Watch", devType = 2, majorClass = 1792),
+            ),
+        )
+        val btBytes = BtRosterCodec.encode(roster).toByteArray(Charsets.UTF_8)
+        val btMeta = ItemMeta(6, ItemKind.BLUETOOTH_DEVICES, btBytes.size.toLong(), sha256(btBytes), "Paired Bluetooth devices", "Bluetooth")
+        val channel = FakeChannel(
+            ProtocolMessage.Manifest(TransferManifest("old phone", listOf(btMeta), btBytes.size.toLong())),
+            ProtocolMessage.ItemBegin(6, ItemKind.BLUETOOTH_DEVICES, btMeta.size, btBytes.size),
+            ProtocolMessage.ItemData(6, 0, btBytes),
+            ProtocolMessage.ItemEnd(6, btMeta.sha256),
+            ProtocolMessage.BatchEnd(listOf(6), "done"),
+        )
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(channel),
+            nowEpochSeconds = { 1_000 },
+            appVersion = "test",
+            osFingerprint = "test",
+            stagingDir = tmp.root,
+            applyRegistryFactory = ApplyRegistryFactory { _, onRepairEntries ->
+                ApplyProviderRegistry(listOf(BtPairingsApplyProvider(onRepairEntries)))
+            },
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        val done = vm.state.value as ReceiverState.Done
+        assertThat(done.moved).isEqualTo(1)
+        assertThat(done.repairEntries.map { it.address })
+            .containsExactly("AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02").inOrder()
+        assertThat(done.repairEntries.first().name).isEqualTo("WH-1000XM5")
+    }
+
+    @Test
+    fun `re-pair entries surfaced by the bluetooth provider reach the UI flow`() = runTest(dispatcher) {
+        var sink: ((List<RePairEntry>) -> Unit)? = null
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, onRepairEntries ->
+            sink = onRepairEntries
+            ApplyProviderRegistry(emptyList())
+        })
+
+        val entry = RePairEntry("AA:BB:CC:DD:EE:01", "WH-1000XM5", devType = 1, majorClass = 1024)
+        sink?.invoke(listOf(entry))
+
+        assertThat(vm.repairEntries.value).containsExactly(entry)
     }
 }

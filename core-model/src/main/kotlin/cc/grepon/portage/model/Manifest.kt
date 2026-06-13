@@ -46,6 +46,19 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     // handler degrades via UNKNOWN_KIND (Providers.kt, ApplyProviderRegistry); PROTOCOL_VERSION
     // (Pairing.kt) is NOT bumped — it versions the QR trust anchor, not the kind vocabulary.
     SOUND_SELECTION("sound.selection", Tier.TIER0),
+    // APPEND-ONLY wire bump (PRP-07, public-API approach): the list of bonded Bluetooth devices
+    // (display name + MAC + device type/major-class) as a small JSON snapshot. Tier 0 — the SENDER
+    // reads its own roster via the PUBLIC, NON-PRIVILEGED BluetoothAdapter.getBondedDevices() API,
+    // guarded only by the normal BLUETOOTH_CONNECT runtime permission (NO ADB bridge, NO privilege
+    // escalation — the on-device spike confirmed the privileged bt_config.conf read is DENIED to
+    // shell uid anyway, see docs/prp/features/SPIKE-RESULTS-2026-06-12.md). Phase 1 transfers the
+    // LIST ONLY and presents it as a "re-pair each on this device" checklist; it NEVER carries link
+    // keys / bond secrets (cryptographically controller-bound and non-transferable — re-pairing is
+    // unavoidable and honest) and NEVER calls createBond (assisted programmatic re-pair is DEFERRED
+    // to a Phase 2 follow-up). As with WALLPAPER/SOUND_SELECTION, an older receiver lacking this
+    // handler degrades via UNKNOWN_KIND (Providers.kt, ApplyProviderRegistry); PROTOCOL_VERSION
+    // (Pairing.kt) is NOT bumped — it versions the QR trust anchor, not the append-only kind vocab.
+    BLUETOOTH_DEVICES("bluetooth.devices", Tier.TIER0),
     // NOTE: no SEEDVAULT_BLOB. Couriering a Seedvault file would imply app-DATA transfer,
     // which contradicts the Seedvault division of labor (PRP §2, DEVILS_ADVOCATE Q5). If
     // ever wanted, it goes in a v2 protocol bump behind explicit "carrying, not backing up"

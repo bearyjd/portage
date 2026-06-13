@@ -43,6 +43,9 @@ val SENDER_PERMISSIONS = arrayOf(
     android.Manifest.permission.READ_CALENDAR,
     android.Manifest.permission.READ_CALL_LOG,
     android.Manifest.permission.READ_SMS,
+    // PRP-07: BLUETOOTH_CONNECT gates the PUBLIC getBondedDevices() read — a normal runtime
+    // permission, not an escalation. Denial just drops the bonded-roster item from the manifest.
+    android.Manifest.permission.BLUETOOTH_CONNECT,
 )
 
 /**

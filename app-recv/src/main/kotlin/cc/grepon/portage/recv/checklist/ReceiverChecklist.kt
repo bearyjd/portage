@@ -78,7 +78,7 @@ object ReceiverChecklist {
     private val EXPECTED_KINDS = listOf(
         ItemKind.CONTACTS_VCF, ItemKind.CALENDAR_ICS, ItemKind.CALL_LOG,
         ItemKind.SMS, ItemKind.APP_INVENTORY, ItemKind.SETTINGS, ItemKind.WALLPAPER,
-        ItemKind.SOUND_SELECTION,
+        ItemKind.SOUND_SELECTION, ItemKind.BLUETOOTH_DEVICES,
     )
 
     /**
