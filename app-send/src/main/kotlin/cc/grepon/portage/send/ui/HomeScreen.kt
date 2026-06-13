@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,6 +30,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.content.ContextCompat
+import cc.grepon.portage.providers.relay.RelayCandidate
+import cc.grepon.portage.send.relay.RelayFile
 import cc.grepon.portage.send.ui.theme.LocalSpacing
 
 /** Static device facts shown on the landing screen (computed once by the Activity). */
@@ -58,6 +62,10 @@ fun HomeScreen(
     summary: DeviceSummary,
     onStart: () -> Unit,
     modifier: Modifier = Modifier,
+    relayCandidates: List<RelayCandidate> = emptyList(),
+    relayPicks: List<RelayFile> = emptyList(),
+    onRelayFilePicked: (RelayFile) -> Unit = {},
+    onRemoveRelayPick: (Long) -> Unit = {},
 ) {
     val s = LocalSpacing.current
     val context = LocalContext.current
@@ -68,6 +76,9 @@ fun HomeScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            // Scroll so the optional relay section (and its picked-file list) never clips the
+            // Start button on shorter screens; centered when content is short.
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = s.gutter),
         verticalArrangement = Arrangement.Center,
     ) {
@@ -95,6 +106,19 @@ fun HomeScreen(
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // App-backup relay (PRP-06): only renders when Signal/Molly/Aegis is installed. Lets the user
+        // pick the encrypted file they exported IN the app so it rides along with the Tier-0 items.
+        if (relayCandidates.isNotEmpty()) {
+            Spacer(Modifier.height(s.lg))
+            HairlineDivider()
+            Spacer(Modifier.height(s.lg))
+            RelayPickSection(
+                candidates = relayCandidates,
+                picks = relayPicks,
+                onFilePicked = onRelayFilePicked,
+                onRemovePick = onRemoveRelayPick,
+            )
+        }
         Spacer(Modifier.height(s.xl))
         SwissPrimaryButton(
             text = "Start transfer",

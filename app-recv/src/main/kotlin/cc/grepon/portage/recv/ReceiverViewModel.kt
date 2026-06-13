@@ -254,6 +254,10 @@ class ReceiverViewModel(
         updateItem(meta.itemId) { it.copy(phase = ItemPhase.APPLYING) }
         // Thread the item id into the relay provider so each relay item gets a distinct prompt key
         // and a distinct handoff filename — prevents same-app overwrite and Compose duplicate-key crash.
+        // INVARIANT: setNextItemId + the provider's mutable nextItemId rely on SEQUENTIAL apply —
+        // ItemStreamReceiver applies items one at a time on a single coroutine, so the set-then-apply
+        // pair is atomic per item. Parallelizing applies would race nextItemId and corrupt the
+        // prompt/file identity (a backup could be tagged with another item's id); keep applies serial.
         if (meta.kind == ItemKind.APP_BACKUP_RELAY) relayApplyProvider?.setNextItemId(meta.itemId)
         val outcome = try {
             applyRegistry.apply(meta.kind, source)

@@ -134,6 +134,10 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
             providers = providers,
             stagingDir = File(context.cacheDir, STAGING_DIR),
             senderName = deviceName(context),
+            // The same inventory seam the app-list provider uses — here it detects which relay-capable
+            // apps (Signal/Molly/Aegis) are installed so the Home screen can offer to ferry their
+            // user-exported backups (PRP-06). No new permission: it reuses QUERY_ALL_PACKAGES.
+            inventorySource = AndroidInventorySource(context.packageManager),
         ) as T
     }
 }
