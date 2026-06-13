@@ -34,8 +34,9 @@ misses, directly phone-to-phone.** They are complementary, not competitors:
 - **Tier 1 — one-time Wireless Debugging setup (graceful-degrade):** allow-listed
   `Settings.Secure` / `Settings.Global` sync, batched app reinstall, and opt-in
   runtime-permission parity. portage owns the whole privilege stack itself — enable
-  Developer options, enable Wireless debugging, type the 6-digit pairing code into the
-  in-app wizard; no companion app, no PC. See
+  Developer options, enable Wireless debugging, then (in split screen, so the pairing dialog
+  stays visible) type the 6-digit code and port into the in-app wizard; no companion app, no
+  PC. See
   `docs/prp/ADR-003-self-contained-privilege.md` (architecture) and
   `docs/prp/ADR-001-privilege-feasibility.md` (the underlying grant model + on-device
   verification plan).

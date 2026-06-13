@@ -211,9 +211,11 @@ private fun PairingStep(
         HairlineDivider()
         Spacer(Modifier.height(s.lg))
         Text(
-            text = "In Developer options → Wireless debugging, tap \"Pair device with pairing " +
-                "code\". The dialog shows a 6-digit code and a port — keep it open (split " +
-                "screen helps) and type both in below.",
+            text = "Open portage and Settings side by side in SPLIT SCREEN first — the " +
+                "pairing dialog must stay visible while you type. Then in Settings → Developer " +
+                "options → Wireless debugging, tap \"Pair device with pairing code\" and enter " +
+                "the 6-digit code and the port it shows, in the fields below. Don't close or " +
+                "reopen the dialog: the port changes every time it opens.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onBackground,
         )
@@ -275,7 +277,8 @@ private fun errorCopy(error: PrivilegeWizard.PairingError): String = when (error
     PrivilegeWizard.PairingError.TIMEOUT ->
         "Pairing timed out. Make sure the pairing dialog is still open, then retry."
     PrivilegeWizard.PairingError.ENDPOINT_DOWN ->
-        "The pairing service went away — reopen \"Pair device with pairing code\" and retry."
+        "The pairing dialog closed before pairing finished. In split screen, reopen \"Pair " +
+            "device with pairing code\" and enter the fresh code AND port — both change each time."
     PrivilegeWizard.PairingError.CONNECT_FAILED ->
         "Paired, but the debug connection failed. Toggle Wireless debugging off and on, then retry."
     PrivilegeWizard.PairingError.BAD_INPUT ->
