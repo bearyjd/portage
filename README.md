@@ -46,10 +46,10 @@ misses, directly phone-to-phone.** They are complementary, not competitors:
 This is a Gradle + Kotlin multi-module Android project (module layout in the brief, §4).
 
 **One-time wrapper bootstrap.** The `gradle-wrapper.jar` is intentionally not committed;
-generate the wrapper once on a machine with Gradle 8.13+ installed:
+generate the wrapper once on a machine with Gradle 9.5.1+ installed:
 
 ```sh
-gradle wrapper --gradle-version 8.13   # writes gradlew, gradlew.bat, and the wrapper jar
+gradle wrapper --gradle-version 9.5.1   # writes gradlew, gradlew.bat, and the wrapper jar
 ```
 
 Then the usual:

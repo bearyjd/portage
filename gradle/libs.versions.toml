@@ -5,7 +5,7 @@
 
 [versions]
 # Build
-agp = "8.9.1"                 # verify latest stable at build time
+agp = "9.2.1"                 # AGP 9.x: built-in Kotlin (no standalone kotlin-android); needs Gradle >= 9.4.1
 kotlin = "2.4.0"             # K2; Compose compiler is bundled via the kotlin compose plugin
 # SDK levels — Pixel 6 and newer (Tensor era)
 minSdk = "31"                 # Android 12 = Pixel 6 launch floor
@@ -70,7 +70,6 @@ truth = { module = "com.google.truth:truth", version.ref = "truth" }
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
