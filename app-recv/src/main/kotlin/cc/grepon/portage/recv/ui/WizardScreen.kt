@@ -262,7 +262,7 @@ private fun PairingStep(
             onClick = { onSubmit(code, port) },
             fullWidth = true,
             // Enabled on a valid code + port — never gated on the mDNS search finishing.
-            enabled = code.length == 6 && port != null && port in 1..65535,
+            enabled = code.length == 6 && port != null && port in 1..PrivilegeWizard.MAX_PORT,
         )
         Spacer(Modifier.height(s.md))
         SwissTextAction(text = "Open Developer options", onClick = onOpenSettings)
