@@ -33,6 +33,8 @@ private class FakeSoundStore(
     /** (role, title) the TARGET can resolve to a local URI, and the URI it yields. */
     private val resolvable: MutableMap<Pair<SoundRole, String>, String> = mutableMapOf(),
     var writable: Boolean = true,
+    /** Roles for which setDefault returns false (platform refused), distinct from canWrite=false. */
+    private val failRoles: Set<SoundRole> = emptySet(),
 ) : SoundStore {
     /** Every (role, uri) handed to setDefault, in call order. */
     val setCalls = mutableListOf<Pair<SoundRole, String>>()
@@ -48,7 +50,7 @@ private class FakeSoundStore(
 
     override fun setDefault(role: SoundRole, uri: String): Boolean {
         setCalls += role to uri
-        return writable
+        return role !in failRoles
     }
 }
 
@@ -127,7 +129,7 @@ class SoundProvidersTest {
     }
 
     @Test
-    fun `Phase 1 exports a user-file backed role as UNSET so nothing dangles`() = runTest {
+    fun `Phase 1 omits a user-file backed role so nothing dangles`() = runTest {
         // A role whose current URI resolves to NO built-in title (titleOf == null) is a user file;
         // in Phase 1 (no file transfer) it must not be carried as a resolvable selection.
         val store = FakeSoundStore(
@@ -263,6 +265,47 @@ class SoundProvidersTest {
         val store = FakeSoundStore()
         val outcome = SoundSelectionApplyProvider(store).apply(ByteArrayInputStream("garbage".toByteArray()))
         assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(store.setCalls).isEmpty()
+    }
+
+    @Test
+    fun `apply reports WRITE_ERROR when platform refuses a locally-resolved scheme-valid URI`() = runTest {
+        // canWrite is true and the title resolves locally to a valid URI, but setDefault returns
+        // false (platform refused). This must be WRITE_ERROR — distinct from a no-match skip.
+        val store = FakeSoundStore(
+            resolvable = mutableMapOf(
+                (SoundRole.RINGTONE to "Flutey Phone") to targetRingtoneUri,
+                (SoundRole.NOTIFICATION to "Pixie Dust") to targetNotificationUri,
+            ),
+            failRoles = setOf(SoundRole.RINGTONE),
+        )
+        val outcome = SoundSelectionApplyProvider(store).apply(
+            frameOf(
+                SoundChoice(SoundRole.RINGTONE, SoundSource.BUILTIN, builtinTitle = "Flutey Phone"),
+                SoundChoice(SoundRole.NOTIFICATION, SoundSource.BUILTIN, builtinTitle = "Pixie Dust"),
+            ),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(outcome.detail).contains("write failed 1")
+        // Both resolved URIs were attempted; the refused one is counted as a write failure.
+        assertThat(store.setCalls).containsExactly(
+            SoundRole.RINGTONE to targetRingtoneUri,
+            SoundRole.NOTIFICATION to targetNotificationUri,
+        )
+    }
+
+    @Test
+    fun `apply surfaces no-match detail when canWrite is true but nothing resolves`() = runTest {
+        // All carried built-ins have no equivalent on this device — every role is skipped, applied=0.
+        val store = FakeSoundStore() // resolvable is empty
+        val outcome = SoundSelectionApplyProvider(store).apply(
+            frameOf(
+                SoundChoice(SoundRole.RINGTONE, SoundSource.BUILTIN, builtinTitle = "Nonexistent"),
+                SoundChoice(SoundRole.NOTIFICATION, SoundSource.BUILTIN, builtinTitle = "AlsoGone"),
+            ),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(outcome.detail).contains("no matching built-in sounds on this device")
         assertThat(store.setCalls).isEmpty()
     }
 

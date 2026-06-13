@@ -185,16 +185,31 @@ class SoundSelectionApplyProvider(
 
         var applied = 0
         var skipped = 0
+        var writeFailed = 0
         for (choice in selection.choices) {
             val targetUri = resolveLocalUri(choice)
             if (targetUri == null) {
                 skipped++
                 continue
             }
+            // targetUri is locally resolved + scheme-validated; a false return here means the
+            // platform refused a URI we derived ourselves (distinct from a no-match skip).
             val wrote = runCatching { store.setDefault(choice.role, targetUri) }.getOrDefault(false)
-            if (wrote) applied++ else skipped++
+            if (wrote) applied++ else writeFailed++
         }
 
+        if (writeFailed > 0) {
+            return ApplyOutcome(
+                ItemStatus.WRITE_ERROR,
+                "applied $applied, skipped $skipped, write failed $writeFailed",
+            )
+        }
+        if (applied == 0 && skipped > 0) {
+            return ApplyOutcome(
+                ItemStatus.OK,
+                "no matching built-in sounds on this device (skipped $skipped)",
+            )
+        }
         return ApplyOutcome(ItemStatus.OK, "applied $applied, skipped $skipped")
     }
 

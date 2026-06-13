@@ -46,13 +46,13 @@ class AndroidSoundStore(private val context: Context) : SoundStore {
         val manager = RingtoneManager(context).apply { setType(frameworkType(role)) }
         val cursor = manager.cursor ?: return@runCatching null
         cursor.use {
-            var position = 0
             while (it.moveToNext()) {
                 val entryTitle = it.getString(RingtoneManager.TITLE_COLUMN_INDEX)
                 if (entryTitle != null && entryTitle.equals(title, ignoreCase = true)) {
-                    return@runCatching manager.getRingtoneUri(position)?.toString()
+                    // Use the cursor's own authoritative position — never a hand-maintained parallel
+                    // counter, which would shift on any header/"Silent"/"Default" row reordering.
+                    return@runCatching manager.getRingtoneUri(it.position)?.toString()
                 }
-                position++
             }
         }
         null
