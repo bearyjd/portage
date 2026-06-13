@@ -608,7 +608,12 @@ class ReceiverViewModelTest {
                     listOf(
                         AppBackupRelayApplyProvider(
                             onPrompt = onRelayPrompt,
-                            handoff = { _, bytes -> handedOff += bytes; true },
+                            handoff = { _, source, declaredLen, _ ->
+                                val buf = ByteArrayOutputStream()
+                                RelayCodec.streamBlob(source, buf, declaredLen)
+                                handedOff += buf.toByteArray()
+                                true
+                            },
                         ),
                     ),
                 )

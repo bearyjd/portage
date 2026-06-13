@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import cc.grepon.portage.providers.bluetooth.RePairEntry
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.providers.inventory.InstallStore
+import cc.grepon.portage.providers.relay.RelayApp
 import cc.grepon.portage.providers.relay.RelayRestorePrompt
 import cc.grepon.portage.recv.ItemPhase
 import cc.grepon.portage.recv.ItemProgress
@@ -279,7 +280,7 @@ fun DoneScreen(
                     )
                     HairlineDivider()
                 }
-                items(relayPrompts, key = { "relay:${it.targetPackage}" }) { prompt ->
+                items(relayPrompts, key = { "relay:${it.itemId}" }) { prompt ->
                     RelayRow(prompt = prompt, onOpenRelayApp = onOpenRelayApp)
                 }
                 item {
@@ -499,9 +500,9 @@ private fun RelayRow(prompt: RelayRestorePrompt, onOpenRelayApp: (RelayRestorePr
 }
 
 /** Friendly label for the target relay app (derived from the typed enum, never a wire string). */
-private fun relayAppLabel(app: cc.grepon.portage.providers.relay.RelayApp): String = when (app) {
-    cc.grepon.portage.providers.relay.RelayApp.SIGNAL -> "Signal"
-    cc.grepon.portage.providers.relay.RelayApp.MOLLY -> "Molly"
-    cc.grepon.portage.providers.relay.RelayApp.AEGIS -> "Aegis"
-    cc.grepon.portage.providers.relay.RelayApp.OTHER -> "App backup"
+private fun relayAppLabel(app: RelayApp): String = when (app) {
+    RelayApp.SIGNAL -> "Signal"
+    RelayApp.MOLLY -> "Molly"
+    RelayApp.AEGIS -> "Aegis"
+    RelayApp.OTHER -> "App backup"
 }

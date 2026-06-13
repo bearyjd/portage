@@ -20,6 +20,7 @@ import cc.grepon.portage.providers.ApplyOutcome
 import cc.grepon.portage.providers.ApplyProviderRegistry
 import cc.grepon.portage.providers.bluetooth.RePairEntry
 import cc.grepon.portage.providers.inventory.InstallAction
+import cc.grepon.portage.providers.relay.AppBackupRelayApplyProvider
 import cc.grepon.portage.providers.relay.RelayRestorePrompt
 import cc.grepon.portage.recv.checklist.ReceiverChecklist
 import cc.grepon.portage.recv.sms.SmsRoleCoordinator
@@ -98,6 +99,15 @@ class ReceiverViewModel(
             // (e.g. Signal AND Aegis in one session) all surface on the Done screen.
             onRelayPrompt = { prompt -> _relayPrompts.value = _relayPrompts.value + prompt },
         )
+
+    /**
+     * Reference to the relay apply provider, extracted from the registry after construction.
+     * Used by [applyStaged] to set the current item id before each apply call so that two relay
+     * items for the same package get distinct [RelayRestorePrompt] row keys and distinct filenames.
+     * Null when no relay provider is registered (e.g. in tests that don't exercise relay).
+     */
+    private val relayApplyProvider: AppBackupRelayApplyProvider? =
+        applyRegistry.forKind(ItemKind.APP_BACKUP_RELAY) as? AppBackupRelayApplyProvider
 
     private var channel: SecureChannel? = null
 
@@ -242,6 +252,9 @@ class ReceiverViewModel(
      */
     internal suspend fun applyStaged(meta: ItemMeta, source: InputStream): ApplyOutcome {
         updateItem(meta.itemId) { it.copy(phase = ItemPhase.APPLYING) }
+        // Thread the item id into the relay provider so each relay item gets a distinct prompt key
+        // and a distinct handoff filename — prevents same-app overwrite and Compose duplicate-key crash.
+        if (meta.kind == ItemKind.APP_BACKUP_RELAY) relayApplyProvider?.setNextItemId(meta.itemId)
         val outcome = try {
             applyRegistry.apply(meta.kind, source)
         } catch (c: CancellationException) {

@@ -19,6 +19,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
 
 /**
  * Opaque app-encrypted fixture: bytes the courier never interprets. The PLAINTEXT_MARKER simulates
@@ -33,10 +34,9 @@ private const val NL = "\n"
 private const val TAB = "\t"
 
 /**
- * Hand-written fake of the re-link sink (mirrors the inventory/Bluetooth list-producing seams). The
- * apply path NEVER imports into the target app — it records that a re-link was OFFERED, exactly the
- * "user works the checklist" shape of AppInventoryApplyProvider. Captures the prompts so a test can
- * assert no app write happened and no opaque content leaked into the prompt.
+ * Hand-written fake of the re-link sink. The apply path NEVER imports into the target app — it
+ * records that a re-link was OFFERED. Captures prompts so a test can assert no app write happened
+ * and no opaque content leaked into the prompt.
  */
 private class FakeRelaySink {
     val prompts = mutableListOf<RelayRestorePrompt>()
@@ -47,6 +47,27 @@ private class FakeRelaySink {
 private class FakeInventorySource(private val packages: Set<String>) : InventorySource {
     override fun installedUserApps(): List<AppRecord> = emptyList()
     override fun installedPackageNames(): Set<String> = packages
+}
+
+/**
+ * Fake handoff seam: streams the blob into a ByteArrayOutputStream per call (keyed by itemId so
+ * callers can verify distinct-file behaviour), records (itemId, filename) pairs, and returns true.
+ */
+private class FakeHandoff {
+    data class Call(val itemId: Int, val header: RelayHeader, val bytes: ByteArray) {
+        override fun equals(other: Any?) = other is Call &&
+            itemId == other.itemId && header == other.header && bytes.contentEquals(other.bytes)
+        override fun hashCode() = 31 * (31 * itemId.hashCode() + header.hashCode()) + bytes.contentHashCode()
+    }
+
+    val calls = mutableListOf<Call>()
+
+    fun invoke(header: RelayHeader, source: InputStream, declaredLen: Long, itemId: Int): Boolean {
+        val buf = ByteArrayOutputStream()
+        RelayCodec.streamBlob(source, buf, declaredLen)
+        calls += Call(itemId, header, buf.toByteArray())
+        return true
+    }
 }
 
 class AppBackupRelayProvidersTest {
@@ -254,6 +275,19 @@ class AppBackupRelayProvidersTest {
         assertThat(provider.available()).isFalse()
     }
 
+    @Test
+    fun `the export provider is unavailable when the restore note is blank`() = runTest {
+        val provider = AppBackupRelayExportProvider(
+            app = RelayApp.OTHER,
+            targetPackage = "com.example.vault",
+            originalName = "x.bin",
+            restoreNote = "   ", // blank — would be rejected by sanitizedOrNull on recv anyway
+            openPickedFile = { ByteArrayInputStream(OPAQUE_BLOB) },
+            pickedFileLength = OPAQUE_BLOB.size.toLong(),
+        )
+        assertThat(provider.available()).isFalse()
+    }
+
     // ---- apply (receiver surfaces a re-link prompt; NEVER imports, NEVER interprets) ----
 
     private fun frameOf(
@@ -272,17 +306,21 @@ class AppBackupRelayProvidersTest {
     @Test
     fun `apply surfaces a re-link prompt and stages the opaque file without importing it`() = runTest {
         val sink = FakeRelaySink()
-        val staged = mutableListOf<ByteArray>()
-        val outcome = AppBackupRelayApplyProvider(
+        val handoff = FakeHandoff()
+        val provider = AppBackupRelayApplyProvider(
             onPrompt = sink::onPrompt,
-            handoff = { _, bytes -> staged += bytes; true },
-        ).apply(frameOf())
+            handoff = handoff::invoke,
+            nextItemId = 42,
+        )
+        val outcome = provider.apply(frameOf())
 
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(sink.prompts).hasSize(1)
         assertThat(sink.prompts.single().app).isEqualTo(RelayApp.SIGNAL)
-        // The staged bytes are byte-exact opaque bytes — the courier hands them off, never imports.
-        assertThat(staged.single()).isEqualTo(OPAQUE_BLOB)
+        assertThat(sink.prompts.single().itemId).isEqualTo(42)
+        // The staged bytes are byte-exact — the courier hands them off, never imports.
+        assertThat(handoff.calls.single().bytes).isEqualTo(OPAQUE_BLOB)
+        assertThat(handoff.calls.single().itemId).isEqualTo(42)
     }
 
     @Test
@@ -292,7 +330,7 @@ class AppBackupRelayProvidersTest {
         // sanitizer rejects the mismatched advisory package, so the item is refused (no prompt).
         val outcome = AppBackupRelayApplyProvider(
             onPrompt = sink::onPrompt,
-            handoff = { _, _ -> true },
+            handoff = { _, _, _, _ -> true },
         ).apply(frameOf(app = RelayApp.SIGNAL, targetPackage = "com.evil.redirect"))
 
         assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
@@ -304,7 +342,7 @@ class AppBackupRelayProvidersTest {
         val sink = FakeRelaySink()
         val outcome = AppBackupRelayApplyProvider(
             onPrompt = sink::onPrompt,
-            handoff = { _, _ -> true },
+            handoff = { _, _, _, _ -> true },
         ).apply(
             frameOf(
                 app = RelayApp.OTHER,
@@ -323,7 +361,7 @@ class AppBackupRelayProvidersTest {
         var handoffCalled = false
         val outcome = AppBackupRelayApplyProvider(
             onPrompt = sink::onPrompt,
-            handoff = { _, _ -> handoffCalled = true; true },
+            handoff = { _, _, _, _ -> handoffCalled = true; true },
         ).apply(ByteArrayInputStream(OPAQUE_BLOB)) // no header line
 
         assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
@@ -336,11 +374,53 @@ class AppBackupRelayProvidersTest {
         val sink = FakeRelaySink()
         val outcome = AppBackupRelayApplyProvider(
             onPrompt = sink::onPrompt,
-            handoff = { _, _ -> false }, // staging/handoff refused
+            handoff = { _, _, _, _ -> false }, // staging/handoff refused
         ).apply(frameOf())
 
         assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
         assertThat(outcome.detail ?: "").doesNotContain(PLAINTEXT_MARKER)
+    }
+
+    // ---- collision: two same-app relay items must produce distinct prompts and distinct files ----
+
+    @Test
+    fun `two relay items for the same package produce distinct prompts and distinct handoff calls`() = runTest {
+        // Simulates receiving two Signal backup relays in one session. Each must surface as a
+        // distinct prompt (distinct itemId row key) and call handoff with a distinct itemId so the
+        // file layer can write distinct filenames — preventing Compose duplicate-key crash and
+        // silent overwrite of a high-sensitivity user secret.
+        val sink = FakeRelaySink()
+        val handoff = FakeHandoff()
+        val provider = AppBackupRelayApplyProvider(
+            onPrompt = sink::onPrompt,
+            handoff = handoff::invoke,
+        )
+
+        // First item (itemId = 10)
+        provider.setNextItemId(10)
+        val outcome1 = provider.apply(frameOf(bytes = "first-backup".toByteArray(), byteLength = "first-backup".length.toLong()))
+        assertThat(outcome1.status).isEqualTo(ItemStatus.OK)
+
+        // Second item for the SAME package (itemId = 11)
+        provider.setNextItemId(11)
+        val outcome2 = provider.apply(frameOf(bytes = "second-backup".toByteArray(), byteLength = "second-backup".length.toLong()))
+        assertThat(outcome2.status).isEqualTo(ItemStatus.OK)
+
+        // Two distinct prompts with distinct itemIds — no duplicate row key
+        assertThat(sink.prompts).hasSize(2)
+        assertThat(sink.prompts[0].itemId).isEqualTo(10)
+        assertThat(sink.prompts[1].itemId).isEqualTo(11)
+        // Both target the same app (same-package scenario)
+        assertThat(sink.prompts[0].targetPackage).isEqualTo(sink.prompts[1].targetPackage)
+
+        // Two handoff calls with distinct itemIds — the file layer receives distinct keys for
+        // distinct filenames (e.g. signal-10-relay.bin vs signal-11-relay.bin)
+        assertThat(handoff.calls).hasSize(2)
+        assertThat(handoff.calls[0].itemId).isEqualTo(10)
+        assertThat(handoff.calls[1].itemId).isEqualTo(11)
+        // The bytes are byte-exact and distinct — no silent overwrite
+        assertThat(handoff.calls[0].bytes).isEqualTo("first-backup".toByteArray())
+        assertThat(handoff.calls[1].bytes).isEqualTo("second-backup".toByteArray())
     }
 
     // ---- scope guard: the opaque blob is NEVER parsed, decoded, or logged ----
@@ -350,7 +430,7 @@ class AppBackupRelayProvidersTest {
         val sink = FakeRelaySink()
         val outcome = AppBackupRelayApplyProvider(
             onPrompt = sink::onPrompt,
-            handoff = { _, _ -> true },
+            handoff = { _, _, _, _ -> true },
         ).apply(frameOf())
 
         // The outcome detail (which rides BATCH_ACK / the done screen) must never carry the secret.
