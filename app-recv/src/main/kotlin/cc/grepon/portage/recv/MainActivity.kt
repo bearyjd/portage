@@ -37,6 +37,8 @@ import cc.grepon.portage.providers.settings.TierOneGrant
 import cc.grepon.portage.providers.sms.AndroidSmsRoleGateway
 import cc.grepon.portage.providers.sms.AndroidSmsStore
 import cc.grepon.portage.providers.sms.SmsApplyProvider
+import cc.grepon.portage.providers.sound.AndroidSoundStore
+import cc.grepon.portage.providers.sound.SoundSelectionApplyProvider
 import cc.grepon.portage.providers.wallpaper.AndroidWallpaperStore
 import cc.grepon.portage.providers.wallpaper.WallpaperApplyProvider
 import cc.grepon.portage.recv.privilege.PrivilegeWizardHolder
@@ -132,6 +134,11 @@ private class ReceiverViewModelFactory(
                     // The provider's bounds-only decode gate rejects decompression bombs before
                     // any bitmap is allocated (PRP-02 §7).
                     WallpaperApplyProvider(AndroidWallpaperStore(context)),
+                    // Tier 0: sets default ringtone/notification/alarm via the "modify system
+                    // settings" special access (Settings.System.canWrite). The provider re-resolves
+                    // each carried built-in title to a LOCAL URI and never writes a sender-supplied
+                    // URI — an unmatched built-in leaves that role at the device default (PRP-04 §3).
+                    SoundSelectionApplyProvider(AndroidSoundStore(context)),
                 ),
             )
         }

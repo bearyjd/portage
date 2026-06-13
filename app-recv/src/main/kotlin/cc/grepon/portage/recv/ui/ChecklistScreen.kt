@@ -335,6 +335,7 @@ private fun tierHint(kind: ItemKind): String {
         ItemKind.APK -> "App package"
         ItemKind.SETTINGS -> "Device settings"
         ItemKind.WALLPAPER -> "Wallpaper"
+        ItemKind.SOUND_SELECTION -> "Ringtone & notification sounds"
     }
     return if (kind.tier == Tier.TIER1) "$base · advanced" else base
 }
