@@ -29,6 +29,7 @@ class PrivilegeWizardTest {
             { AdbBridge.ConnectionResult.NoEndpoint }
         var capabilities: Set<AdbBridge.PrivilegedCapability> = emptySet()
         var probeThrows = false
+        var connectCalls = 0
         val pairCalls = mutableListOf<Pair<Int, String>>()
 
         override suspend fun pair(pairingPort: Int, pairingCode: String): AdbBridge.PairingResult {
@@ -37,6 +38,7 @@ class PrivilegeWizardTest {
         }
 
         override suspend fun connect(): AdbBridge.ConnectionResult {
+            connectCalls++
             val result = connectResult()
             if (result is AdbBridge.ConnectionResult.Connected) connected = true
             return result
@@ -116,6 +118,64 @@ class PrivilegeWizardTest {
     }
 
     // ── steps 2-3: environment gating + recheck on return from Settings ─────────────────────
+
+    @Test
+    fun `never attempts connect while wireless debugging is off`() = runTest {
+        // Regression guard (found on-device, GOS A16): the silent reconnect must be gated on the
+        // Wireless debugging toggle. With it off there is no endpoint, and libadb's mDNS wait
+        // ignores the connect timeout, so an unconditional connect() hung the wizard on
+        // "Checking" forever. route() must reach EnableWirelessDebug WITHOUT touching connect().
+        val bridge = FakeBridge()
+        val environment = FakeEnvironment(devOptions = true, wirelessDebug = false)
+        val w = wizard(bridge, environment)
+
+        w.start()
+        advanceUntilIdle()
+
+        assertThat(w.step.value).isEqualTo(PrivilegeWizard.Step.EnableWirelessDebug)
+        assertThat(bridge.connectCalls).isEqualTo(0)
+    }
+
+    @Test
+    fun `attempts the silent reconnect only once wireless debugging is on`() = runTest {
+        val bridge = FakeBridge() // connect default = NoEndpoint
+        val environment = FakeEnvironment(devOptions = true, wirelessDebug = false)
+        val w = wizard(bridge, environment)
+
+        w.start()
+        advanceUntilIdle()
+        assertThat(bridge.connectCalls).isEqualTo(0) // toggle off → no attempt
+
+        environment.wirelessDebug = true
+        w.recheck()
+        advanceUntilIdle()
+        assertThat(bridge.connectCalls).isEqualTo(1) // toggle on → reconnect attempted (post-reboot path)
+        assertThat(w.step.value).isInstanceOf(PrivilegeWizard.Step.EnterPairingCode::class.java)
+    }
+
+    @Test
+    fun `toggle on with a reconnectable bridge reaches Ready via the post-gate connect`() = runTest {
+        // Explicit cover for route()'s post-gate connect-success branch. It was only covered
+        // transitively by the default environment happening to pass both gates; pin it here with
+        // an explicit toggle-on env so the branch stays covered even if the default ever changes.
+        // Both gates pass → the persisted pairing key reconnects → Ready WITHOUT pairing → the
+        // connection is torn down after the probe (the security invariant).
+        val bridge = FakeBridge().apply {
+            connectResult = { AdbBridge.ConnectionResult.Connected }
+            capabilities = setOf(AdbBridge.PrivilegedCapability.SHELL)
+        }
+        val environment = FakeEnvironment(devOptions = true, wirelessDebug = true)
+        val w = wizard(bridge, environment)
+
+        w.start()
+        advanceUntilIdle()
+
+        assertThat(w.step.value).isInstanceOf(PrivilegeWizard.Step.Ready::class.java)
+        assertThat(bridge.connectCalls).isEqualTo(1)
+        assertThat(bridge.pairCalls).isEmpty()
+        assertThat(bridge.disconnectCalls).isEqualTo(1)
+        assertThat(bridge.connected).isFalse()
+    }
 
     @Test
     fun `progresses dev-options then wireless-debug as the user enables them`() = runTest {
