@@ -82,6 +82,10 @@ Reference: ADR-003 §7–8, ADR-001 §1–2, `PrivilegeWizard.kt`, `WizardScreen
   - Security invariant to confirm by behaviour: after the probe the bridge **disconnects
     immediately** — shell uid is never held open in the background. No persistent "debugging
     connected" state should linger after "Ready".
+  - **Field behaviour (TextFieldValue migration):** type the code and port quickly — *especially
+    while the "LOOKING FOR THE PAIRING SERVICE…" search is running* — and confirm the caret does
+    not jump to the end and no keystrokes are dropped; editing a digit mid-field keeps the caret in
+    place. (Compose text-field behaviour is not exercised by the JVM CI gate, so verify it here.)
 
 **A3 — Grant persists across reboot (no re-pair)**
 - **Do:** Reboot the receiver. Re-open portage; when prompted, re-enable Wireless Debugging.
