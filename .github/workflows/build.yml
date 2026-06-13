@@ -23,7 +23,7 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: '8.13'
+          gradle-version: '9.5.1'
       - name: Settings-allowlist guardrails
         run: gradle :settings-catalog:test --no-daemon --stacktrace
 
@@ -39,7 +39,7 @@ jobs:
       - uses: android-actions/setup-android@v4
       - uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: '8.13'
+          gradle-version: '9.5.1'
       - name: Unit tests (core-model + core-transport + adb-bridge + wizard + providers + app-recv + app-send)
         run: gradle :core-model:test :core-transport:testDebugUnitTest :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest :app-recv:testDebugUnitTest :app-send:testDebugUnitTest --no-daemon --stacktrace
       - name: Assemble debug APKs
