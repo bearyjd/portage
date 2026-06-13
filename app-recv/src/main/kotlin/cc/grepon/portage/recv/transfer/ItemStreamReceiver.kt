@@ -9,6 +9,7 @@
  */
 package cc.grepon.portage.recv.transfer
 
+import cc.grepon.portage.model.ItemKind
 import cc.grepon.portage.model.ItemMeta
 import cc.grepon.portage.model.ItemResult
 import cc.grepon.portage.model.ItemStatus
@@ -39,7 +40,15 @@ import java.security.MessageDigest
 class ItemStreamReceiver(
     private val stagingDir: File,
     private val maxItemBytes: Long = DEFAULT_MAX_ITEM_BYTES,
+    // Per-kind cap OVERRIDES, applied by ItemKind. The default 64 MiB ceiling fits structured Tier-0
+    // payloads, but an opaque app-backup relay item (PRP-06) routinely exceeds it, so the relay kind
+    // ALONE gets a raised, still-finite ceiling here. Every kind NOT in this map keeps [maxItemBytes]
+    // — the raised relay cap MUST NOT leak into the Tier-0/PII item paths (PRP-06 §5).
+    private val maxBytesByKind: Map<ItemKind, Long> = emptyMap(),
 ) {
+
+    /** The effective per-item byte cap for [kind]: its override if any, else the default. */
+    private fun capFor(kind: ItemKind): Long = maxBytesByKind[kind] ?: maxItemBytes
 
     sealed interface Event {
         data class ItemStarted(val itemId: Int) : Event
@@ -107,6 +116,10 @@ class ItemStreamReceiver(
     ): ItemResult {
         onEvent(Event.ItemStarted(begin.itemId))
 
+        // The cap is resolved from the manifest-agreed kind (begin.kind is cross-checked against
+        // meta.kind first, so a relay raise can't be claimed by mislabeling a PII item).
+        val itemCap = capFor(begin.kind)
+
         // Refuse BEFORE staging a byte; the stream is still drained to stay in sync.
         var failure: ItemResult? = when {
             meta == null ->
@@ -115,7 +128,7 @@ class ItemStreamReceiver(
                 ItemResult(begin.itemId, ItemStatus.UNKNOWN_KIND, "kind disagrees with the manifest")
             begin.size != meta.size ->
                 ItemResult(begin.itemId, ItemStatus.OVERSIZE, "size disagrees with the manifest")
-            begin.size > maxItemBytes ->
+            begin.size > itemCap ->
                 ItemResult(begin.itemId, ItemStatus.OVERSIZE, "exceeds the receiver's per-item cap")
             else -> null
         }
@@ -142,7 +155,7 @@ class ItemStreamReceiver(
                         received += message.bytes.size
                         // Bound on-disk bytes by BOTH the manifest and the receiver's own
                         // cap, so staging stays bounded even if one guard ever regresses.
-                        if ((meta != null && received > meta.size) || received > maxItemBytes) {
+                        if ((meta != null && received > meta.size) || received > itemCap) {
                             failure = ItemResult(begin.itemId, ItemStatus.OVERSIZE, "more bytes than advertised")
                             continue@chunks
                         }

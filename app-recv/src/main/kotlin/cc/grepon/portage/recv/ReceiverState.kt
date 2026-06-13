@@ -12,6 +12,7 @@ package cc.grepon.portage.recv
 import cc.grepon.portage.model.ItemKind
 import cc.grepon.portage.providers.bluetooth.RePairEntry
 import cc.grepon.portage.providers.inventory.InstallAction
+import cc.grepon.portage.providers.relay.RelayRestorePrompt
 import cc.grepon.portage.recv.checklist.ChecklistGroup
 
 /** Where one selected item is in its receive→apply lifecycle. */
@@ -55,12 +56,16 @@ sealed interface ReceiverState {
      * these as one-tap install deep links; it never installs anything silently (PRP §2).
      * [repairEntries] is the bonded-Bluetooth roster surfaced when BLUETOOTH_DEVICES was applied
      * (empty otherwise) — a "re-pair each here" checklist; Phase 1 only displays, never bonds.
+     * [relayPrompts] are the guided "open this in <app> and enter your passphrase" reminders surfaced
+     * when an APP_BACKUP_RELAY item was applied (empty otherwise) — portage hands the OPAQUE file to
+     * the user / target app and NEVER imports it or holds the passphrase (PRP-06 §5).
      */
     data class Done(
         val moved: Int,
         val skipped: Int,
         val installActions: List<InstallAction> = emptyList(),
         val repairEntries: List<RePairEntry> = emptyList(),
+        val relayPrompts: List<RelayRestorePrompt> = emptyList(),
     ) : ReceiverState
 
     /** Fail-closed terminal state with a user-facing reason. */

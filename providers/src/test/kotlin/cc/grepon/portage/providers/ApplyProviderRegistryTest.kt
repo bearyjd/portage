@@ -70,4 +70,15 @@ class ApplyProviderRegistryTest {
         assertThat(outcome.detail).isEqualTo("wallpaper")
         assertThat(wallpaper.calls).isEqualTo(1)
     }
+
+    @Test
+    fun `routes an APP_BACKUP_RELAY payload to its registered provider`() = runTest {
+        val relay = StubApply(ItemKind.APP_BACKUP_RELAY, ApplyOutcome(ItemStatus.OK, "relay"))
+        val registry = ApplyProviderRegistry(listOf(relay))
+
+        val outcome = registry.apply(ItemKind.APP_BACKUP_RELAY, empty)
+
+        assertThat(outcome.detail).isEqualTo("relay")
+        assertThat(relay.calls).isEqualTo(1)
+    }
 }

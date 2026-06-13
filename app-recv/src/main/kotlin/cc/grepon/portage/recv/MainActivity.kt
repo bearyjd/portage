@@ -30,6 +30,8 @@ import cc.grepon.portage.providers.contacts.AndroidContactsStore
 import cc.grepon.portage.providers.contacts.ContactsApplyProvider
 import cc.grepon.portage.providers.inventory.AndroidInventorySource
 import cc.grepon.portage.providers.inventory.AppInventoryApplyProvider
+import cc.grepon.portage.providers.relay.AppBackupRelayApplyProvider
+import cc.grepon.portage.recv.relay.AndroidRelayHandoff
 import cc.grepon.portage.providers.settings.AndroidSecureGlobalSettingsStore
 import cc.grepon.portage.providers.settings.AndroidSystemSettingsStore
 import cc.grepon.portage.providers.settings.SettingsApplyProvider
@@ -108,7 +110,7 @@ private class ReceiverViewModelFactory(
 ) : ViewModelProvider.Factory {
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        val registryFactory = ApplyRegistryFactory { onInstallActions, onRepairEntries ->
+        val registryFactory = ApplyRegistryFactory { onInstallActions, onRepairEntries, onRelayPrompt ->
             val resolver = context.contentResolver
             ApplyProviderRegistry(
                 listOf(
@@ -144,6 +146,16 @@ private class ReceiverViewModelFactory(
                     // it never calls createBond (deferred to Phase 2) and carries no link keys
                     // (non-transferable). No platform dependency, so it cannot bond by construction.
                     BtPairingsApplyProvider(onRepairEntries),
+                    // Tier 0: COURIER for a user-exported, app-encrypted backup (Signal/Molly/Aegis;
+                    // PRP-06). portage relays the OPAQUE file the user picked — it NEVER decrypts,
+                    // parses, or imports it, and never holds the passphrase. The apply path validates
+                    // the typed header (derive-never-trust the advisory package/note), writes the
+                    // opaque bytes to a user-visible location via [AndroidRelayHandoff], and surfaces
+                    // a guided "open this in <app>" reminder. No app data is written by portage.
+                    AppBackupRelayApplyProvider(
+                        onPrompt = onRelayPrompt,
+                        handoff = AndroidRelayHandoff(context)::write,
+                    ),
                 ),
             )
         }

@@ -13,7 +13,10 @@ Assets: contacts/calendar/SMS/call-log content, app inventory (fingerprintable),
 Bluetooth device roster — names + MAC addresses (fingerprintable; no link keys, which are
 controller-bound and never carried), settings values, APK payloads (integrity, not
 confidentiality), the Seedvault blob if couriered (already Seedvault-encrypted; we protect
-it anyway).
+it anyway), and the **relayed app-backup blob** (PRP-06: a user-exported, app-encrypted
+Signal/Molly/Aegis backup — a full message history / 2FA vault — the HIGHEST-sensitivity
+opaque secret we carry; app-encrypted with a USER-only passphrase portage never sees, and
+double-wrapped under the Noise transport in transit).
 
 ## 2. Attacks and the property that stops each
 
@@ -31,6 +34,7 @@ it anyway).
 | 10 | Malicious *sender* / poisoned payloads toward the receiver | **Receiver-side allowlist enforcement**: settings are applied only if the key exists in the receiver's *compiled* catalog, with per-key type/range validation — sender's manifest cannot expand that set. APKs install only through user-confirmed `PackageInstaller` flows (Tier 0) or the explicit batch screen (Tier 1); inventory entries are data, not code. All staged items are written to app-private staging with **generated filenames** — manifest names are display-only, killing path traversal. CBOR decoding has depth/size caps. **Binary image payloads (`wallpaper`, PRP-02)** pass a pre-write gate (`WallpaperApplyProvider`): a magic-byte MIME allowlist (PNG/JPEG/WebP — declared `format` re-verified, not trusted), a `MAX_WALLPAPER_BYTES` cap, and a **bounds-only decode** (`inJustDecodeBounds`) with a `MAX_PIXELS` ceiling so a decompression bomb is rejected before any bitmap is allocated; the typed `WallpaperSurface` enum derives the `FLAG_*` so a payload can't redirect the surface | A hostile sender can still send garbage *values* for SAFE keys (e.g., font_scale 0.01) — mitigated by per-key range clamps in the catalog. Wallpaper EXIF GPS is sent as-is (accepted residual §3, to one's own device over the AEAD channel) |
 | 11 | DoS (SYN flood, junk connects, oversized frames) | Listener exists only while the transfer screen is open; accepts one connection; 10 s handshake deadline; `u16` frame cap; staging quota | LAN DoS is always winnable by the adversary; we only guarantee fail-closed |
 | 12 | Metadata exposure via mDNS | Instance name derives from random `sid`, not the device name; service registered only during an active transfer screen | The *existence* of a portage transfer is visible on the LAN; option: "QR-only mode" toggle disabling NSD |
+| 13 | Malicious sender abuses the **app-backup relay** (PRP-06): a redirect to a hostile package, a covert app-data path, or a parser exploit via the opaque blob | **Courier, not backup**: only a USER-PICKED file enters — portage has NO code path that reads app-internal data or PRODUCES a backup (the `seedvault.blob` deciding test, PRP-06 §2). The blob is **never decrypted, parsed, or sniffed** — read for length + sha256 only, exactly the transport's existing opaque-item contract. **Re-link redirection blocked**: the target package is derived from the typed `RelayApp` enum and the advisory `targetPackage` is re-validated against it + the package-name regex (`RelayHeader.sanitizedOrNull`) before any intent — a hostile sender can't point the re-link at an arbitrary app or smuggle a scheme (the hardened `InstallAction` precedent). The restore note/name are control-stripped + length-bounded. The **passphrase never touches portage**. The per-item cap is raised for THIS KIND ONLY and stays finite (`maxBytesByKind`), so no unbounded write; manifest size + sha agreement still hold | The blob is a user secret portage carries but cannot open; if the user forgets the passphrase they cannot restore (human residual, §3). A brief user-visible copy on the receiver (handoff to the target app) is the user's own file in a user location — documented residual (§3) |
 
 ## 3. Residual risks (explicit)
 
@@ -47,6 +51,16 @@ it anyway).
    delete-on-finish hygiene, nothing stronger claimed.
 5. **Sender-side consent granularity** is the item list, not per-field; a sender owner
    who approves "contacts" sends all contacts.
+6. **Relayed app-backup passphrase** (PRP-06): portage shows a reminder to bring the
+   app's backup passphrase but NEVER captures, stores, transmits, or logs it — the
+   passphrase stays a user-only secret re-typed into the target app. A user who forgets it
+   cannot restore; portage cannot help, by design. Mirrors the "secret the user must carry
+   out of band" shape of the QR-PSK residual (§1).
+7. **Relayed-backup user-visible copy** (PRP-06): handing the opaque file to the target
+   app needs a brief copy in a user-accessible (app-scoped external) location under a
+   GENERATED name. That copy is the user's own file in their chosen location; the opaque
+   bytes are never logged or interpreted. A longer-lived copy is an accepted, documented
+   residual — prefer delete-after-import.
 
 ## 4. Properties summary (what the design *guarantees*)
 

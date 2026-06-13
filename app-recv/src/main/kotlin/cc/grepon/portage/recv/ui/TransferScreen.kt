@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import cc.grepon.portage.providers.bluetooth.RePairEntry
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.providers.inventory.InstallStore
+import cc.grepon.portage.providers.relay.RelayRestorePrompt
 import cc.grepon.portage.recv.ItemPhase
 import cc.grepon.portage.recv.ItemProgress
 import cc.grepon.portage.recv.ui.theme.LocalSpacing
@@ -179,13 +180,15 @@ fun DoneScreen(
     modifier: Modifier = Modifier,
     installActions: List<InstallAction> = emptyList(),
     repairEntries: List<RePairEntry> = emptyList(),
+    relayPrompts: List<RelayRestorePrompt> = emptyList(),
     onInstall: (InstallAction) -> Unit = {},
     onOpenBluetoothSettings: () -> Unit = {},
+    onOpenRelayApp: (RelayRestorePrompt) -> Unit = {},
     backupActionLabel: String = "Open backup settings",
     onOpenBackup: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
-    if (installActions.isEmpty() && repairEntries.isEmpty()) {
+    if (installActions.isEmpty() && repairEntries.isEmpty() && relayPrompts.isEmpty()) {
         Column(
             modifier = modifier
                 .fillMaxSize()
@@ -260,6 +263,29 @@ fun DoneScreen(
                     Spacer(Modifier.height(s.md))
                     Text(
                         text = "You were paired to these. Bluetooth pairings can't move between phones — open Bluetooth settings and pair each one again.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (relayPrompts.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(s.lg))
+                    Text(
+                        text = "RESTORE · ${relayPrompts.size} ${if (relayPrompts.size == 1) "BACKUP" else "BACKUPS"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = s.sm),
+                    )
+                    HairlineDivider()
+                }
+                items(relayPrompts, key = { "relay:${it.targetPackage}" }) { prompt ->
+                    RelayRow(prompt = prompt, onOpenRelayApp = onOpenRelayApp)
+                }
+                item {
+                    Spacer(Modifier.height(s.md))
+                    Text(
+                        text = "Each backup file is here, encrypted by the app and only openable with your passphrase — portage never sees it. Open the app and import it.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -426,4 +452,56 @@ private fun btKindLabel(devType: Int): String = when (devType) {
     2 -> "Bluetooth LE"
     3 -> "Bluetooth (dual)"
     else -> "Bluetooth device"
+}
+
+/**
+ * One relayed-backup row (PRP-06): the target app over the restore reminder, the whole row a tap that
+ * opens that app so the user can import the file with their passphrase. portage relayed the OPAQUE
+ * file only — it never imports it and never holds the passphrase. The app id, name, and note are all
+ * pre-validated/sanitized by [RelayRestorePrompt] (derived from the typed RelayApp enum); nothing here
+ * is shown raw and the opaque bytes are never surfaced.
+ */
+@Composable
+private fun RelayRow(prompt: RelayRestorePrompt, onOpenRelayApp: (RelayRestorePrompt) -> Unit) {
+    val s = LocalSpacing.current
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onOpenRelayApp(prompt) }
+                .padding(vertical = s.md),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = relayAppLabel(prompt.app),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(s.xs))
+                Text(
+                    text = prompt.restoreNote,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = "OPEN",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        HairlineDivider()
+    }
+}
+
+/** Friendly label for the target relay app (derived from the typed enum, never a wire string). */
+private fun relayAppLabel(app: cc.grepon.portage.providers.relay.RelayApp): String = when (app) {
+    cc.grepon.portage.providers.relay.RelayApp.SIGNAL -> "Signal"
+    cc.grepon.portage.providers.relay.RelayApp.MOLLY -> "Molly"
+    cc.grepon.portage.providers.relay.RelayApp.AEGIS -> "Aegis"
+    cc.grepon.portage.providers.relay.RelayApp.OTHER -> "App backup"
 }

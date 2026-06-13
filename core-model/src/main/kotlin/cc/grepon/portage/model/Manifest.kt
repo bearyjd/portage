@@ -59,6 +59,21 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     // handler degrades via UNKNOWN_KIND (Providers.kt, ApplyProviderRegistry); PROTOCOL_VERSION
     // (Pairing.kt) is NOT bumped — it versions the QR trust anchor, not the append-only kind vocab.
     BLUETOOTH_DEVICES("bluetooth.devices", Tier.TIER0),
+    // APPEND-ONLY wire bump (PRP-06 §4): an OPAQUE, user-initiated app-backup export ferried
+    // device-to-device — Signal/Molly (message history) and Aegis (2FA vault) keep their OWN
+    // encrypted backups and opt out of system backup by design. portage is a COURIER here, NOT a
+    // backup engine: the USER triggers the app's native export (portage cannot — these apps deny
+    // programmatic backup), the USER points portage at the resulting file via SAF, and portage
+    // relays it as opaque bytes it NEVER decrypts, parses, or interprets. The passphrase never
+    // touches portage. This is categorically NOT the forbidden SEEDVAULT_BLOB below: that would
+    // imply portage owns/produces an app-DATA backup; this relays a file the USER already made
+    // (PRP-06 §2 deciding test — "portage must never be the thing that creates the backup"). Tier 0
+    // — pure file transfer + guided UX, no privilege. The per-item byte cap is raised FOR THIS KIND
+    // ONLY (ItemStreamReceiver.maxBytesByKind) because app backups routinely exceed the 64 MiB
+    // Tier-0 ceiling; the raise must NEVER leak into the Tier-0/PII item paths. As with the kinds
+    // above, an older receiver lacking this handler degrades via UNKNOWN_KIND (Providers.kt,
+    // ApplyProviderRegistry); PROTOCOL_VERSION (Pairing.kt) is NOT bumped.
+    APP_BACKUP_RELAY("app.backup.relay", Tier.TIER0),
     // NOTE: no SEEDVAULT_BLOB. Couriering a Seedvault file would imply app-DATA transfer,
     // which contradicts the Seedvault division of labor (PRP §2, DEVILS_ADVOCATE Q5). If
     // ever wanted, it goes in a v2 protocol bump behind explicit "carrying, not backing up"

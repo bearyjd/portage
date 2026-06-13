@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cc.grepon.portage.providers.inventory.InstallAction
+import cc.grepon.portage.providers.relay.RelayRestorePrompt
 import cc.grepon.portage.recv.ReceiverState
 import cc.grepon.portage.recv.ReceiverViewModel
 import cc.grepon.portage.recv.install.InstallLaunch
@@ -170,8 +171,10 @@ private fun StateBody(
                 modifier = Modifier.fillMaxSize(),
                 installActions = current.installActions,
                 repairEntries = current.repairEntries,
+                relayPrompts = current.relayPrompts,
                 onInstall = { action -> launchInstall(context, action) },
                 onOpenBluetoothSettings = { launchBluetoothSettings(context) },
+                onOpenRelayApp = { prompt -> launchRelayApp(context, prompt) },
                 backupActionLabel = if (seedvaultIntent(context) != null) {
                     "Open Seedvault"
                 } else {
@@ -228,6 +231,21 @@ private fun launchBluetoothSettings(context: Context) {
     val intent = Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     runCatching { context.startActivity(intent) }
+}
+
+/**
+ * Phase 1 relay re-link (PRP-06): open the target app so the user can import the relayed backup file
+ * with THEIR passphrase. portage relayed the OPAQUE file only — it never imports it and never holds
+ * the passphrase. The package was already validated against the typed RelayApp enum + package regex
+ * ([cc.grepon.portage.providers.relay.RelayHeader.sanitizedOrNull]); we re-resolve it to a launch
+ * intent here (null when the app isn't installed, in which case the tap is a no-op rather than a
+ * crash). A per-app import deep link is deferred to a Phase 2 follow-up.
+ */
+private fun launchRelayApp(context: Context, prompt: RelayRestorePrompt) {
+    val intent = runCatching {
+        context.packageManager.getLaunchIntentForPackage(prompt.targetPackage)
+    }.getOrNull() ?: return
+    runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
 }
 
 private const val SEEDVAULT_PACKAGE = "com.stevesoltys.seedvault"
