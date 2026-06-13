@@ -97,4 +97,4 @@ benign (`SenderViewModel` ~L186).
 
 JDK 17, Android SDK (compileSdk from `gradle/libs.versions.toml`, currently 36 = GOS
 Android 16). The `gradle-wrapper.jar` is intentionally not committed; bootstrap once:
-`gradle wrapper --gradle-version 8.13`. minSdk 31 (Pixel 6+).
+`gradle wrapper --gradle-version 9.5.1`. minSdk 31 (Pixel 6+).
