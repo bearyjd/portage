@@ -126,7 +126,9 @@ This is the property GrapheneOS reviewers should evaluate.
 ## 7. HARDWARE VERIFY-FIRST (before any release; record GOS fingerprint per run)
 
 1. mDNS discovery of `_adb-tls-pairing._tcp` fires while the pairing dialog is open
-   (known-flaky NsdManager — the wizard's manual-port fallback is the mitigation).
+   (known-flaky NsdManager — the wizard's manual-port fallback is the mitigation). The dialog
+   must stay VISIBLE to pair, and its port changes on every open — pair in split screen against
+   one open instance; see §8.
 2. `pair()` succeeds with the dialog's code; wrong code maps to `WrongCode` (SSL abort).
 3. `connectTls` self-connect succeeds at API 36 with bundled Conscrypt; `shell("id")`
    returns uid 2000.
@@ -158,6 +160,18 @@ This is the property GrapheneOS reviewers should evaluate.
   (post-reboot recovery still reconnects via `recheck()`). The deeper bridge-level
   robustness (a `connect()` that cannot hang regardless of caller) remains a tracked
   follow-up — hard to fully solve since a stuck uninterruptible native wait can't be killed.
+- **The pairing dialog's port regenerates on every open, and it must stay visible to pair.**
+  Verified on-device (GOS A16, 2026-06-12): `_adb-tls-pairing._tcp` is advertised on a NEW
+  port each time "Pair device with pairing code" is opened (observed 42507 → 34295 → 40431),
+  and the service is torn down the instant the dialog closes. A port read — or mDNS-autofilled —
+  from a previous dialog instance is already dead, so `pair()` hits `ConnectException` →
+  `ENDPOINT_DOWN` ("the pairing service went away"). The mitigation is operational, not code:
+  pair against ONE open dialog instance. The wizard copy now tells the user to put portage and
+  Settings in SPLIT SCREEN so the dialog stays visible while they type the code + port, and
+  warns that reopening it changes the port. This stale-port/closed-dialog confusion was the
+  only blocker hit during the §7.1–7.4 on-device run, which otherwise succeeded end-to-end:
+  pair (port 40431) → TLS self-connect (portage's own key, `alwaysAllow`) → probe →
+  self-grant `WRITE_SECURE_SETTINGS` (user 0).
 - **mDNS flakiness** (libadb issues #5/#7/#15): timeouts everywhere, manual port entry,
   and "reopen the pairing dialog" copy.
 - **Long command lines** can hit a known `BufferOverflowException` in the library's OPEN
