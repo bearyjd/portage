@@ -46,6 +46,7 @@ import cc.grepon.portage.send.ui.DeviceSummary
 import cc.grepon.portage.send.ui.SenderApp
 import cc.grepon.portage.send.ui.formatBytes
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Exporter entry point (portage-prp-prompt.md §7): "Transfer to new phone" → permissions →
@@ -103,8 +104,11 @@ class MainActivity : ComponentActivity() {
      * bounded regardless by Android's per-app persisted-grant cap.
      */
     private fun sweepOrphanedRelayGrantsOnce() {
-        if (relayGrantsSwept) return
-        relayGrantsSwept = true
+        if (!relayGrantsSwept.compareAndSet(false, true)) return
+        // Releasing EVERY persisted grant here is safe only because app-send's sole
+        // takePersistableUriPermission site is AndroidRelayFileResolver (relay READ grants). A
+        // future feature that persists a grant which must survive a cold start would need this
+        // sweep to learn to exclude it.
         contentResolver.persistedUriPermissions.forEach { perm ->
             val modeFlags = (if (perm.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or
                 (if (perm.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
@@ -115,9 +119,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        // Process-scoped cold-start guard (onCreate is always main-thread). A config-change
-        // recreation must keep the live picks' grants, so the sweep fires only on a fresh process.
-        var relayGrantsSwept = false
+        // Process-scoped cold-start latch: a config-change recreation keeps the ViewModel's live
+        // picks AND the grants they depend on, so the sweep must fire only once, on a fresh process.
+        // AtomicBoolean makes the one-way semantics explicit and stays correct off the main thread.
+        val relayGrantsSwept = AtomicBoolean(false)
     }
 }
 
