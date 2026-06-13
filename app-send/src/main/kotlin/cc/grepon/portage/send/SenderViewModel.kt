@@ -28,6 +28,8 @@ import cc.grepon.portage.transport.PairingCodec
 import cc.grepon.portage.transport.PairingCodecImpl
 import cc.grepon.portage.transport.SecureChannel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -67,6 +69,9 @@ class SenderViewModel(
     // additive. Detection only SUGGESTS which apps have a backup the user can relay; the user still
     // exports the file IN the app and picks it via SAF.
     private val inventorySource: InventorySource? = null,
+    // Where relay picks are resolved. Resolution may stream a whole file to count bytes (SAF omits
+    // SIZE), so it MUST stay off the main thread — defaults to IO; tests inject the test dispatcher.
+    private val relayResolveDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<SenderState>(SenderState.Home)
@@ -110,9 +115,24 @@ class SenderViewModel(
         _relayPicks.value = _relayPicks.value + file
     }
 
+    /**
+     * Resolve a SAF pick OFF the main thread, then record it. [resolve] wraps the Android resolver +
+     * Uri (it may stream the whole file to count bytes when SAF omits SIZE), so it runs on
+     * [relayResolveDispatcher] — the SAF picker callback never blocks the UI on a large-file read. A
+     * null resolution (unreadable/empty file) is dropped, exactly like the synchronous path.
+     */
+    fun resolveAndAddRelayPick(resolve: () -> RelayFile?) {
+        viewModelScope.launch(relayResolveDispatcher) {
+            val file = runCatching { resolve() }.getOrNull() ?: return@launch
+            _relayPicks.value = _relayPicks.value + file
+        }
+    }
+
     /** Remove a previously-picked relay file (user changed their mind before starting). */
     fun removeRelayPick(pickId: Long) {
-        _relayPicks.value = _relayPicks.value.filterNot { it.pickId == pickId }
+        val (removed, kept) = _relayPicks.value.partition { it.pickId == pickId }
+        removed.forEach { releaseGrant(it) }
+        _relayPicks.value = kept
     }
 
     fun onStartTransfer() {
@@ -120,12 +140,18 @@ class SenderViewModel(
         _state.value = SenderState.Preparing
         transferJob = viewModelScope.launch {
             try {
-                // Append the user-driven relay staging path (PRP-06 §4): each user-picked app-backup
-                // file becomes an APP_BACKUP_RELAY export provider, so ManifestBuilder stages it as its
-                // own item — distinct id + file — alongside the auto-detected Tier-0 providers. A
-                // half-finished pick self-omits (the provider's available() gate). This is the single
-                // integration point that gives APP_BACKUP_RELAY a producer.
-                val allProviders = providers + relayExportProviders(_relayPicks.value)
+                // Probe each pick's stream BEFORE staging: if the grant was lost (process death /
+                // revoke) the open throws, so we mark that pick expired and EXCLUDE it — but it stays
+                // in the list flagged so the UI shows "Expired — re-pick this file". A relay item must
+                // never silently ship-without-itself, and the user must always know it did not go.
+                val livePicks = probeRelayPicks(_relayPicks.value)
+
+                // Append the user-driven relay staging path (PRP-06 §4): each LIVE user-picked
+                // app-backup file becomes an APP_BACKUP_RELAY export provider, so ManifestBuilder stages
+                // it as its own item — distinct id + file — alongside the auto-detected Tier-0
+                // providers. A half-finished pick self-omits (the provider's available() gate). This is
+                // the single integration point that gives APP_BACKUP_RELAY a producer.
+                val allProviders = providers + relayExportProviders(livePicks)
                 val built = ManifestBuilder(allProviders, stagingDir, senderName).build()
                     .also { staged = it }
                 if (built.items.isEmpty()) {
@@ -160,6 +186,10 @@ class SenderViewModel(
                 _state.value = SenderState.Done(sent = ok, failed = results.size - ok)
                 closeChannel()
                 cleanupStaging()
+                // Clear the picks that SHIPPED (and release their SAF grants) on success too, not only
+                // on reset(). Picks flagged expired are KEPT so the user still sees "did not ship —
+                // re-pick" on the Done screen; they never silently disappear.
+                clearShippedRelayPicks()
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
@@ -208,10 +238,47 @@ class SenderViewModel(
         transferJob = null
         closeChannel()
         cleanupStaging()
-        // Drop the relay picks too: returning Home is a fresh start, and a SAF Uri grant taken for a
-        // prior run may not survive — the user re-picks from the live app export each session.
-        _relayPicks.value = emptyList()
+        // Drop the relay picks too (and release each SAF grant): returning Home is a fresh start; the
+        // user re-picks from the live app export each session.
+        clearRelayPicks()
         _state.value = SenderState.Home
+    }
+
+    /**
+     * Probe each pick's stream once. Picks whose [RelayFile.openStream] throws (grant gone after
+     * process death/revoke) are marked [RelayFile.expired] in [_relayPicks] so the UI surfaces a
+     * re-pick prompt, and are returned EXCLUDED so they never silently ship without their bytes.
+     */
+    private fun probeRelayPicks(picks: List<RelayFile>): List<RelayFile> {
+        if (picks.isEmpty()) return emptyList()
+        val probed = picks.map { pick ->
+            val opens = runCatching { pick.openStream().use { } }.isSuccess
+            pick.copy(expired = !opens)
+        }
+        _relayPicks.value = probed
+        return probed.filterNot { it.expired }
+    }
+
+    /** Hard clear (reset): release every pick's SAF grant and empty the list — a fresh start. */
+    private fun clearRelayPicks() {
+        _relayPicks.value.forEach { releaseGrant(it) }
+        _relayPicks.value = emptyList()
+    }
+
+    /**
+     * Success clear: drop the picks that SHIPPED (releasing their SAF grants) but KEEP any flagged
+     * [RelayFile.expired] so the user still sees they did not ship and can re-pick — never a silent
+     * disappearance.
+     */
+    private fun clearShippedRelayPicks() {
+        val (expired, shipped) = _relayPicks.value.partition { it.expired }
+        shipped.forEach { releaseGrant(it) }
+        _relayPicks.value = expired
+    }
+
+    /** Best-effort release of one pick's persistable SAF grant; a release failure never throws up. */
+    private fun releaseGrant(pick: RelayFile) {
+        runCatching { pick.releaseGrant() }
     }
 
     /** Fail-closed terminal transition: release the listener/channel, surface the reason. */

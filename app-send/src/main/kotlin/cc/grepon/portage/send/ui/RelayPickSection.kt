@@ -46,7 +46,7 @@ import cc.grepon.portage.send.ui.theme.LocalSpacing
 fun RelayPickSection(
     candidates: List<RelayCandidate>,
     picks: List<RelayFile>,
-    onFilePicked: (RelayFile) -> Unit,
+    onResolvePick: (resolve: () -> RelayFile?) -> Unit,
     onRemovePick: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -75,7 +75,7 @@ fun RelayPickSection(
             RelayCandidateRow(
                 candidate = candidate,
                 resolver = resolver,
-                onFilePicked = onFilePicked,
+                onResolvePick = onResolvePick,
             )
         }
 
@@ -96,7 +96,7 @@ fun RelayPickSection(
 private fun RelayCandidateRow(
     candidate: RelayCandidate,
     resolver: AndroidRelayFileResolver,
-    onFilePicked: (RelayFile) -> Unit,
+    onResolvePick: (resolve: () -> RelayFile?) -> Unit,
 ) {
     val s = LocalSpacing.current
     // SAF document pick — user-mediated, NO storage permission. Any MIME so Signal's backup, Aegis's
@@ -105,7 +105,9 @@ private fun RelayCandidateRow(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri != null) {
-            resolver.resolve(uri, candidate.app, candidate.targetPackage)?.let(onFilePicked)
+            // Hand the resolve work to the VM so the SIZE-absent whole-file read runs off the main
+            // thread (Dispatchers.IO) — the picker callback returns immediately.
+            onResolvePick { resolver.resolve(uri, candidate.app, candidate.targetPackage) }
         }
     }
     Row(
@@ -138,11 +140,21 @@ private fun PickedRelayRow(pick: RelayFile, onRemove: () -> Unit) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                text = formatBytes(pick.byteLength),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // Expired = the read grant was lost (process death / revoke) so this file did NOT ship.
+            // Surface it loudly instead of letting the item silently self-omit.
+            if (pick.expired) {
+                Text(
+                    text = "Expired — re-pick this file",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            } else {
+                Text(
+                    text = formatBytes(pick.byteLength),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         SwissTextAction(text = "Remove", onClick = onRemove)
     }
