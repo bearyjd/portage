@@ -16,9 +16,11 @@
     <!--
       Paired-Bluetooth roster read (PRP-07 public-API approach). BLUETOOTH_CONNECT is a NORMAL
       runtime permission (dangerous class), NOT a privilege escalation: it gates the PUBLIC
-      BluetoothAdapter.getBondedDevices() API only. It is deliberately distinct from
-      WRITE_SECURE_SETTINGS / the ADB bridge that the CI no-escalation gate forbids in the sender,
-      and merges into this binary alone. Phase 1 reads the LIST; the receiver shows a re-pair
+      BluetoothAdapter.getBondedDevices() API only. It is deliberately distinct from the
+      privileged surface the CI no-escalation gate forbids in the sender, and merges into this
+      binary alone. (Do NOT name that gate's trigger strings here: the gate greps the MERGED
+      manifest, and AGP preserves XML comments, so a comment mentioning them fails the build.)
+      Phase 1 reads the LIST; the receiver shows a re-pair
       checklist. maxSdkVersion is intentionally omitted — BLUETOOTH_CONNECT is the API-31+ runtime
       permission and minSdk is 31. VERIFY_FIRST: getBondedDevices + the grant flow on GOS hardware.
     -->
