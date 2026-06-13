@@ -37,7 +37,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cc.grepon.portage.recv.ui.theme.LocalSpacing
 import cc.grepon.portage.adbbridge.AdbBridge
@@ -187,19 +189,25 @@ private fun PairingStep(
     onSkip: () -> Unit,
 ) {
     val s = LocalSpacing.current
+    // TextFieldValue (not a bare String) carries cursor/selection, so filtered keystrokes and the
+    // recompositions the mDNS search triggers mid-typing can't jump the caret or drop characters.
     // Plain remember for the code: rememberSaveable would serialize the pairing code into the
     // saved-instance Bundle (security review 2026-06-12). Codes expire in seconds anyway —
-    // losing the field on rotation just means re-reading it from the dialog.
-    var code by remember { mutableStateOf("") }
-    var portText by rememberSaveable { mutableStateOf("") }
+    // losing the field on rotation just means re-reading it from the dialog. The port is not
+    // sensitive (shown in plaintext in the dialog), so it keeps its rememberSaveable.
+    var code by remember { mutableStateOf(TextFieldValue("")) }
+    var portText by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
 
     // mDNS auto-fills the port when it resolves, but NEVER blocks: GOS NsdManager is flaky, and
     // the pairing dialog shows the port in plain text, so manual entry is always available and
     // Pair enables on a valid code+port regardless of the search (found on-device, GOS A16).
     LaunchedEffect(step.detectedPort) {
-        if (portText.isBlank()) step.detectedPort?.let { portText = it.toString() }
+        if (portText.text.isBlank()) step.detectedPort?.let {
+            val p = it.toString()
+            portText = TextFieldValue(p, selection = TextRange(p.length))
+        }
     }
-    val port = portText.toIntOrNull()
+    val port = portText.text.toIntOrNull()
 
     Column {
         Text(
@@ -232,8 +240,8 @@ private fun PairingStep(
         Spacer(Modifier.height(s.md))
         OutlinedTextField(
             value = code,
-            onValueChange = {
-                if (it.length <= PrivilegeWizard.PAIRING_CODE_LENGTH && it.all(Char::isDigit)) code = it
+            onValueChange = { new ->
+                if (new.text.length <= PrivilegeWizard.PAIRING_CODE_LENGTH && new.text.all(Char::isDigit)) code = new
             },
             label = { Text("6-digit pairing code") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -244,7 +252,7 @@ private fun PairingStep(
         Spacer(Modifier.height(s.sm))
         OutlinedTextField(
             value = portText,
-            onValueChange = { if (it.length <= 5 && it.all(Char::isDigit)) portText = it },
+            onValueChange = { new -> if (new.text.length <= 5 && new.text.all(Char::isDigit)) portText = new },
             label = { Text("Pairing port (shown in the dialog)") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             singleLine = true,
@@ -261,10 +269,10 @@ private fun PairingStep(
         Spacer(Modifier.height(s.lg))
         SwissPrimaryButton(
             text = "Pair",
-            onClick = { onSubmit(code, port) },
+            onClick = { onSubmit(code.text, port) },
             fullWidth = true,
             // Enabled on a valid code + port — never gated on the mDNS search finishing.
-            enabled = code.length == PrivilegeWizard.PAIRING_CODE_LENGTH &&
+            enabled = code.text.length == PrivilegeWizard.PAIRING_CODE_LENGTH &&
                 port != null && port in 1..PrivilegeWizard.MAX_PORT,
         )
         Spacer(Modifier.height(s.md))
