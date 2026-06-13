@@ -221,6 +221,7 @@ class ReceiverViewModelTest {
         // Kinds the sender did not advertise surface as disabled rows, not gaps.
         assertThat(reviewing.absentKinds).containsExactly(
             ItemKind.CALENDAR_ICS, ItemKind.SMS, ItemKind.APP_INVENTORY, ItemKind.SETTINGS,
+            ItemKind.WALLPAPER,
         ).inOrder()
     }
 

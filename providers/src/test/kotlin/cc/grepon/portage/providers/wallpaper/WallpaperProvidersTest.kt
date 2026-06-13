@@ -78,7 +78,7 @@ class WallpaperProvidersTest {
     }
 
     @Test
-    fun `header round-trips through the codec, splitting header from image bytes`() {
+    fun `header round-trips through the codec splitting header from image bytes`() {
         val header = WallpaperHeader(WallpaperSurface.LOCK, "image/png", 1080, 2340, PNG_MAGIC.size.toLong())
         val framed = ByteArrayOutputStream().use { out ->
             WallpaperCodec.writeTo(out, header, PNG_MAGIC)
@@ -97,58 +97,133 @@ class WallpaperProvidersTest {
         assertThat(decoded).isNull()
     }
 
-    // ---- Phase 1: exporter ----
-
-    private suspend fun exportPayload(store: FakeWallpaperStore): ByteArray {
+    @Test
+    fun `codec returns null when declared byteLength does not match actual image bytes`() {
+        // Frame with byteLength = PNG_MAGIC.size but only half the bytes in the payload.
+        val wrongLength = PNG_MAGIC.size.toLong() + 999L
+        val header = WallpaperHeader(WallpaperSurface.HOME, "image/png", 1080, 2340, wrongLength)
         val out = ByteArrayOutputStream()
-        WallpaperExportProvider(store).exportTo(out)
+        WallpaperCodec.writeTo(out, header, PNG_MAGIC) // writes actual PNG_MAGIC bytes
+        // The written frame has byteLength=wrongLength but only PNG_MAGIC.size bytes follow.
+        val decoded = WallpaperCodec.readFrom(ByteArrayInputStream(out.toByteArray()))
+        assertThat(decoded).isNull()
+    }
+
+    // ---- Phase 1: per-surface exporter ----
+
+    private suspend fun exportPayload(store: FakeWallpaperStore, surface: WallpaperSurface): ByteArray {
+        val out = ByteArrayOutputStream()
+        WallpaperExportProvider(store, surface).exportTo(out)
         return out.toByteArray()
     }
 
     @Test
-    fun `available is false when neither surface has bytes`() = runTest {
-        assertThat(WallpaperExportProvider(FakeWallpaperStore()).available()).isFalse()
+    fun `HOME provider available is false when home has no bytes`() = runTest {
+        assertThat(WallpaperExportProvider(FakeWallpaperStore(), WallpaperSurface.HOME).available()).isFalse()
     }
 
     @Test
-    fun `available is false when the read throws`() = runTest {
-        assertThat(WallpaperExportProvider(FakeWallpaperStore(throwOnRead = true)).available()).isFalse()
+    fun `HOME provider available is false when the read throws`() = runTest {
+        assertThat(
+            WallpaperExportProvider(FakeWallpaperStore(throwOnRead = true), WallpaperSurface.HOME).available(),
+        ).isFalse()
     }
 
     @Test
-    fun `export emits both surfaces when home and a distinct lock are set`() = runTest {
-        val store = FakeWallpaperStore(home = PNG_MAGIC, lock = JPEG_MAGIC)
-        val frames = WallpaperCodec.readAll(ByteArrayInputStream(exportPayload(store)))
+    fun `HOME provider emits a single frame for the home surface`() = runTest {
+        val store = FakeWallpaperStore(home = PNG_MAGIC)
+        val payload = exportPayload(store, WallpaperSurface.HOME)
+        val frame = WallpaperCodec.readFrom(ByteArrayInputStream(payload))
 
-        assertThat(frames.map { it.header.surface })
-            .containsExactly(WallpaperSurface.HOME, WallpaperSurface.LOCK).inOrder()
-        assertThat(frames.first { it.header.surface == WallpaperSurface.HOME }.imageBytes).isEqualTo(PNG_MAGIC)
-        assertThat(frames.first { it.header.surface == WallpaperSurface.LOCK }.imageBytes).isEqualTo(JPEG_MAGIC)
+        assertThat(frame).isNotNull()
+        assertThat(frame!!.header.surface).isEqualTo(WallpaperSurface.HOME)
+        assertThat(frame.imageBytes).isEqualTo(PNG_MAGIC)
     }
 
     @Test
-    fun `export emits only home when lock is null and mirrors home`() = runTest {
+    fun `LOCK provider available is false when lock is null`() = runTest {
         val store = FakeWallpaperStore(home = PNG_MAGIC, lock = null)
-        val frames = WallpaperCodec.readAll(ByteArrayInputStream(exportPayload(store)))
-
-        assertThat(frames.map { it.header.surface }).containsExactly(WallpaperSurface.HOME)
+        assertThat(WallpaperExportProvider(store, WallpaperSurface.LOCK).available()).isFalse()
     }
 
     @Test
-    fun `export does not double-send when lock bytes equal home bytes`() = runTest {
+    fun `LOCK provider available is false when lock bytes are identical to home bytes`() = runTest {
         val store = FakeWallpaperStore(home = PNG_MAGIC, lock = PNG_MAGIC.copyOf())
-        val frames = WallpaperCodec.readAll(ByteArrayInputStream(exportPayload(store)))
+        assertThat(WallpaperExportProvider(store, WallpaperSurface.LOCK).available()).isFalse()
+    }
 
-        assertThat(frames.map { it.header.surface }).containsExactly(WallpaperSurface.HOME)
+    @Test
+    fun `LOCK provider available is true when lock bytes differ from home`() = runTest {
+        val store = FakeWallpaperStore(home = PNG_MAGIC, lock = JPEG_MAGIC)
+        assertThat(WallpaperExportProvider(store, WallpaperSurface.LOCK).available()).isTrue()
+    }
+
+    @Test
+    fun `LOCK provider emits a single frame for the lock surface`() = runTest {
+        val store = FakeWallpaperStore(home = PNG_MAGIC, lock = JPEG_MAGIC)
+        val payload = exportPayload(store, WallpaperSurface.LOCK)
+        val frame = WallpaperCodec.readFrom(ByteArrayInputStream(payload))
+
+        assertThat(frame).isNotNull()
+        assertThat(frame!!.header.surface).isEqualTo(WallpaperSurface.LOCK)
+        assertThat(frame.imageBytes).isEqualTo(JPEG_MAGIC)
     }
 
     @Test
     fun `export is empty when the read throws`() = runTest {
         val store = FakeWallpaperStore(throwOnRead = true)
-        assertThat(exportPayload(store)).isEmpty()
+        assertThat(exportPayload(store, WallpaperSurface.HOME)).isEmpty()
     }
 
-    // ---- Phase 2: importer + decompression-bomb gate ----
+    // ---- Phase 2: apply-path round-trip (the test that catches the original bug) ----
+    //
+    // This test simulates the REAL production apply path: each surface is exported by its own
+    // provider into its own item byte stream, then each item stream is applied independently
+    // via WallpaperApplyProvider.apply(). This is exactly how ManifestBuilder + ItemStreamReceiver
+    // deliver items — one apply() call per item, not a multi-frame decode.
+
+    @Test
+    fun `two-surface export round-trips through the real apply path setting both surfaces`() = runTest {
+        val exportStore = FakeWallpaperStore(home = PNG_MAGIC, lock = JPEG_MAGIC)
+        val applyStore = FakeWallpaperStore()
+        val applier = WallpaperApplyProvider(applyStore)
+
+        // Export HOME item → apply it (simulating one ManifestBuilder item + one apply call)
+        val homePayload = exportPayload(exportStore, WallpaperSurface.HOME)
+        val homeOutcome = applier.apply(ByteArrayInputStream(homePayload))
+        assertThat(homeOutcome.status).isEqualTo(ItemStatus.OK)
+
+        // Export LOCK item → apply it (independent item, independent apply call)
+        val lockPayload = exportPayload(exportStore, WallpaperSurface.LOCK)
+        val lockOutcome = applier.apply(ByteArrayInputStream(lockPayload))
+        assertThat(lockOutcome.status).isEqualTo(ItemStatus.OK)
+
+        // Both surfaces must have been set with the correct bytes.
+        assertThat(applyStore.setCalls).hasSize(2)
+        val byFlag = applyStore.setCalls.associateBy { it.first }
+        assertThat(byFlag[WallpaperSurface.HOME]?.second).isEqualTo(PNG_MAGIC)
+        assertThat(byFlag[WallpaperSurface.LOCK]?.second).isEqualTo(JPEG_MAGIC)
+    }
+
+    @Test
+    fun `mirror case yields one item and the apply sets only the home surface`() = runTest {
+        // Lock mirrors home — LOCK provider available() returns false, ManifestBuilder skips it.
+        val exportStore = FakeWallpaperStore(home = PNG_MAGIC, lock = null)
+        val applyStore = FakeWallpaperStore()
+        val applier = WallpaperApplyProvider(applyStore)
+
+        assertThat(WallpaperExportProvider(exportStore, WallpaperSurface.LOCK).available()).isFalse()
+
+        val homePayload = exportPayload(exportStore, WallpaperSurface.HOME)
+        val outcome = applier.apply(ByteArrayInputStream(homePayload))
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+
+        // Only home was set — no lock item was ever produced.
+        assertThat(applyStore.setCalls).hasSize(1)
+        assertThat(applyStore.setCalls.single().first).isEqualTo(WallpaperSurface.HOME)
+    }
+
+    // ---- Phase 3: importer + decompression-bomb gate ----
 
     private fun frameOf(
         surface: WallpaperSurface,
@@ -268,6 +343,17 @@ class WallpaperProvidersTest {
         val store = FakeWallpaperStore()
         val outcome = WallpaperApplyProvider(store).apply(ByteArrayInputStream(PNG_MAGIC))
 
+        assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(store.setCalls).isEmpty()
+    }
+
+    @Test
+    fun `apply reports WRITE_ERROR when declared byteLength mismatches actual payload`() = runTest {
+        // Construct a frame where the header says the image is larger than the actual bytes.
+        val store = FakeWallpaperStore()
+        val outcome = WallpaperApplyProvider(store).apply(
+            frameOf(WallpaperSurface.HOME, PNG_MAGIC, byteLength = PNG_MAGIC.size.toLong() + 1L),
+        )
         assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
         assertThat(store.setCalls).isEmpty()
     }

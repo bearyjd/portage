@@ -36,6 +36,7 @@ import cc.grepon.portage.providers.sms.AndroidSmsStore
 import cc.grepon.portage.providers.sms.SmsExportProvider
 import cc.grepon.portage.providers.wallpaper.AndroidWallpaperStore
 import cc.grepon.portage.providers.wallpaper.WallpaperExportProvider
+import cc.grepon.portage.providers.wallpaper.WallpaperSurface
 import cc.grepon.portage.send.ui.DeviceSummary
 import cc.grepon.portage.send.ui.SenderApp
 import cc.grepon.portage.send.ui.formatBytes
@@ -105,8 +106,12 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
                 AndroidSystemSettingsStore(context),
                 AndroidSecureGlobalSettingsStore(context),
             ),
-            // Active home/lock wallpaper bytes (Tier 0, no permission to read one's own).
-            WallpaperExportProvider(AndroidWallpaperStore(context)),
+            // Active wallpaper bytes: one provider per surface so ManifestBuilder assigns each
+            // its own item id and the receiver applies them independently (PRP-02 §4-5). The LOCK
+            // provider's available() returns false when lock mirrors home, so only one WALLPAPER
+            // item is emitted in the mirror case.
+            WallpaperExportProvider(AndroidWallpaperStore(context), WallpaperSurface.HOME),
+            WallpaperExportProvider(AndroidWallpaperStore(context), WallpaperSurface.LOCK),
         )
         @Suppress("UNCHECKED_CAST")
         return SenderViewModel(

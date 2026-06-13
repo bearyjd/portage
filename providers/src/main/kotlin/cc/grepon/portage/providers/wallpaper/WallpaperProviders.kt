@@ -101,7 +101,14 @@ object WallpaperCodec {
         sink.flush()
     }
 
-    /** Decode a single framed wallpaper item, or null if the header line is absent/unparseable. */
+    /**
+     * Decode a single framed wallpaper item, or null if the header line is absent/unparseable.
+     * As a defensive cross-check, the actual image byte count is compared against
+     * [WallpaperHeader.byteLength]: a mismatch indicates a truncated or corrupt frame and is
+     * treated as invalid (PRP-02 §5 "byteLength cross-checked"). This also prevents the apply
+     * path from silently accepting a frame where the exporter's declared length doesn't match
+     * the actual payload.
+     */
     fun readFrom(source: InputStream): WallpaperFrame? {
         val all = source.readBytes()
         val split = all.indexOf(NEWLINE.toByte())
@@ -113,34 +120,9 @@ object WallpaperCodec {
             )
         }.getOrNull() ?: return null
         val imageBytes = all.copyOfRange(split + 1, all.size)
+        // Cross-check: actual byte count must match the header's declared byteLength.
+        if (imageBytes.size.toLong() != header.byteLength) return null
         return WallpaperFrame(header, imageBytes)
-    }
-
-    /**
-     * Decode every framed item concatenated in [source] (the exporter emits one frame per surface).
-     * Each frame is `JSON-header-line + raw-bytes-of-byteLength`; [WallpaperHeader.byteLength] is
-     * the authoritative split because raw image bytes can themselves contain newlines.
-     */
-    fun readAll(source: InputStream): List<WallpaperFrame> {
-        val all = source.readBytes()
-        val frames = mutableListOf<WallpaperFrame>()
-        var pos = 0
-        while (pos < all.size) {
-            val nl = all.indexOf(NEWLINE.toByte(), pos)
-            if (nl < 0) break
-            val header = runCatching {
-                JsonLines.format.decodeFromString(
-                    WallpaperHeader.serializer(),
-                    String(all, pos, nl - pos, Charsets.UTF_8),
-                )
-            }.getOrNull() ?: break
-            val start = nl + 1
-            val end = start + header.byteLength.toInt()
-            if (header.byteLength < 0 || end > all.size) break
-            frames += WallpaperFrame(header, all.copyOfRange(start, end))
-            pos = end
-        }
-        return frames
     }
 
     private fun ByteArray.indexOf(target: Byte, from: Int = 0): Int {
@@ -170,34 +152,41 @@ interface WallpaperStore {
 }
 
 /**
- * Sender side: read the active home and lock wallpapers as raw bytes, one framed item per surface.
- * A null/absent surface simply produces no item, and a lock that mirrors home (identical bytes) is
- * NOT double-sent (PRP-02 §4-5). A denied/absent read never throws — it yields an empty export.
+ * Sender side: export EXACTLY ONE surface per instance. Register two instances on the send side —
+ * `WallpaperExportProvider(store, HOME)` and `WallpaperExportProvider(store, LOCK)` — so
+ * [ManifestBuilder] produces up to two separate WALLPAPER items, each with its own item id. The
+ * apply path ([WallpaperApplyProvider]) receives them independently, one item per [apply] call,
+ * with the surface encoded in the frame header.
+ *
+ * The LOCK provider's [available] returns false when the lock wallpaper is null (mirrors home) OR
+ * when its bytes are byte-for-byte identical to the home wallpaper (structural mirror). In either
+ * case only the HOME item is emitted and the receiver sets the same image on both surfaces via the
+ * HOME item, which is the correct "mirror" outcome (PRP-02 §4-5).
  */
-class WallpaperExportProvider(private val store: WallpaperStore) : ExportProvider {
+class WallpaperExportProvider(
+    private val store: WallpaperStore,
+    private val surface: WallpaperSurface,
+) : ExportProvider {
 
     override val kind = ItemKind.WALLPAPER
-    override val displayName = "Wallpaper"
+    override val displayName = if (surface == WallpaperSurface.HOME) "Wallpaper" else "Lock wallpaper"
     override val group = "Appearance"
 
-    private fun read(surface: WallpaperSurface): ByteArray? =
+    private fun readSurface(): ByteArray? =
         runCatching { store.read(surface) }.getOrNull()?.takeIf { it.isNotEmpty() }
 
     override suspend fun available(): Boolean = runCatching {
-        read(WallpaperSurface.HOME) != null || read(WallpaperSurface.LOCK) != null
+        val bytes = readSurface() ?: return@runCatching false
+        // For the LOCK surface, suppress when it mirrors home (null or byte-identical).
+        if (surface == WallpaperSurface.LOCK) {
+            val home = runCatching { store.read(WallpaperSurface.HOME) }.getOrNull()
+            if (home != null && bytes.contentEquals(home)) return@runCatching false
+        }
+        true
     }.getOrDefault(false)
 
     override suspend fun exportTo(sink: OutputStream) {
-        val home = read(WallpaperSurface.HOME)
-        val lock = read(WallpaperSurface.LOCK)
-            // Lock null ⇒ mirrors home; identical bytes ⇒ also a mirror. Either way, don't double-send.
-            ?.takeIf { home == null || !it.contentEquals(home) }
-
-        home?.let { writeFrame(sink, WallpaperSurface.HOME, it) }
-        lock?.let { writeFrame(sink, WallpaperSurface.LOCK, it) }
-    }
-
-    private fun writeFrame(sink: OutputStream, surface: WallpaperSurface, bytes: ByteArray) {
+        val bytes = readSurface() ?: return
         val format = ImageFormat.sniff(bytes)?.mime ?: "application/octet-stream"
         val bounds = runCatching { store.decodeBounds(bytes) }.getOrNull()
         WallpaperCodec.writeTo(
