@@ -65,11 +65,14 @@ connect paths, receiver item-stream limits (per-item 64 MiB cap, size/kind/hash
 agreement with the manifest, item-count cap).
 
 STILL OPEN: dedicated verbatim-diff review of the vendored noise-java tree before
-release; a CI dependency-audit step that FAILS the build on a known CVE (OSV-Scanner
-or equivalent — `.github/dependabot.yml` opens update PRs but is NOT a build gate;
-re-asked by the PR #21 security re-review); a dedicated source review of the pinned
-libadb-android 3.1.1 + spake2-android dependency (never security-audited upstream —
-ADR-003 §5) before release. CLOSED since: port-probe TOCTOU — the sender
+release; a dedicated source review of the pinned libadb-android 3.1.1 + spake2-android
+dependency (never security-audited upstream — ADR-003 §5) before release. CLOSED since:
+the CI dependency-audit build gate (OSV-Scanner) — `dependency-audit.yml` resolves the
+real shipped transitive graph (CI-only init-script locking → `gradle.lockfile` per APK
+module → OSV-Scanner) and FAILS the build on a known advisory; weekly schedule catches
+CVEs newly disclosed against unchanged deps. Accepted/triaged advisories live in
+`osv-scanner.toml` with justification. (`.github/dependabot.yml` remains the
+update-PR/alert layer, not a gate.) ALSO CLOSED: port-probe TOCTOU — the sender
 probe-and-releases, then `acceptAsSender` rebinds with `SO_REUSEADDR` so the race is
 benign (`SenderViewModel` ~L186).
 
