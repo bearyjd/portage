@@ -47,6 +47,15 @@ class SocketSecureChannelTest {
         expiresAtEpochSeconds = Long.MAX_VALUE / 2,
     )
 
+    /** Same sid/port as [payload] but a caller-chosen PSK — used to drive a fail-closed mismatch. */
+    private fun payloadWithPsk(port: Int, psk: ByteArray) = PairingPayload(
+        psk = psk.copyOf(),
+        sid = sidValue.copyOf(),
+        ip = listOf("127.0.0.1"),
+        port = port,
+        expiresAtEpochSeconds = Long.MAX_VALUE / 2,
+    )
+
     @Test(timeout = 30_000L)
     fun `loopback establishes channel, round-trips, and wipes the PSK`() = runBlocking {
         val port = freePort()
@@ -126,6 +135,59 @@ class SocketSecureChannelTest {
         val result = accept.await()
         stall?.close()
 
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()).isInstanceOf(TransportException::class.java)
+    }
+
+    @Test(timeout = 30_000L)
+    fun `a post-handshake read survives a pause longer than the handshake deadline`() = runBlocking {
+        val port = freePort()
+        // Tight handshake deadline, but a data-phase budget that outlasts the review pause below.
+        // Proves the handshake soTimeout is LIFTED once the peer is authenticated, so a human-paced
+        // SELECT (manifest review + the "Modify system settings" grant round-trip) can no longer
+        // abandon a live transfer the way the leftover 10s handshake deadline did.
+        val factory = NoiseSecureChannelFactory(handshakeTimeoutMs = 800L, dataTimeoutMs = 10_000L)
+        val sendPayload = payload(port)
+        val recvPayload = payload(port)
+
+        val acceptDeferred = async(Dispatchers.IO) { factory.acceptAsSender(sendPayload) }
+        val recvChannel = factory.connectAsReceiver(recvPayload)
+        val sendChannel = acceptDeferred.await()
+
+        // Sender parks in receive(); the receiver "reviews" far longer than the 800ms handshake
+        // deadline before replying. Under the old code the sender's socket still carried that 800ms
+        // soTimeout and would throw a TransportException here instead of receiving the message.
+        val received = async(Dispatchers.IO) { sendChannel.receive() }
+        delay(2_000L) // > handshakeTimeoutMs (800), well under dataTimeoutMs (10_000)
+        val hello = ProtocolMessage.Hello(appVersion = "0.1.0", osFingerprint = "comet:16")
+        recvChannel.send(hello)
+
+        assertThat(received.await()).isEqualTo(hello)
+
+        recvChannel.close()
+        sendChannel.close()
+    }
+
+    @Test(timeout = 30_000L)
+    fun `a wrong-PSK peer is bounded by the accept deadline, never the data budget`() = runBlocking {
+        val port = freePort()
+        // A LARGE data budget is configured, but a peer with the WRONG psk never completes the
+        // handshake, so the lift (which sits behind tryConsume) is unreachable — it must still fail
+        // within the pre-auth accept deadline. Regression guard: if the soTimeout lift were ever
+        // hoisted above the auth gate, this peer would inherit the 600s budget and the @Test timeout
+        // (30s, << 600s) would catch it.
+        val factory = NoiseSecureChannelFactory(
+            handshakeTimeoutMs = 800L,
+            acceptDeadlineMs = 4_000L,
+            dataTimeoutMs = 600_000L,
+        )
+        val accept = async(Dispatchers.IO) { runCatching { factory.acceptAsSender(payload(port)) } }
+
+        // Receiver presents a non-matching PSK against the same sid/port; the handshake fails closed.
+        val wrongPsk = ByteArray(32) { 0x5A }
+        async(Dispatchers.IO) { runCatching { factory.connectAsReceiver(payloadWithPsk(port, wrongPsk)) } }
+
+        val result = accept.await()
         assertThat(result.isFailure).isTrue()
         assertThat(result.exceptionOrNull()).isInstanceOf(TransportException::class.java)
     }

@@ -44,6 +44,7 @@ class NoiseSecureChannelFactory(
     private val pskRegistry: PskRegistry = PskRegistry(),
     private val handshakeTimeoutMs: Long = HANDSHAKE_TIMEOUT_MS,
     private val acceptDeadlineMs: Long = ACCEPT_DEADLINE_MS,
+    private val dataTimeoutMs: Long = DATA_TIMEOUT_MS,
 ) : SecureChannel.Factory {
 
     override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = withContext(Dispatchers.IO) {
@@ -52,6 +53,11 @@ class NoiseSecureChannelFactory(
         try {
             val prologue = NoiseChannel.prologue(payload.version, payload.sid)
             val keys = handshakeWithDeadline(transport, socket, HandshakeState.INITIATOR, payload, prologue)
+            // Handshake done: the peer is PSK-authenticated, so lift the tight handshake deadline
+            // to the generous data-phase budget. Post-handshake reads wait on the OTHER side's
+            // human-paced actions (manifest review, the "Modify system settings" grant round-trip,
+            // item acks); the 10s handshake soTimeout would abandon a live transfer mid-review.
+            socket.soTimeout = dataTimeoutMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
             NoiseSecureChannel(NoiseSession(transport, keys))
         } catch (t: Throwable) {
             transport.close()
@@ -96,6 +102,11 @@ class NoiseSecureChannelFactory(
                 }
                 if (keys != null) {
                     if (pskRegistry.tryConsume(payload.sid)) {
+                        // Authenticated: lift the handshake deadline to the data-phase budget. The
+                        // sender's next read blocks until the receiver's human-paced SELECT (manifest
+                        // review + the "Modify system settings" grant round-trip) — the 10s handshake
+                        // soTimeout would fail the transfer the moment review outlasts it.
+                        socket.soTimeout = dataTimeoutMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
                         return@withContext NoiseSecureChannel(NoiseSession(transport, keys))
                     }
                     transport.close()
@@ -153,6 +164,16 @@ class NoiseSecureChannelFactory(
     private companion object {
         const val HANDSHAKE_TIMEOUT_MS = 10_000L
         const val ACCEPT_DEADLINE_MS = 120_000L
+
+        /**
+         * Per-read idle budget for the AUTHENTICATED data phase (after a successful handshake).
+         * Generous on purpose: the sender blocks here waiting for the receiver's SELECT, which is
+         * gated on a human reviewing the manifest and completing the "Modify system settings"
+         * grant round-trip. This is NOT a pre-auth control — the bounded listener lifetime
+         * (ACCEPT_DEADLINE_MS) and handshake deadline (HANDSHAKE_TIMEOUT_MS) still apply to
+         * unauthenticated peers; this budget only ever applies once the PSK handshake has passed.
+         */
+        const val DATA_TIMEOUT_MS = 600_000L // 10 min
         const val CONNECT_TIMEOUT_MS = 3_000
         const val CONNECT_RETRIES = 15
         const val CONNECT_RETRY_DELAY_MS = 200L
