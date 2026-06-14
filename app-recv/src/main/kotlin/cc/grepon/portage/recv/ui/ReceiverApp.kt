@@ -223,8 +223,8 @@ private fun ReviewingBody(
 /**
  * Deep-link straight to THIS app's "Modify system settings" toggle (Tier-0 Settings.System access).
  * The package-scoped ACTION_MANAGE_WRITE_SETTINGS lands on the single toggle — one tap — instead of
- * the multi-level Settings dive. Falls back to the un-scoped listing screen if a build lacks the
- * per-app deep link, and swallows a missing activity rather than crashing the review screen.
+ * the multi-level Settings dive. Falls back to the un-scoped listing screen if the per-app intent
+ * fails to resolve, and swallows a missing activity rather than crashing the review screen.
  */
 private fun launchManageWriteSettings(context: Context) {
     val perApp = Intent(

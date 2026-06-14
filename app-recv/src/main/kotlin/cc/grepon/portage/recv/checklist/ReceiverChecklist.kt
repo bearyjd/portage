@@ -77,6 +77,11 @@ object ReceiverChecklist {
      * gated by this. Granting before "Bring it over" lets the system keys apply in the SAME pass —
      * [cc.grepon.portage.providers.settings.AndroidSystemSettingsStore] re-checks canWrite() at
      * apply time, so no second transfer is needed.
+     *
+     * Residual (intentional): the review screen sees only the SETTINGS *kind*, not the snapshot's
+     * individual keys, so on the rare sender whose SAFE snapshot is entirely Secure/Global (zero
+     * Settings.System keys) this over-prompts. Harmless — the access is legitimate for the app and
+     * the nudge auto-hides once held; the apply path simply has nothing Tier-0 to write.
      */
     fun systemSettingsGrantNeeded(groups: List<ChecklistGroup>, canWriteSystem: Boolean): Boolean =
         !canWriteSystem && ItemKind.SETTINGS in selectedKinds(groups)
