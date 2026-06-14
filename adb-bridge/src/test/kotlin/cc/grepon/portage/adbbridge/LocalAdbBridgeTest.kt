@@ -449,4 +449,91 @@ class LocalAdbBridgeTest {
         bridge(gate).probeCapabilities()
         assertThat(seen).contains("pm install-abandon 55")
     }
+
+    @Test
+    fun `probe recovers the full set when the link drops mid-sweep then reconnects`() = runTest {
+        // Healthy at the start; the link dies partway through the FIRST sweep (at the third probe),
+        // then the reconnect (default connectBehavior) restores a healthy device for a second sweep.
+        val gate = FakeGate().apply { connected = true }
+        var dropped = false
+        gate.execBehavior = { wrapped ->
+            val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1) ?: ""
+            if (!dropped && inner == "pm list permissions") {
+                // Kill the link mid-sweep, exactly as a dropped socket would.
+                dropped = true
+                gate.connected = false
+                throw IOException("connection reset by peer")
+            }
+            val (exit, out) = when {
+                inner == "id" -> 0 to "uid=2000(shell)"
+                inner.startsWith("pm grant") -> 0 to ""
+                inner == "pm list permissions" -> 0 to "permission:android.permission.INTERNET"
+                inner == "pm install-create --user 0" -> 0 to "[7]"
+                inner.startsWith("pm install-abandon") -> 0 to ""
+                inner == "cmd overlay list android" ->
+                    0 to "[x] com.android.internal.systemui.navbar.gestural"
+                inner == "dumpsys role" -> 0 to "ROLE MANAGER STATE"
+                else -> 1 to "unexpected: $inner"
+            }
+            val body = if (out.isEmpty()) "" else out + "\n"
+            body + LocalAdbBridge.EXIT_SENTINEL + exit + "\n"
+        }
+        // The under-report bug: a mid-sweep drop after the grant landed must NOT leave the later
+        // capabilities falsely absent — the retry re-probes the recovered link and finds them all.
+        val caps = bridge(gate).probeCapabilities()
+        assertThat(caps).containsExactlyElementsIn(AdbBridge.PrivilegedCapability.entries)
+        // …and prove the recovery actually re-swept: `id` (the first probe) ran once per sweep.
+        val idRuns = gate.execCalls.count { wrapPattern.matchEntire(it)?.groupValues?.get(1) == "id" }
+        assertThat(idRuns).isEqualTo(2)
+    }
+
+    @Test
+    fun `probe returns the partial set when the dropped link will not reconnect`() = runTest {
+        val gate = FakeGate().apply { connected = true }
+        var dropped = false
+        gate.execBehavior = { wrapped ->
+            val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1) ?: ""
+            if (!dropped && inner == "pm list permissions") {
+                dropped = true
+                gate.connected = false
+                throw IOException("connection reset by peer")
+            }
+            when {
+                inner == "id" -> "uid=2000(shell)\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
+                inner.startsWith("pm grant") -> "${LocalAdbBridge.EXIT_SENTINEL}0\n"
+                else -> "${LocalAdbBridge.EXIT_SENTINEL}1\n"
+            }
+        }
+        gate.connectBehavior = { false } // the link never comes back
+        // Only the probes that actually ran before the drop are reported — never a hang, and never
+        // a false "absent" for the ones that could not run.
+        assertThat(bridge(gate).probeCapabilities()).containsExactly(
+            AdbBridge.PrivilegedCapability.SHELL,
+            AdbBridge.PrivilegedCapability.SETTINGS_SECURE,
+        )
+    }
+
+    @Test
+    fun `probe is bounded - it stops after MAX_PROBE_ATTEMPTS even when every sweep drops`() = runTest {
+        // Pathological link: reconnect always succeeds, but every sweep drops at the 2nd probe.
+        // The retry must NOT spin — it is hard-capped at MAX_PROBE_ATTEMPTS sweeps.
+        val gate = FakeGate().apply { connected = true }
+        gate.execBehavior = { wrapped ->
+            val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1) ?: ""
+            if (inner == "id") {
+                "uid=2000(shell)\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
+            } else {
+                // Every non-floor probe kills the link; the reconnect (below) re-arms it.
+                gate.connected = false
+                throw IOException("connection reset by peer")
+            }
+        }
+        gate.connectBehavior = { true } // reconnect always succeeds — only the cap stops the loop
+        val caps = bridge(gate).probeCapabilities()
+        // SHELL is the one conclusively-verified capability each sweep; the loop terminates.
+        assertThat(caps).containsExactly(AdbBridge.PrivilegedCapability.SHELL)
+        // Bounded: exactly MAX_PROBE_ATTEMPTS sweeps ran (one `id` per sweep), no runaway.
+        val idRuns = gate.execCalls.count { wrapPattern.matchEntire(it)?.groupValues?.get(1) == "id" }
+        assertThat(idRuns).isEqualTo(LocalAdbBridge.MAX_PROBE_ATTEMPTS)
+    }
 }
