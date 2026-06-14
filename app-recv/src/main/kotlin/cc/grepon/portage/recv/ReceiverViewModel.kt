@@ -26,6 +26,7 @@ import cc.grepon.portage.recv.checklist.ReceiverChecklist
 import cc.grepon.portage.recv.sms.SmsRoleCoordinator
 import cc.grepon.portage.recv.sms.SmsRoleStrand
 import cc.grepon.portage.recv.transfer.ItemStreamReceiver
+import cc.grepon.portage.transport.DATA_PHASE_TIMEOUT_MS
 import cc.grepon.portage.transport.NoiseSecureChannelFactory
 import cc.grepon.portage.transport.PairingCodec
 import cc.grepon.portage.transport.PairingCodecImpl
@@ -36,6 +37,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.InputStream
 
@@ -49,6 +51,10 @@ class ReceiverViewModel(
     private val pairingCodec: PairingCodec = PairingCodecImpl(),
     private val channelFactory: SecureChannel.Factory = NoiseSecureChannelFactory(),
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
+    // Aggregate wall-clock ceiling on the WHOLE authenticated data phase (the live item stream
+    // after the user taps confirm); see [DATA_PHASE_TIMEOUT_MS] for the rationale and the
+    // effective-ceiling caveat. Injectable so tests drive it on virtual time.
+    private val dataPhaseTimeoutMs: Long = DATA_PHASE_TIMEOUT_MS,
     private val appVersion: String = "0.1.0",
     private val osFingerprint: String = android.os.Build.FINGERPRINT,
     // Deliberately NO default: staged payloads are plaintext PII, so the staging location
@@ -166,20 +172,39 @@ class ReceiverViewModel(
         viewModelScope.launch {
             try {
                 val ch = channel ?: error("no channel")
-                val results = withSmsRoleIfNeeded(needsSmsRole) {
-                    ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
-                    ItemStreamReceiver(
-                        stagingDir = stagingDir,
-                        // Raise the per-item cap FOR THE RELAY KIND ONLY (PRP-06 §5): app backups
-                        // (Signal/Aegis) routinely exceed the 64 MiB Tier-0 default. Every other
-                        // kind keeps the default — the raise never leaks into the PII item paths.
-                        maxBytesByKind = mapOf(ItemKind.APP_BACKUP_RELAY to MAX_RELAY_ITEM_BYTES),
-                    ).run(
-                        channel = ch,
-                        expected = selected.associateBy { it.itemId },
-                        apply = ::applyStaged,
-                        onEvent = ::onReceiveEvent,
-                    )
+                // Cap the WHOLE data phase, not just each read. withTimeoutOrNull (NOT withTimeout)
+                // returns null on ITS OWN timeout, so a stalled peer becomes a visible Failed rather
+                // than a re-thrown cancellation. null strictly means "this budget elapsed": the block
+                // always returns a non-null List, and a concurrent reset() here CLOSES THE CHANNEL
+                // (the receiver has no transferJob to cancel) — which surfaces as a transport error in
+                // catch(t), never as null. Effective ceiling is dataPhaseTimeoutMs PLUS up to one
+                // per-read soTimeout: coroutine cancellation can't interrupt a parked native read, so
+                // the read unblocks via the socket soTimeout, then the elapsed budget converts it to
+                // null and the block's finally clauses (staging sweep / SMS-role relinquish) run before
+                // we fail. See [DATA_PHASE_TIMEOUT_MS].
+                val results = withTimeoutOrNull(dataPhaseTimeoutMs) {
+                    withSmsRoleIfNeeded(needsSmsRole) {
+                        ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
+                        ItemStreamReceiver(
+                            stagingDir = stagingDir,
+                            // Raise the per-item cap FOR THE RELAY KIND ONLY (PRP-06 §5): app backups
+                            // (Signal/Aegis) routinely exceed the 64 MiB Tier-0 default. Every other
+                            // kind keeps the default — the raise never leaks into the PII item paths.
+                            maxBytesByKind = mapOf(ItemKind.APP_BACKUP_RELAY to MAX_RELAY_ITEM_BYTES),
+                        ).run(
+                            channel = ch,
+                            expected = selected.associateBy { it.itemId },
+                            apply = ::applyStaged,
+                            onEvent = ::onReceiveEvent,
+                        )
+                    }
+                }
+                if (results == null) {
+                    // null ⇒ the aggregate budget elapsed (a reset() closes the channel → transport
+                    // error in catch(t), not null). Fail closed: fail() closes the channel; the block's
+                    // finally clauses already swept staging / relinquished the SMS role on the unwind.
+                    fail("Transfer timed out — it took too long to finish")
+                    return@launch
                 }
                 ensureActive() // a reset() mid-run must not be overwritten by Done
                 val moved = results.count { it.status == ItemStatus.OK }

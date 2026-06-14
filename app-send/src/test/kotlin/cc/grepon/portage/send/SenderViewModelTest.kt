@@ -25,6 +25,7 @@ import cc.grepon.portage.transport.SecureChannel
 import cc.grepon.portage.transport.TransportException
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -67,6 +68,24 @@ private class ScriptedChannel(vararg incoming: ProtocolMessage?) : SecureChannel
         yield()
         return if (queue.isEmpty()) null else queue.removeFirst()
     }
+    override fun close() { closed = true }
+}
+
+/**
+ * Delivers [incoming] in order, then SUSPENDS forever — an authenticated receiver that completes
+ * the handshake then goes quiet. Models the slow-drip the aggregate data-phase cap bounds (#53
+ * MEDIUM-1): without the cap the launched coroutine never completes and the sender hangs. The
+ * suspension is `awaitCancellation()` (cooperative), so this exercises the cap's timeout → null →
+ * Failed path on virtual time; in production `receive()` is a blocking native socket read whose
+ * escape hatch is the per-read `soTimeout` (covered by the transport's own tests), not cancellation.
+ */
+private class StallingChannel(vararg incoming: ProtocolMessage) : SecureChannel {
+    private val queue = ArrayDeque(incoming.toList())
+    val sent = mutableListOf<ProtocolMessage>()
+    var closed = false
+    override suspend fun send(message: ProtocolMessage) { sent += message }
+    override suspend fun receive(): ProtocolMessage? =
+        if (queue.isNotEmpty()) queue.removeFirst() else awaitCancellation()
     override fun close() { closed = true }
 }
 
@@ -203,6 +222,38 @@ class SenderViewModelTest {
 
         val failed = vm.state.value as SenderState.Failed
         assertThat(failed.reason).contains("deadline")
+    }
+
+    @Test
+    fun `a stalled data phase fails on the aggregate cap, not a hang`() = runTest(dispatcher) {
+        // The receiver completes the handshake + HELLO, then never SELECTs — slow-drip (#53
+        // MEDIUM-1). The per-read budget bounds one frame; only the aggregate cap fails the WHOLE
+        // exchange. With a 1 s budget on virtual time, advanceUntilIdle drives the timeout.
+        val channel = StallingChannel(ProtocolMessage.Hello("0.1.0", "recv"))
+        val vm = SenderViewModel(
+            providers = listOf(BytesExport(ItemKind.CONTACTS_VCF, "vcard".toByteArray())),
+            stagingDir = tmp.root,
+            senderName = "old phone",
+            channelFactory = FakeFactory(channel),
+            pairingCodec = PairingCodecImpl(),
+            random = SecureRandom(),
+            addressHints = { listOf("192.168.1.2") },
+            portFinder = { 40123 },
+            nowEpochSeconds = { 1_000 },
+            dataPhaseTimeoutMs = 1_000L,
+            relayResolveDispatcher = dispatcher,
+        )
+
+        vm.onStartTransfer()
+        advanceUntilIdle() // virtual time advances past the 1 s budget → timeout fires
+
+        val failed = vm.state.value as SenderState.Failed
+        assertThat(failed.reason).contains("timed out")
+        // Pin the stall point: the engine got past HELLO into the data phase (sent the manifest) and
+        // is parked at the wait-for-SELECT — i.e. the cap fired DURING the data phase, not earlier.
+        assertThat(channel.sent.filterIsInstance<ProtocolMessage.Manifest>()).isNotEmpty()
+        assertThat(channel.closed).isTrue()
+        assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // fail() swept staging
     }
 
     @Test

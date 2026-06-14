@@ -23,6 +23,7 @@ import cc.grepon.portage.send.relay.relayExportProviders
 import cc.grepon.portage.send.transfer.ManifestBuilder
 import cc.grepon.portage.send.transfer.StagedManifest
 import cc.grepon.portage.send.transfer.TransferEngine
+import cc.grepon.portage.transport.DATA_PHASE_TIMEOUT_MS
 import cc.grepon.portage.transport.NoiseSecureChannelFactory
 import cc.grepon.portage.transport.PairingCodec
 import cc.grepon.portage.transport.PairingCodecImpl
@@ -36,6 +37,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.net.ServerSocket
 import java.security.SecureRandom
@@ -64,6 +66,10 @@ class SenderViewModel(
     private val addressHints: () -> List<String> = { LanAddresses.hints(LanAddresses.enumerate()) },
     private val portFinder: () -> Int = ::findFreePort,
     private val nowEpochSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
+    // Aggregate wall-clock ceiling on the WHOLE authenticated data phase ([engine] run), covering
+    // the brief human-review wait for SELECT too; see [DATA_PHASE_TIMEOUT_MS] for the rationale and
+    // the effective-ceiling caveat. Injectable so tests drive it on virtual time.
+    private val dataPhaseTimeoutMs: Long = DATA_PHASE_TIMEOUT_MS,
     // The PackageManager seam used to detect installed relay-capable apps (Signal/Molly/Aegis,
     // PRP-06). Null (default) ⇒ no relay suggestions, the flow is unaffected — relay is purely
     // additive. Detection only SUGGESTS which apps have a backup the user can relay; the user still
@@ -180,7 +186,22 @@ class SenderViewModel(
                 val ch = channelFactory.acceptAsSender(payload).also { channel = it }
                 _state.value = SenderState.Linked
 
-                val results = engine.run(ch, built) { event -> onEngineEvent(built, event) }
+                // Cap the WHOLE data phase, not just each read. withTimeoutOrNull (NOT withTimeout)
+                // returns null on ITS OWN timeout, so a stalled peer becomes a visible Failed rather
+                // than a re-thrown cancellation; an external reset() instead cancels transferJob, whose
+                // CancellationException propagates to the catch below (never null). Effective ceiling is
+                // dataPhaseTimeoutMs PLUS up to one per-read soTimeout — coroutine cancellation can't
+                // interrupt a parked native read, so the read unblocks via the socket soTimeout and the
+                // elapsed budget then converts it to null. See [DATA_PHASE_TIMEOUT_MS].
+                val results = withTimeoutOrNull(dataPhaseTimeoutMs) {
+                    engine.run(ch, built) { event -> onEngineEvent(built, event) }
+                }
+                if (results == null) {
+                    // null ⇒ the aggregate budget elapsed (a reset() cancels transferJob instead).
+                    // fail() closes the listener/channel and sweeps staging.
+                    fail("Transfer timed out — it took too long to finish")
+                    return@launch
+                }
                 ensureActive() // a reset() mid-run must not be overwritten by Done
                 val ok = results.count { it.status == ItemStatus.OK }
                 _state.value = SenderState.Done(sent = ok, failed = results.size - ok)
