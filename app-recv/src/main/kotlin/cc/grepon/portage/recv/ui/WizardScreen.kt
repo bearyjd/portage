@@ -319,6 +319,13 @@ private fun ReadyStep(
         Spacer(Modifier.height(s.lg))
         HairlineDivider()
         Spacer(Modifier.height(s.lg))
+        Text(
+            text = "What portage can set up for you — a summary, not a checklist, so there's " +
+                "nothing here to tap. Re-run Advanced transfer setup to turn more of these Automatic.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(s.md))
         CapabilityRow("Secure settings", AdbBridge.PrivilegedCapability.SETTINGS_SECURE in capabilities)
         CapabilityRow("App permission parity", AdbBridge.PrivilegedCapability.PERMISSION_PARITY in capabilities)
         CapabilityRow("Batched app reinstall", AdbBridge.PrivilegedCapability.SILENT_INSTALL in capabilities)
@@ -349,7 +356,7 @@ private fun CapabilityRow(label: String, available: Boolean) {
                 color = MaterialTheme.colorScheme.onBackground,
             )
             Text(
-                text = if (available) "AUTOMATIC" else "NEEDS A TAP",
+                text = if (available) "AUTOMATIC" else "MANUAL",
                 style = MaterialTheme.typography.labelSmall,
                 color = if (available) {
                     MaterialTheme.colorScheme.primary
