@@ -43,6 +43,7 @@ import cc.grepon.portage.transport.PairingCodec
 import cc.grepon.portage.transport.SecureChannel
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -91,6 +92,24 @@ private class FakeFactory(private val channel: SecureChannel) : SecureChannel.Fa
     override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = channel
     override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel =
         throw UnsupportedOperationException("receiver tests never listen")
+}
+
+/**
+ * Delivers [incoming] in order, then SUSPENDS forever — an authenticated sender that goes quiet
+ * mid-stream. Models the slow-drip the aggregate data-phase cap is meant to bound (#53 MEDIUM-1):
+ * without the cap the launched coroutine never completes and the transfer hangs. The suspension is
+ * `awaitCancellation()` (cooperative), so this exercises the cap's timeout → null → Failed path on
+ * virtual time; in production `receive()` is a blocking native socket read whose escape hatch is the
+ * per-read `soTimeout` (covered by the transport's own tests), not coroutine cancellation.
+ */
+private class StallingChannel(vararg incoming: ProtocolMessage) : SecureChannel {
+    private val queue = ArrayDeque(incoming.toList())
+    val sent = mutableListOf<ProtocolMessage>()
+    var closed = false
+    override suspend fun send(message: ProtocolMessage) { sent += message }
+    override suspend fun receive(): ProtocolMessage? =
+        if (queue.isNotEmpty()) queue.removeFirst() else awaitCancellation()
+    override fun close() { closed = true }
 }
 
 private class FakeApply(
@@ -314,6 +333,35 @@ class ReceiverViewModelTest {
         val failed = vm.state.value as ReceiverState.Failed
         assertThat(failed.reason).contains("connection lost")
         assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // partial staging swept
+    }
+
+    @Test
+    fun `a stalled data phase fails on the aggregate cap, not a hang`() = runTest(dispatcher) {
+        // An authenticated sender that delivers the manifest then goes quiet — slow-drip (#53
+        // MEDIUM-1). The per-read socket budget bounds one frame; only the aggregate cap fails the
+        // WHOLE phase. With a 1 s budget on virtual time, advanceUntilIdle drives the timeout.
+        val channel = StallingChannel(ProtocolMessage.Manifest(manifest))
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(channel),
+            nowEpochSeconds = { 1_000 },
+            dataPhaseTimeoutMs = 1_000L,
+            appVersion = "test",
+            osFingerprint = "test-fingerprint",
+            stagingDir = tmp.root,
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Reviewing::class.java)
+
+        vm.onConfirm()
+        advanceUntilIdle() // virtual time advances past the 1 s budget → timeout fires
+
+        val failed = vm.state.value as ReceiverState.Failed
+        assertThat(failed.reason).contains("timed out")
+        assertThat(channel.closed).isTrue()
+        assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // block cancelled → staging swept
     }
 
     @Test
