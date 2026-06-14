@@ -29,9 +29,11 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,16 +69,25 @@ fun ScanScreen(
                 PackageManager.PERMISSION_GRANTED,
         )
     }
-    var requested by remember { mutableStateOf(false) }
-
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> hasPermission = granted }
 
-    // Ask once on first composition if we don't already hold the grant.
-    if (!hasPermission && !requested) {
-        requested = true
-        permissionLauncher.launch(Manifest.permission.CAMERA)
+    // Ask once per session if we don't already hold the grant. Two correctness points:
+    //  - It MUST run from an effect, not the composition body: rememberLauncherForActivityResult
+    //    registers the underlying launcher in an effect that commits only AFTER composition, so a
+    //    launch() call inline throws IllegalStateException("Launcher has not been initialized") —
+    //    which crashed the scan screen whenever CAMERA was not already granted.
+    //  - The `asked` latch is rememberSaveable so a denied user isn't re-prompted on every
+    //    composition-from-scratch (fold/unfold or process recreation — the common case on the
+    //    foldable target); the paste fallback stays their path. It survives process death, which a
+    //    plain remember would not.
+    var asked by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!hasPermission && !asked) {
+            asked = true
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
 
     Column(
