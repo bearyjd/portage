@@ -195,34 +195,75 @@ class LocalAdbBridge internal constructor(
     }
 
     /**
-     * ADR-001 V4–V7, one independent, non-invasive probe per capability. A probe that throws
-     * or fails marks only its own capability absent. The caller (wizard) is responsible for
-     * disconnecting after the probe — holding shell uid open in the background is forbidden.
+     * ADR-001 V4–V7, one independent, non-invasive probe per capability. A probe that throws or
+     * returns a genuine "not allowed" verdict marks only its own capability absent. But a probe
+     * that could not RUN — the link dropped or timed out mid-sweep — is INCONCLUSIVE, not evidence
+     * of absence; counting it as absent silently under-reports a fully-capable device. (Observed on
+     * hardware 2026-06-13: a mid-sweep drop after the grant had already landed mislabeled the device
+     * "Basic transfer" even though every capability was reachable.) So when the connection actually
+     * goes down mid-sweep, reconnect and re-probe — the probes are idempotent and non-invasive
+     * (self-grant, read-only listings, an immediately-abandoned install session). A single command
+     * hiccup on a still-live link is left as a real per-capability verdict, not retried. The caller
+     * (wizard) still disconnects afterward — holding shell uid open in the background is forbidden.
      */
     override suspend fun probeCapabilities(): Set<AdbBridge.PrivilegedCapability> {
-        if (!isConnected()) return emptySet()
+        if (!gate.isConnected()) return emptySet()
+        var found = emptySet<AdbBridge.PrivilegedCapability>()
+        repeat(MAX_PROBE_ATTEMPTS) {
+            val sweep = runProbeSweep()
+            found = found + sweep.capabilities // capabilities only accrue as the link recovers
+            // Authoritative unless the link actually dropped MID-sweep (a probe could not run AND
+            // the connection is now down). Otherwise trust it — even a clean "this cap is absent".
+            if (!sweep.transportFailed || gate.isConnected()) return found
+            // Link went down mid-sweep: restore it once and re-probe; bail if it won't come back.
+            if (connect() !is AdbBridge.ConnectionResult.Connected) return found
+        }
+        return found
+    }
+
+    private data class ProbeSweep(
+        val capabilities: Set<AdbBridge.PrivilegedCapability>,
+        /** A probe could not RUN (NotConnected / TransportFailure) — its verdict is inconclusive. */
+        val transportFailed: Boolean,
+    )
+
+    /**
+     * One full V4–V7 sweep: returns the capabilities verified present, plus whether any probe hit a
+     * transport-level failure (link down / timeout) rather than producing a real absence verdict.
+     */
+    private suspend fun runProbeSweep(): ProbeSweep {
         val found = mutableSetOf<AdbBridge.PrivilegedCapability>()
+        var transportFailed = false
+
+        // Run a read-only probe command. A transport failure (dropped link / timeout) is
+        // inconclusive — flag it and return null so the probe never counts it as a real absence.
+        suspend fun completed(command: String): AdbBridge.ShellResult.Completed? =
+            when (val r = shell(command)) {
+                is AdbBridge.ShellResult.Completed -> r
+                AdbBridge.ShellResult.NotConnected -> null.also { transportFailed = true }
+                is AdbBridge.ShellResult.TransportFailure -> null.also { transportFailed = true }
+            }
 
         probe { // SHELL — the floor (V2/V3 analogue): are we really uid 2000?
-            val id = shell("id")
-            if (id is AdbBridge.ShellResult.Completed && id.ok && id.stdout.contains("uid=2000")) {
+            val id = completed("id")
+            if (id != null && id.ok && id.stdout.contains("uid=2000")) {
                 found += AdbBridge.PrivilegedCapability.SHELL
             }
         }
         probe { // SETTINGS_SECURE (V4) — the one-shot self-grant itself.
-            if (selfGrant(WRITE_SECURE_SETTINGS) == AdbBridge.GrantResult.GRANTED) {
-                found += AdbBridge.PrivilegedCapability.SETTINGS_SECURE
+            when (selfGrant(WRITE_SECURE_SETTINGS)) {
+                AdbBridge.GrantResult.GRANTED -> found += AdbBridge.PrivilegedCapability.SETTINGS_SECURE
+                AdbBridge.GrantResult.REJECTED -> Unit // the grant ran and was refused — truly absent
+                AdbBridge.GrantResult.BRIDGE_UNAVAILABLE -> transportFailed = true // could not run
             }
         }
         probe { // PERMISSION_PARITY (V7) — pm permission machinery reachable, read-only.
-            val pm = shell("pm list permissions")
-            if (pm is AdbBridge.ShellResult.Completed && pm.ok) {
-                found += AdbBridge.PrivilegedCapability.PERMISSION_PARITY
-            }
+            val pm = completed("pm list permissions")
+            if (pm != null && pm.ok) found += AdbBridge.PrivilegedCapability.PERMISSION_PARITY
         }
         probe { // SILENT_INSTALL (V6) — open a session, then abandon it immediately.
-            val create = shell("pm install-create --user 0")
-            if (create is AdbBridge.ShellResult.Completed && create.ok) {
+            val create = completed("pm install-create --user 0")
+            if (create != null && create.ok) {
                 SESSION_ID.find(create.stdout)?.groupValues?.get(1)?.let { id ->
                     found += AdbBridge.PrivilegedCapability.SILENT_INSTALL
                     shellQuietly("pm", "install-abandon", id)
@@ -230,20 +271,18 @@ class LocalAdbBridge internal constructor(
             }
         }
         probe { // NAV_MODE (V7) — the navigation overlays exist and cmd overlay answers.
-            val overlays = shell("cmd overlay list android")
-            if (overlays is AdbBridge.ShellResult.Completed && overlays.ok &&
+            val overlays = completed("cmd overlay list android")
+            if (overlays != null && overlays.ok &&
                 overlays.stdout.contains("com.android.internal.systemui.navbar")
             ) {
                 found += AdbBridge.PrivilegedCapability.NAV_MODE
             }
         }
         probe { // SMS_ROLE (V7) — role service reachable (read-only; shell holds DUMP).
-            val role = shell("dumpsys role")
-            if (role is AdbBridge.ShellResult.Completed && role.ok) {
-                found += AdbBridge.PrivilegedCapability.SMS_ROLE
-            }
+            val role = completed("dumpsys role")
+            if (role != null && role.ok) found += AdbBridge.PrivilegedCapability.SMS_ROLE
         }
-        return found
+        return ProbeSweep(found, transportFailed)
     }
 
     /** Isolation wrapper: a probe's failure must never abort the sweep. */
@@ -276,6 +315,9 @@ class LocalAdbBridge internal constructor(
         const val CONNECT_TIMEOUT_MS = 15_000L
         const val SHELL_TIMEOUT_MS = 20_000L
         const val TIMEOUT_SLACK_MS = 2_000L
+
+        /** Sweeps to attempt when the link drops MID-sweep (idempotent probes, so re-running is safe). */
+        const val MAX_PROBE_ATTEMPTS = 3
 
         const val PAIRING_ENDPOINT_DOWN =
             "pairing endpoint unreachable — keep the pairing dialog open and retry"

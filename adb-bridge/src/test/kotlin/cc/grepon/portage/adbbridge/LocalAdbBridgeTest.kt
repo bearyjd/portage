@@ -449,4 +449,64 @@ class LocalAdbBridgeTest {
         bridge(gate).probeCapabilities()
         assertThat(seen).contains("pm install-abandon 55")
     }
+
+    @Test
+    fun `probe recovers the full set when the link drops mid-sweep then reconnects`() = runTest {
+        // Healthy at the start; the link dies partway through the FIRST sweep (at the third probe),
+        // then the reconnect (default connectBehavior) restores a healthy device for a second sweep.
+        val gate = FakeGate().apply { connected = true }
+        var dropped = false
+        gate.execBehavior = { wrapped ->
+            val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1) ?: ""
+            if (!dropped && inner == "pm list permissions") {
+                // Kill the link mid-sweep, exactly as a dropped socket would.
+                dropped = true
+                gate.connected = false
+                throw IOException("connection reset by peer")
+            }
+            val (exit, out) = when {
+                inner == "id" -> 0 to "uid=2000(shell)"
+                inner.startsWith("pm grant") -> 0 to ""
+                inner == "pm list permissions" -> 0 to "permission:android.permission.INTERNET"
+                inner == "pm install-create --user 0" -> 0 to "[7]"
+                inner.startsWith("pm install-abandon") -> 0 to ""
+                inner == "cmd overlay list android" ->
+                    0 to "[x] com.android.internal.systemui.navbar.gestural"
+                inner == "dumpsys role" -> 0 to "ROLE MANAGER STATE"
+                else -> 1 to "unexpected: $inner"
+            }
+            val body = if (out.isEmpty()) "" else out + "\n"
+            body + LocalAdbBridge.EXIT_SENTINEL + exit + "\n"
+        }
+        // The under-report bug: a mid-sweep drop after the grant landed must NOT leave the later
+        // capabilities falsely absent — the retry re-probes the recovered link and finds them all.
+        assertThat(bridge(gate).probeCapabilities())
+            .containsExactlyElementsIn(AdbBridge.PrivilegedCapability.entries)
+    }
+
+    @Test
+    fun `probe returns the partial set when the dropped link will not reconnect`() = runTest {
+        val gate = FakeGate().apply { connected = true }
+        var dropped = false
+        gate.execBehavior = { wrapped ->
+            val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1) ?: ""
+            if (!dropped && inner == "pm list permissions") {
+                dropped = true
+                gate.connected = false
+                throw IOException("connection reset by peer")
+            }
+            when {
+                inner == "id" -> "uid=2000(shell)\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
+                inner.startsWith("pm grant") -> "${LocalAdbBridge.EXIT_SENTINEL}0\n"
+                else -> "${LocalAdbBridge.EXIT_SENTINEL}1\n"
+            }
+        }
+        gate.connectBehavior = { false } // the link never comes back
+        // Only the probes that actually ran before the drop are reported — never a hang, and never
+        // a false "absent" for the ones that could not run.
+        assertThat(bridge(gate).probeCapabilities()).containsExactly(
+            AdbBridge.PrivilegedCapability.SHELL,
+            AdbBridge.PrivilegedCapability.SETTINGS_SECURE,
+        )
+    }
 }
