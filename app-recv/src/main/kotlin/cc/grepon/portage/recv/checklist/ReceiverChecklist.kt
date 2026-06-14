@@ -65,6 +65,27 @@ object ReceiverChecklist {
     fun selectedMetas(groups: List<ChecklistGroup>): List<ItemMeta> =
         groups.flatMap { it.items }.filter { it.checked }.map { it.meta }
 
+    /** The distinct kinds among currently-checked items — drives review-time capability hints. */
+    fun selectedKinds(groups: List<ChecklistGroup>): Set<ItemKind> =
+        groups.flatMap { it.items }.filter { it.checked }.map { it.meta.kind }.toSet()
+
+    /**
+     * Whether to offer the one-tap "Modify system settings" grant on the review screen: the user
+     * selected SETTINGS — whose SAFE Settings.System cut applies at Tier 0 through that special
+     * access — but the receiver doesn't hold it yet, so those system keys would silently self-skip
+     * on apply. Tier-1 Secure/Global keys ride the WRITE_SECURE_SETTINGS grant instead and are NOT
+     * gated by this. Granting before "Bring it over" lets the system keys apply in the SAME pass —
+     * [cc.grepon.portage.providers.settings.AndroidSystemSettingsStore] re-checks canWrite() at
+     * apply time, so no second transfer is needed.
+     *
+     * Residual (intentional): the review screen sees only the SETTINGS *kind*, not the snapshot's
+     * individual keys, so on the rare sender whose SAFE snapshot is entirely Secure/Global (zero
+     * Settings.System keys) this over-prompts. Harmless — the access is legitimate for the app and
+     * the nudge auto-hides once held; the apply path simply has nothing Tier-0 to write.
+     */
+    fun systemSettingsGrantNeeded(groups: List<ChecklistGroup>, canWriteSystem: Boolean): Boolean =
+        !canWriteSystem && ItemKind.SETTINGS in selectedKinds(groups)
+
     /** Whether anything is selected (gates the "Bring it over" action). */
     fun hasSelection(groups: List<ChecklistGroup>): Boolean =
         groups.any { group -> group.items.any { it.checked } }
