@@ -31,16 +31,20 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.providers.relay.RelayRestorePrompt
 import cc.grepon.portage.recv.ReceiverState
 import cc.grepon.portage.recv.ReceiverViewModel
+import cc.grepon.portage.recv.checklist.ReceiverChecklist
 import cc.grepon.portage.recv.install.InstallLaunch
 import cc.grepon.portage.recv.ui.theme.LocalSpacing
 import cc.grepon.portage.recv.ui.theme.PortageTheme
@@ -148,14 +152,7 @@ private fun StateBody(
             PendingBody(headline = "Pairing", caption = "Securing the link and reading the manifest…")
 
         is ReceiverState.Reviewing ->
-            ChecklistScreen(
-                senderName = current.senderName,
-                groups = current.groups,
-                onToggle = viewModel::onToggle,
-                onConfirm = viewModel::onConfirm,
-                modifier = Modifier.fillMaxSize(),
-                absentKinds = current.absentKinds,
-            )
+            ReviewingBody(current = current, viewModel = viewModel)
 
         is ReceiverState.Transferring ->
             TransferringScreen(
@@ -189,6 +186,56 @@ private fun StateBody(
                 onRetry = viewModel::reset,
                 modifier = Modifier.fillMaxSize(),
             )
+    }
+}
+
+/**
+ * The review screen, plus a live read of the "Modify system settings" (Tier-0 Settings.System)
+ * access. canWrite() is re-checked on every ON_RESUME, so the one-tap grant nudge appears and then
+ * disappears as the user returns from the system toggle. The apply path re-checks canWrite() too,
+ * so a stale read never blocks the keys — this only governs whether the nudge shows.
+ */
+@Composable
+private fun ReviewingBody(
+    current: ReceiverState.Reviewing,
+    viewModel: ReceiverViewModel,
+) {
+    val context = LocalContext.current
+    var canWriteSystem by remember {
+        mutableStateOf(android.provider.Settings.System.canWrite(context))
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        canWriteSystem = android.provider.Settings.System.canWrite(context)
+    }
+    ChecklistScreen(
+        senderName = current.senderName,
+        groups = current.groups,
+        onToggle = viewModel::onToggle,
+        onConfirm = viewModel::onConfirm,
+        modifier = Modifier.fillMaxSize(),
+        absentKinds = current.absentKinds,
+        systemSettingsGrantNeeded =
+            ReceiverChecklist.systemSettingsGrantNeeded(current.groups, canWriteSystem),
+        onGrantSystemSettings = { launchManageWriteSettings(context) },
+    )
+}
+
+/**
+ * Deep-link straight to THIS app's "Modify system settings" toggle (Tier-0 Settings.System access).
+ * The package-scoped ACTION_MANAGE_WRITE_SETTINGS lands on the single toggle — one tap — instead of
+ * the multi-level Settings dive. Falls back to the un-scoped listing screen if a build lacks the
+ * per-app deep link, and swallows a missing activity rather than crashing the review screen.
+ */
+private fun launchManageWriteSettings(context: Context) {
+    val perApp = Intent(
+        android.provider.Settings.ACTION_MANAGE_WRITE_SETTINGS,
+        Uri.parse("package:${context.packageName}"),
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val launched = runCatching { context.startActivity(perApp); true }.getOrDefault(false)
+    if (!launched) {
+        val listing = Intent(android.provider.Settings.ACTION_MANAGE_WRITE_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(listing) }
     }
 }
 

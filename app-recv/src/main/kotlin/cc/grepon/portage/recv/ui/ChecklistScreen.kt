@@ -68,6 +68,8 @@ fun ChecklistScreen(
     onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
     absentKinds: List<ItemKind> = emptyList(),
+    systemSettingsGrantNeeded: Boolean = false,
+    onGrantSystemSettings: () -> Unit = {},
 ) {
     val s = LocalSpacing.current
     val hasSelection = remember(groups) { ReceiverChecklist.hasSelection(groups) }
@@ -98,10 +100,53 @@ fun ChecklistScreen(
                 }
             }
         }
+        if (systemSettingsGrantNeeded) {
+            SystemSettingsGrantNotice(onGrant = onGrantSystemSettings)
+        }
         ConfirmBar(
             enabled = hasSelection,
             selectedCount = selectedCount,
             onConfirm = onConfirm,
+        )
+    }
+}
+
+/**
+ * Review-time nudge shown only when SETTINGS is selected but the receiver lacks "Modify system
+ * settings" (see [ReceiverChecklist.systemSettingsGrantNeeded]). One tap deep-links straight to the
+ * toggle (ACTION_MANAGE_WRITE_SETTINGS), so the SAFE Settings.System keys apply in the SAME pass
+ * instead of silently self-skipping. The whole block is the hit target, matching the row idiom; it
+ * auto-hides once the caller re-reads canWrite() on return. This covers Tier 0 ONLY — the Tier-1
+ * Secure/Global grant is the wizard's job.
+ */
+@Composable
+private fun SystemSettingsGrantNotice(onGrant: () -> Unit) {
+    val s = LocalSpacing.current
+    val interaction = remember { MutableInteractionSource() }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .clickableNoRipple(role = Role.Button, interaction = interaction, onClick = onGrant)
+            .padding(horizontal = s.gutter, vertical = s.md),
+    ) {
+        Text(
+            text = "DEVICE SETTINGS · NEEDS ACCESS",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.height(s.xs))
+        Text(
+            text = "Allow “Modify system settings” so the settings you picked actually apply " +
+                "on this phone — one tap, then “Bring it over”.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+        Spacer(Modifier.height(s.xs))
+        Text(
+            text = "ALLOW ACCESS →",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
         )
     }
 }

@@ -104,4 +104,28 @@ class ReceiverChecklistTest {
         assertThat(ReceiverChecklist.hasSelection(none)).isFalse()
         assertThat(ReceiverChecklist.hasSelection(ReceiverChecklist.build(manifest))).isTrue()
     }
+
+    @Test
+    fun `selectedKinds reflects only the checked items' kinds`() {
+        val groups = ReceiverChecklist.build(manifest) // contacts + calendar checked; SMS + SETTINGS opt-in
+        assertThat(ReceiverChecklist.selectedKinds(groups))
+            .containsExactly(ItemKind.CONTACTS_VCF, ItemKind.CALENDAR_ICS)
+        val withSettings = ReceiverChecklist.toggle(groups, itemId = 4) // opt SETTINGS in
+        assertThat(ReceiverChecklist.selectedKinds(withSettings))
+            .containsExactly(ItemKind.CONTACTS_VCF, ItemKind.CALENDAR_ICS, ItemKind.SETTINGS)
+    }
+
+    @Test
+    fun `systemSettingsGrantNeeded only when SETTINGS is selected and canWrite is false`() {
+        val base = ReceiverChecklist.build(manifest) // SETTINGS not checked by default (Tier-1 opt-in)
+        // SETTINGS unselected → never prompt, regardless of canWrite.
+        assertThat(ReceiverChecklist.systemSettingsGrantNeeded(base, canWriteSystem = false)).isFalse()
+        assertThat(ReceiverChecklist.systemSettingsGrantNeeded(base, canWriteSystem = true)).isFalse()
+
+        val withSettings = ReceiverChecklist.toggle(base, itemId = 4) // opt SETTINGS in
+        // SETTINGS selected but access missing → prompt.
+        assertThat(ReceiverChecklist.systemSettingsGrantNeeded(withSettings, canWriteSystem = false)).isTrue()
+        // SETTINGS selected and access already held → no prompt.
+        assertThat(ReceiverChecklist.systemSettingsGrantNeeded(withSettings, canWriteSystem = true)).isFalse()
+    }
 }
