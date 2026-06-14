@@ -195,30 +195,37 @@ class LocalAdbBridge internal constructor(
     }
 
     /**
-     * ADR-001 V4–V7, one independent, non-invasive probe per capability. A probe that throws or
-     * returns a genuine "not allowed" verdict marks only its own capability absent. But a probe
-     * that could not RUN — the link dropped or timed out mid-sweep — is INCONCLUSIVE, not evidence
-     * of absence; counting it as absent silently under-reports a fully-capable device. (Observed on
-     * hardware 2026-06-13: a mid-sweep drop after the grant had already landed mislabeled the device
-     * "Basic transfer" even though every capability was reachable.) So when the connection actually
-     * goes down mid-sweep, reconnect and re-probe — the probes are idempotent and non-invasive
-     * (self-grant is idempotent, listings are read-only). The one exception is the install-session
-     * probe: each retry opens a fresh `pm install-create` and abandons it best-effort, so a drop
-     * during that abandon orphans a session — harmless, the OS reaps it (nothing is ever staged or
-     * committed). A single command hiccup on a still-live link is left as a real per-capability
-     * verdict, not retried. The caller
-     * (wizard) still disconnects afterward — holding shell uid open in the background is forbidden.
+     * ADR-001 V4–V7, one independent, non-invasive probe per capability. A probe that RAN and was
+     * refused (Completed-not-ok / GrantResult.REJECTED) marks only its own capability absent. But a
+     * probe that could not RUN — NotConnected / TransportFailure — is INCONCLUSIVE, not evidence of
+     * absence; counting it as absent silently under-reports a fully-capable device.
+     *
+     * Observed on hardware (2026-06-13, rango): the FIRST sweep after pairing came back "Basic
+     * transfer" with the two LARGE-output probes (`pm list permissions`, `dumpsys role`) failing —
+     * they hiccup on the cold connection while the link stays UP — yet re-running the wizard (a
+     * fresh connect + probe) reported every capability AUTOMATIC. So the right response to ANY
+     * inconclusive sweep is to get a FRESH link (disconnect + reconnect) and re-probe, replicating
+     * that manual re-run — NOT to gate on whether the link is still "connected" (it usually is).
+     *
+     * The probes are idempotent and non-invasive (self-grant is idempotent, listings read-only);
+     * the one non-idempotent probe is the install session, opened-then-abandoned best-effort (a
+     * drop during abandon orphans a session the OS reaps — nothing is ever staged or committed).
+     * Bounded by MAX_PROBE_ATTEMPTS; capabilities only accrue across attempts; the last attempt
+     * returns the best partial. The caller (wizard) still disconnects afterward — holding shell uid
+     * open in the background is forbidden.
      */
     override suspend fun probeCapabilities(): Set<AdbBridge.PrivilegedCapability> {
         if (!gate.isConnected()) return emptySet()
         var found = emptySet<AdbBridge.PrivilegedCapability>()
-        repeat(MAX_PROBE_ATTEMPTS) {
+        repeat(MAX_PROBE_ATTEMPTS) { attempt ->
             val sweep = runProbeSweep()
             found = found + sweep.capabilities // capabilities only accrue as the link recovers
-            // Authoritative unless the link actually dropped MID-sweep (a probe could not run AND
-            // the connection is now down). Otherwise trust it — even a clean "this cap is absent".
-            if (!sweep.transportFailed || gate.isConnected()) return found
-            // Link went down mid-sweep: restore it once and re-probe; bail if it won't come back.
+            if (!sweep.transportFailed) return found // a complete sweep is authoritative
+            if (attempt == MAX_PROBE_ATTEMPTS - 1) return found // out of attempts → best partial
+            // A probe could not RUN: a cold-connection transient on a STILL-LIVE link (the hardware
+            // failure mode) or a real drop. Either way get a FRESH link and re-probe — exactly the
+            // manual "re-run Advanced transfer setup" that recovers on device. Bail if it won't come back.
+            disconnect()
             if (connect() !is AdbBridge.ConnectionResult.Connected) return found
         }
         return found
