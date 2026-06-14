@@ -200,12 +200,15 @@ class LocalAdbBridge internal constructor(
      * probe that could not RUN — NotConnected / TransportFailure — is INCONCLUSIVE, not evidence of
      * absence; counting it as absent silently under-reports a fully-capable device.
      *
-     * Observed on hardware (2026-06-13, rango): the FIRST sweep after pairing came back "Basic
-     * transfer" with the two LARGE-output probes (`pm list permissions`, `dumpsys role`) failing —
-     * they hiccup on the cold connection while the link stays UP — yet re-running the wizard (a
-     * fresh connect + probe) reported every capability AUTOMATIC. So the right response to ANY
-     * inconclusive sweep is to get a FRESH link (disconnect + reconnect) and re-probe, replicating
-     * that manual re-run — NOT to gate on whether the link is still "connected" (it usually is).
+     * Root cause (characterized on hardware 2026-06-14, rango): a probe whose command emits LARGE
+     * output (`pm list permissions` ~80 KB, `dumpsys role` ~10 KB) STALLS the cold libadb stream —
+     * the read blocks the full SHELL_TIMEOUT and the sweep mis-reports those capabilities absent
+     * ("Basic transfer ready", ~40s/sweep on "Checking access"). FIX: those two exit-code-only
+     * probes redirect BOTH streams to /dev/null (`>/dev/null 2>&1`, see runProbeSweep) so nothing
+     * large crosses the wire.
+     * The disconnect+reconnect retry below stays as a BACKSTOP for a genuinely transient/dropped
+     * link — no longer the primary recovery — so a fresh sweep no longer gates on whether the link
+     * is still "connected" (it usually is).
      *
      * The probes are idempotent and non-invasive (self-grant is idempotent, listings read-only);
      * the one non-idempotent probe is the install session, opened-then-abandoned best-effort (a
@@ -268,7 +271,12 @@ class LocalAdbBridge internal constructor(
             }
         }
         probe { // PERMISSION_PARITY (V7) — pm permission machinery reachable, read-only.
-            val pm = completed("pm list permissions")
+            // `>/dev/null 2>&1`: only the exit code matters, and the full listing is ~80 KB. Large
+            // wire output stalls the cold libadb stream (each big read hits SHELL_TIMEOUT → the probe
+            // mis-reports the capability absent → "Basic transfer"). Discard BOTH streams on-device
+            // (stderr too — the wrapper's 2>&1 would otherwise relay it); the exit code still proves
+            // pm's permission machinery answered. (Verified on rango 2026-06-14.)
+            val pm = completed("pm list permissions >/dev/null 2>&1")
             if (pm != null && pm.ok) found += AdbBridge.PrivilegedCapability.PERMISSION_PARITY
         }
         probe { // SILENT_INSTALL (V6) — open a session, then abandon it immediately.
@@ -289,7 +297,9 @@ class LocalAdbBridge internal constructor(
             }
         }
         probe { // SMS_ROLE (V7) — role service reachable (read-only; shell holds DUMP).
-            val role = completed("dumpsys role")
+            // `>/dev/null 2>&1`: exit-code-only check; `dumpsys role`'s ~10 KB dump stalls the cold
+            // libadb stream the same way as PERMISSION_PARITY — keep both streams off the wire.
+            val role = completed("dumpsys role >/dev/null 2>&1")
             if (role != null && role.ok) found += AdbBridge.PrivilegedCapability.SMS_ROLE
         }
         return ProbeSweep(found, transportFailed)

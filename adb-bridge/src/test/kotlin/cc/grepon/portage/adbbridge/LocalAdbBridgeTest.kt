@@ -383,12 +383,12 @@ class LocalAdbBridgeTest {
         when {
             inner == "id" -> 0 to "uid=2000(shell) gid=2000(shell) context=u:r:shell:s0"
             inner.startsWith("pm grant") -> 0 to ""
-            inner == "pm list permissions" -> 0 to "permission:android.permission.INTERNET"
+            inner == "pm list permissions >/dev/null 2>&1" -> 0 to "permission:android.permission.INTERNET"
             inner == "pm install-create --user 0" -> 0 to "[13]"
             inner.startsWith("pm install-abandon") -> 0 to ""
             inner == "cmd overlay list android" ->
                 0 to "[x] com.android.internal.systemui.navbar.gestural"
-            inner == "dumpsys role" -> 0 to "ROLE MANAGER STATE"
+            inner == "dumpsys role >/dev/null 2>&1" -> 0 to "ROLE MANAGER STATE"
             else -> 1 to "unexpected: $inner"
         }
     }
@@ -409,12 +409,12 @@ class LocalAdbBridgeTest {
             if (inner.startsWith("pm grant")) throw IOException("link hiccup")
             when {
                 inner == "id" -> "uid=2000(shell)\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
-                inner == "pm list permissions" -> "ok\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
+                inner == "pm list permissions >/dev/null 2>&1" -> "ok\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
                 inner == "pm install-create --user 0" -> "[9]\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
                 inner.startsWith("pm install-abandon") -> "${LocalAdbBridge.EXIT_SENTINEL}0\n"
                 inner == "cmd overlay list android" ->
                     "com.android.internal.systemui.navbar.gestural\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
-                inner == "dumpsys role" -> "STATE\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
+                inner == "dumpsys role >/dev/null 2>&1" -> "STATE\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
                 else -> "${LocalAdbBridge.EXIT_SENTINEL}1\n"
             }
         }
@@ -432,6 +432,21 @@ class LocalAdbBridgeTest {
     @Test
     fun `probe on a dead bridge is the empty set`() = runTest {
         assertThat(bridge(FakeGate()).probeCapabilities()).isEmpty()
+    }
+
+    @Test
+    fun `the large-output probes discard output on-device so they cannot stall the cold link`() = runTest {
+        val gate = FakeGate().apply { connected = true }
+        gate.respondLikeHealthyDevice()
+        bridge(gate).probeCapabilities()
+
+        // The two big-output probes (pm list permissions ~80 KB, dumpsys role ~10 KB) MUST redirect
+        // to /dev/null: large wire reads stall the cold libadb stream and mis-report the capability
+        // absent ("Basic transfer ready"). Only the exit code is read, so suppressing output is safe.
+        val inners = gate.execCalls.mapNotNull { wrapPattern.matchEntire(it)?.groupValues?.get(1) }
+        assertThat(inners).contains("pm list permissions >/dev/null 2>&1")
+        assertThat(inners).contains("dumpsys role >/dev/null 2>&1")
+        assertThat(inners).containsNoneOf("pm list permissions", "dumpsys role")
     }
 
     @Test
@@ -458,7 +473,7 @@ class LocalAdbBridgeTest {
         var dropped = false
         gate.execBehavior = { wrapped ->
             val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1) ?: ""
-            if (!dropped && inner == "pm list permissions") {
+            if (!dropped && inner == "pm list permissions >/dev/null 2>&1") {
                 // Kill the link mid-sweep, exactly as a dropped socket would.
                 dropped = true
                 gate.connected = false
@@ -467,12 +482,12 @@ class LocalAdbBridgeTest {
             val (exit, out) = when {
                 inner == "id" -> 0 to "uid=2000(shell)"
                 inner.startsWith("pm grant") -> 0 to ""
-                inner == "pm list permissions" -> 0 to "permission:android.permission.INTERNET"
+                inner == "pm list permissions >/dev/null 2>&1" -> 0 to "permission:android.permission.INTERNET"
                 inner == "pm install-create --user 0" -> 0 to "[7]"
                 inner.startsWith("pm install-abandon") -> 0 to ""
                 inner == "cmd overlay list android" ->
                     0 to "[x] com.android.internal.systemui.navbar.gestural"
-                inner == "dumpsys role" -> 0 to "ROLE MANAGER STATE"
+                inner == "dumpsys role >/dev/null 2>&1" -> 0 to "ROLE MANAGER STATE"
                 else -> 1 to "unexpected: $inner"
             }
             val body = if (out.isEmpty()) "" else out + "\n"
@@ -493,7 +508,7 @@ class LocalAdbBridgeTest {
         var dropped = false
         gate.execBehavior = { wrapped ->
             val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1) ?: ""
-            if (!dropped && inner == "pm list permissions") {
+            if (!dropped && inner == "pm list permissions >/dev/null 2>&1") {
                 dropped = true
                 gate.connected = false
                 throw IOException("connection reset by peer")
@@ -547,7 +562,7 @@ class LocalAdbBridgeTest {
         var parityFailedOnce = false
         gate.execBehavior = { wrapped ->
             val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1) ?: ""
-            if (inner == "pm list permissions" && !parityFailedOnce) {
+            if (inner == "pm list permissions >/dev/null 2>&1" && !parityFailedOnce) {
                 // Transport failure, but the link is NOT torn down (connected stays true) — exactly
                 // a cold-connection stream hiccup, not a dropped socket.
                 parityFailedOnce = true
@@ -556,12 +571,12 @@ class LocalAdbBridgeTest {
             val (exit, out) = when {
                 inner == "id" -> 0 to "uid=2000(shell)"
                 inner.startsWith("pm grant") -> 0 to ""
-                inner == "pm list permissions" -> 0 to "permission:android.permission.INTERNET"
+                inner == "pm list permissions >/dev/null 2>&1" -> 0 to "permission:android.permission.INTERNET"
                 inner == "pm install-create --user 0" -> 0 to "[7]"
                 inner.startsWith("pm install-abandon") -> 0 to ""
                 inner == "cmd overlay list android" ->
                     0 to "[x] com.android.internal.systemui.navbar.gestural"
-                inner == "dumpsys role" -> 0 to "ROLE MANAGER STATE"
+                inner == "dumpsys role >/dev/null 2>&1" -> 0 to "ROLE MANAGER STATE"
                 else -> 1 to "unexpected: $inner"
             }
             val body = if (out.isEmpty()) "" else out + "\n"
