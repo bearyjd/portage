@@ -321,7 +321,7 @@ private fun ReadyStep(
         Spacer(Modifier.height(s.lg))
         Text(
             text = "What portage can set up for you — a summary, not a checklist, so there's " +
-                "nothing here to tap. Re-run Advanced transfer setup to turn more of these Automatic.",
+                "nothing here to tap. Re-run Advanced transfer setup to turn more of these to AUTOMATIC.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
