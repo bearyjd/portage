@@ -480,8 +480,11 @@ class LocalAdbBridgeTest {
         }
         // The under-report bug: a mid-sweep drop after the grant landed must NOT leave the later
         // capabilities falsely absent — the retry re-probes the recovered link and finds them all.
-        assertThat(bridge(gate).probeCapabilities())
-            .containsExactlyElementsIn(AdbBridge.PrivilegedCapability.entries)
+        val caps = bridge(gate).probeCapabilities()
+        assertThat(caps).containsExactlyElementsIn(AdbBridge.PrivilegedCapability.entries)
+        // …and prove the recovery actually re-swept: `id` (the first probe) ran once per sweep.
+        val idRuns = gate.execCalls.count { wrapPattern.matchEntire(it)?.groupValues?.get(1) == "id" }
+        assertThat(idRuns).isEqualTo(2)
     }
 
     @Test
@@ -508,5 +511,29 @@ class LocalAdbBridgeTest {
             AdbBridge.PrivilegedCapability.SHELL,
             AdbBridge.PrivilegedCapability.SETTINGS_SECURE,
         )
+    }
+
+    @Test
+    fun `probe is bounded - it stops after MAX_PROBE_ATTEMPTS even when every sweep drops`() = runTest {
+        // Pathological link: reconnect always succeeds, but every sweep drops at the 2nd probe.
+        // The retry must NOT spin — it is hard-capped at MAX_PROBE_ATTEMPTS sweeps.
+        val gate = FakeGate().apply { connected = true }
+        gate.execBehavior = { wrapped ->
+            val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1) ?: ""
+            if (inner == "id") {
+                "uid=2000(shell)\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
+            } else {
+                // Every non-floor probe kills the link; the reconnect (below) re-arms it.
+                gate.connected = false
+                throw IOException("connection reset by peer")
+            }
+        }
+        gate.connectBehavior = { true } // reconnect always succeeds — only the cap stops the loop
+        val caps = bridge(gate).probeCapabilities()
+        // SHELL is the one conclusively-verified capability each sweep; the loop terminates.
+        assertThat(caps).containsExactly(AdbBridge.PrivilegedCapability.SHELL)
+        // Bounded: exactly MAX_PROBE_ATTEMPTS sweeps ran (one `id` per sweep), no runaway.
+        val idRuns = gate.execCalls.count { wrapPattern.matchEntire(it)?.groupValues?.get(1) == "id" }
+        assertThat(idRuns).isEqualTo(LocalAdbBridge.MAX_PROBE_ATTEMPTS)
     }
 }

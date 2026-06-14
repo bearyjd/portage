@@ -202,8 +202,11 @@ class LocalAdbBridge internal constructor(
      * hardware 2026-06-13: a mid-sweep drop after the grant had already landed mislabeled the device
      * "Basic transfer" even though every capability was reachable.) So when the connection actually
      * goes down mid-sweep, reconnect and re-probe — the probes are idempotent and non-invasive
-     * (self-grant, read-only listings, an immediately-abandoned install session). A single command
-     * hiccup on a still-live link is left as a real per-capability verdict, not retried. The caller
+     * (self-grant is idempotent, listings are read-only). The one exception is the install-session
+     * probe: each retry opens a fresh `pm install-create` and abandons it best-effort, so a drop
+     * during that abandon orphans a session — harmless, the OS reaps it (nothing is ever staged or
+     * committed). A single command hiccup on a still-live link is left as a real per-capability
+     * verdict, not retried. The caller
      * (wizard) still disconnects afterward — holding shell uid open in the background is forbidden.
      */
     override suspend fun probeCapabilities(): Set<AdbBridge.PrivilegedCapability> {
