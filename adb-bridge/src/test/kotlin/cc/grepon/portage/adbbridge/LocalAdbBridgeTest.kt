@@ -536,4 +536,40 @@ class LocalAdbBridgeTest {
         val idRuns = gate.execCalls.count { wrapPattern.matchEntire(it)?.groupValues?.get(1) == "id" }
         assertThat(idRuns).isEqualTo(LocalAdbBridge.MAX_PROBE_ATTEMPTS)
     }
+
+    @Test
+    fun `probe retries a live-link transient (link stays up) and recovers the full set`() = runTest {
+        // The hardware failure mode (2026-06-13, rango): a large-output probe transiently fails on
+        // the COLD connection while the link stays CONNECTED — the first sweep mislabeled the device
+        // "Basic". The retry must fire on an inconclusive sweep even though isConnected() is true,
+        // reconnect fresh, and recover. (This case is NOT retried by the drop-only predecessor.)
+        val gate = FakeGate().apply { connected = true }
+        var parityFailedOnce = false
+        gate.execBehavior = { wrapped ->
+            val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1) ?: ""
+            if (inner == "pm list permissions" && !parityFailedOnce) {
+                // Transport failure, but the link is NOT torn down (connected stays true) — exactly
+                // a cold-connection stream hiccup, not a dropped socket.
+                parityFailedOnce = true
+                throw IOException("shell stream read hiccup")
+            }
+            val (exit, out) = when {
+                inner == "id" -> 0 to "uid=2000(shell)"
+                inner.startsWith("pm grant") -> 0 to ""
+                inner == "pm list permissions" -> 0 to "permission:android.permission.INTERNET"
+                inner == "pm install-create --user 0" -> 0 to "[7]"
+                inner.startsWith("pm install-abandon") -> 0 to ""
+                inner == "cmd overlay list android" ->
+                    0 to "[x] com.android.internal.systemui.navbar.gestural"
+                inner == "dumpsys role" -> 0 to "ROLE MANAGER STATE"
+                else -> 1 to "unexpected: $inner"
+            }
+            val body = if (out.isEmpty()) "" else out + "\n"
+            body + LocalAdbBridge.EXIT_SENTINEL + exit + "\n"
+        }
+        // Link never drops; the bridge's own disconnect()+reconnect on the inconclusive sweep is
+        // what gives the retry a fresh attempt (default connectBehavior restores it).
+        assertThat(bridge(gate).probeCapabilities())
+            .containsExactlyElementsIn(AdbBridge.PrivilegedCapability.entries)
+    }
 }
