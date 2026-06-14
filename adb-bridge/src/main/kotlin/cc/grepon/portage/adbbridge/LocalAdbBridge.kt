@@ -326,7 +326,7 @@ class LocalAdbBridge internal constructor(
         const val SHELL_TIMEOUT_MS = 20_000L
         const val TIMEOUT_SLACK_MS = 2_000L
 
-        /** Sweeps to attempt when the link drops MID-sweep (idempotent probes, so re-running is safe). */
+        /** Max sweeps to attempt on any inconclusive sweep (transient OR drop); idempotent probes, safe to re-run. */
         const val MAX_PROBE_ATTEMPTS = 3
 
         const val PAIRING_ENDPOINT_DOWN =
