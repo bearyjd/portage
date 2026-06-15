@@ -15,8 +15,9 @@ import android.provider.CallLog.Calls
 
 /**
  * Thin CallLog adapter behind [CallLogStore]. Reads propagate [SecurityException]
- * (providers degrade); writes return false on any failure. Restored rows are marked
- * already-seen so the import doesn't light up the missed-call badge.
+ * (providers degrade); a write returns false ONLY if the insert throws — a null URI is NOT
+ * treated as failure (see [insert]). Restored rows are marked already-seen so the import
+ * doesn't light up the missed-call badge.
  */
 class AndroidCallLogStore(private val resolver: ContentResolver) : CallLogStore {
 
@@ -51,6 +52,15 @@ class AndroidCallLogStore(private val resolver: ContentResolver) : CallLogStore 
             put(Calls.NEW, 0)
             put(Calls.IS_READ, 1)
         }
-        return runCatching { resolver.insert(Calls.CONTENT_URI, values) != null }.getOrDefault(false)
+        // Success = the insert did NOT throw, NOT `uri != null`. With WRITE_CALL_LOG but no
+        // READ_CALL_LOG (GOS withholds the read by design), the provider CREATES the row but returns
+        // a null URI — handing back the new row's id is itself a read it won't grant. Judging by
+        // `!= null` then scored every insert as a failure, so the whole item mis-reported WRITE_ERROR
+        // even though every call landed (found on-device 2026-06-14, C1 call log: 164 rows inserted,
+        // portage showed 0 applied). A genuine failure still throws and is caught below.
+        return runCatching {
+            resolver.insert(Calls.CONTENT_URI, values)
+            true
+        }.getOrDefault(false)
     }
 }
