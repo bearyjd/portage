@@ -9,7 +9,9 @@
  */
 package cc.grepon.portage.model
 
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.ByteString
 
 /**
  * Integer message-type discriminator carried as field `t` on the wire.
@@ -73,7 +75,17 @@ sealed interface ProtocolMessage {
     }
 
     @Serializable
-    data class ItemData(val itemId: Int, val seq: Int, val bytes: ByteArray) : ProtocolMessage {
+    @OptIn(ExperimentalSerializationApi::class)
+    data class ItemData(
+        val itemId: Int,
+        val seq: Int,
+        // @ByteString → compact CBOR byte string (major type 2). WITHOUT it kotlinx CBOR encodes a
+        // ByteArray as a CBOR array of integers (~2x for text bytes), so a single 60 KiB chunk
+        // overflowed the 65535-byte u16 frame cap — sender threw "frame exceeds u16 cap", receiver
+        // saw "connection lost mid item". Found on-device 2026-06-14 (C1 contacts — the first large
+        // item ever sent over the wire; small items always fit even at 2x, which is why it hid).
+        @ByteString val bytes: ByteArray,
+    ) : ProtocolMessage {
         override val type get() = MessageType.ITEM_DATA
 
         // ByteArray needs structural equals/hashCode for value semantics.

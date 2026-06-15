@@ -101,6 +101,9 @@ DH results are mixed in).
 - One application message per Noise payload. Application messages are CBOR maps with an
   integer `t` (type) field. Unknown map keys MUST be ignored (forward compat); unknown
   `t` ⇒ respond `ITEM_ACK{status:SKIPPED}` where applicable or close with `ERROR`.
+- Binary fields (notably ITEM_DATA `bytes`) are **definite-length CBOR byte strings**
+  (major type 2), NOT arrays of integers — an array encoding ~doubles text payloads and a
+  60 KiB chunk would overflow the 65 519 B plaintext budget / 65 535 B frame cap.
 - Rekey (`Noise` `REKEY`) every 1 GiB of payload per direction.
 
 ## 4. Message sequence (manifest-first)

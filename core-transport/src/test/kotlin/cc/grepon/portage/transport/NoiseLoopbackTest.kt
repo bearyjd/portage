@@ -115,6 +115,25 @@ class NoiseLoopbackTest {
     }
 
     @Test
+    fun `a full 60 KiB ItemData chunk round-trips over the real Noise session`() {
+        // End-to-end regression for the on-device frame-cap overflow (2026-06-14, C1 contacts). A
+        // 60 KiB chunk (TransferEngine.DEFAULT_CHUNK_BYTES) of printable-ASCII bytes — the worst case
+        // for the old un-annotated ByteArray (kotlinx CBOR int array, ~2x → ~120 KiB). On the real
+        // SocketFrameTransport that overflow aborts on SEND (writeFrame's u16 require); here
+        // QueueTransport has no send guard, so the receiver's MAX_FRAME_BYTES check rejects it on
+        // receive instead. @ByteString keeps it a compact byte string under the 65519 / 65535 caps.
+        val h = runHandshake()
+        assertThat(h.errors).isEmpty()
+        val chunk = ProtocolMessage.ItemData(
+            itemId = 1,
+            seq = 0,
+            bytes = ByteArray(60 * 1024) { (0x20 + (it % 95)).toByte() },
+        )
+        h.send!!.send(chunk)
+        assertThat(h.recv!!.receive()).isEqualTo(chunk)
+    }
+
+    @Test
     fun `mismatched PSK fails to establish a channel`() {
         val wrong = ByteArray(32) { (it + 99).toByte() }
         val h = runHandshake(senderPsk = wrong)
