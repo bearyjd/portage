@@ -5,7 +5,7 @@ ADR-003 §5 pre-release supply-chain blockers cleared. One accepted residual (SP
 Context: ADR-003 §5 and ADR-002 follow-up #6 require a dedicated source review of the
 vendored/pinned third-party trust roots before release. This ADR records those reviews.
 
-## 1. Vendored `noise-java` — CLOSED ✓ (verbatim-diff, 2026-06-12)
+## 1. Vendored `noise-java` — CLOSED ✓ (verbatim-diff, 2026-06-12; independently re-verified 2026-06-15)
 
 **Verdict: FAITHFUL-AND-SAFE.** The vendored tree at
 `core-transport/src/main/java/com/southernstorm/noise/` is a byte-for-byte copy of upstream
@@ -16,7 +16,7 @@ Evidence:
 - `diff -ru` upstream↔vendored → **zero content deltas**; the only difference is an *added*
   `com/southernstorm/noise/LICENSE.txt`, itself byte-identical (SHA-256) to upstream's MIT
   `LICENSE.txt`.
-- Per-file SHA-256 sweep: **28/28 `.java` files byte-exact** (rules out whitespace/line-ending
+- Per-file SHA-256 sweep: **29/29 `.java` files byte-exact** (rules out whitespace/line-ending
   normalization that `diff` could mask). Packages were *not* renamed (`com.southernstorm.noise.*`
   preserved), so even the usual benign package-path delta is absent.
 - No functional change to crypto logic, RNG, key handling, primitives, or wiping. No backdoor,

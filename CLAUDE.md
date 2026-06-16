@@ -64,9 +64,15 @@ handshake timeout, `u16` wire-read frame cap, `payload.wipe()` in both accept an
 connect paths, receiver item-stream limits (per-item 64 MiB cap, size/kind/hash
 agreement with the manifest, item-count cap).
 
-STILL OPEN: dedicated verbatim-diff review of the vendored noise-java tree before
-release; a dedicated source review of the pinned libadb-android 3.1.1 + spake2-android
-dependency (never security-audited upstream — ADR-003 §5) before release. CLOSED since:
+CLOSED (ADR-004; independently re-verified 2026-06-15): the verbatim-diff review of the
+vendored noise-java tree (FAITHFUL-AND-SAFE — 29/29 `.java` byte-exact vs upstream
+`49377b6`, LICENSE byte-identical) and the source review of the pinned libadb-android
+3.1.1 + spake2-android dependency (CLEAR-FOR-RELEASE against pinned `c849886e` / `7615ddd6`
+/ `0d15933e` — loopback-only, no egress, no backdoor, no dynamic load; one accepted LOW
+residual: the SPAKE2 ephemeral scalar uses unseeded libc `rand()` at `spake2.c:939`, benign
+for portage's loopback + PAKE + one-shot model). Both ADR-003 §5 supply-chain blockers
+cleared; the portage-side ADB identity key-gen uses a real CSPRNG (`AdbKeyStore` default
+`SecureRandom()`, RSA-2048). CLOSED since:
 the CI dependency-audit build gate (OSV-Scanner) — `dependency-audit.yml` resolves the
 real shipped transitive graph (CI-only init-script locking → `gradle.lockfile` per APK
 module → OSV-Scanner) and FAILS the build on a known advisory; weekly schedule catches
