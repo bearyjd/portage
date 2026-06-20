@@ -94,8 +94,14 @@ class ApkApplyProvider(
                 }
             }
 
+            // Derive-never-trust (ADR-006 D3): the install plan is computed from tags RE-DERIVED from
+            // each split's validated [ApkFileEntry.name] via [deriveTags], NOT from the sender's wire
+            // role/abi/density/lang (which are advisory and could be mislabeled). The validated [name] is
+            // the only field reconcile is allowed to trust; the byte payload and length are untouched.
+            val derivedEntries = entries.map { it.withDerivedTags() }
+
             // AC-15: reconcile the split set against the target device before any install attempt.
-            val reconcile = ApkReconcile.reconcile(entries, targetConfig())
+            val reconcile = ApkReconcile.reconcile(derivedEntries, targetConfig())
             val keptEntries = when (reconcile) {
                 is ApkReconcile.Result.Incompatible -> {
                     onStoreFallback?.invoke(header.packageName, header.packageName)
@@ -147,4 +153,15 @@ class ApkApplyProvider(
         fun toInstallFile(): ApkInstallFile =
             ApkInstallFile(name = entry.name, length = entry.length, open = { file.inputStream() })
     }
+}
+
+/**
+ * Re-derive this entry's role/abi/density/lang from its validated [ApkFileEntry.name] (derive-never-trust,
+ * ADR-006 D3) using the pure [deriveTags] helper, leaving [ApkFileEntry.name] and [ApkFileEntry.length]
+ * intact so the name-keyed join back to staged files still holds. The sender's advisory wire tags are
+ * discarded for the install plan.
+ */
+private fun ApkFileEntry.withDerivedTags(): ApkFileEntry {
+    val tags = deriveTags(name)
+    return copy(role = tags.role, abi = tags.abi, density = tags.density, lang = tags.lang)
 }

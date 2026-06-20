@@ -69,6 +69,11 @@ class ApkApplyProviderTest {
         return ByteArrayInputStream(out.toByteArray())
     }
 
+    /** Encode one wire line (JSON + '\n') for hand-built malformed fixtures the codec would refuse to emit. */
+    private fun <T> jsonLine(serializer: kotlinx.serialization.KSerializer<T>, value: T): ByteArray =
+        (cc.grepon.portage.providers.wire.JsonLines.format.encodeToString(serializer, value) + "\n")
+            .toByteArray(Charsets.UTF_8)
+
     private fun base(len: Int = 4) = ApkFileEntry("base", ApkFileRole.BASE, length = len.toLong())
     private fun abi(name: String, len: Int = 4) =
         ApkFileEntry("split_config.$name", ApkFileRole.CONFIG, abi = name, length = len.toLong())
@@ -112,8 +117,14 @@ class ApkApplyProviderTest {
     @Test
     fun `a streamed-length mismatch is WRITE_ERROR and wipes staging`() = runTest {
         // Declare length 8 but only provide 4 bytes → truncated frame (security M1 carry-forward).
-        val files = listOf(base(len = 8) to ByteArray(4))
-        val outcome = provider().apply(container(files = files))
+        // The frames are written DIRECTLY rather than via ApkCodec.writeContainer, whose own
+        // declared-vs-streamed guard refuses to encode a desynced container — exactly the desync the
+        // RECEIVER must catch, so the fixture must be built by hand to exercise the apply-side M1 check.
+        val out = ByteArrayOutputStream()
+        out.write(jsonLine(ApkContainerHeader.serializer(), ApkContainerHeader("com.example.app", 7L, 1)))
+        out.write(jsonLine(ApkFileEntry.serializer(), base(len = 8)))
+        out.write(ByteArray(4)) // only 4 of the declared 8 bytes
+        val outcome = provider().apply(ByteArrayInputStream(out.toByteArray()))
         assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
         assertThat(stagedFiles()).isEmpty()
     }
@@ -241,6 +252,25 @@ class ApkApplyProviderTest {
         ).apply(container(files = listOf(base() to ByteArray(4))))
         assertThat(silentCalled).isFalse()
         assertThat(emitted).isNotNull()
+    }
+
+    @Test
+    fun `reconcile honors the NAME-derived abi, not a mislabeled wire tag (derive-never-trust)`() = runTest {
+        // A split NAMED config.x86 but mislabeled on the wire as abi=arm64_v8a (the only target ABI).
+        // Trusting the wire tag would KEEP it (and emit a Tier-0 install); deriving from the name yields
+        // abi=x86, which does NOT match the arm64-only target, so the sole abi split is unmatched →
+        // Incompatible → store fallback, no install. This pins finding 3.
+        val mislabeled = ApkFileEntry("config.x86", ApkFileRole.CONFIG, abi = "arm64_v8a", length = 4)
+        var emitted: ApkInstallAction? = null
+        var fallback: Pair<String, String>? = null
+        val outcome = provider(
+            onApkInstall = { emitted = it },
+            onStoreFallback = { pkg, label -> fallback = pkg to label },
+        ).apply(container(files = listOf(base() to ByteArray(4), mislabeled to ByteArray(4))))
+        assertThat(outcome.status).isEqualTo(ItemStatus.SKIPPED)
+        assertThat(outcome.detail).contains("incompatible")
+        assertThat(emitted).isNull()
+        assertThat(fallback?.first).isEqualTo("com.example.app")
     }
 
     @Test

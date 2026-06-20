@@ -12,10 +12,14 @@ package cc.grepon.portage.providers.apk
 /**
  * The PURE split target-compatibility reconcile (ADR-006 D3/AC-15). Byte-exact reconstruction does not
  * guarantee installability: the source device's config splits (abi/density/language) may not match the
- * target's, and the source never held the target's splits. Given the container's [ApkFileEntry] tags
- * (re-derived on the receiver, never trusting the sender's wire tags blindly) and the target
- * [ApkTargetConfig], this computes the installable subset BEFORE any install is attempted — no Android
- * types, fully unit-testable, lives beside the codec (ADR-006 D2/D3).
+ * target's, and the source never held the target's splits. Given the container's [ApkFileEntry] tags and
+ * the target [ApkTargetConfig], this computes the installable subset BEFORE any install is attempted — no
+ * Android types, fully unit-testable, lives beside the codec (ADR-006 D2/D3).
+ *
+ * Derive-never-trust (ADR-006 D3): this function reconciles on whatever role/abi/density/lang tags its
+ * [ApkFileEntry] inputs carry, but the apply path NEVER passes the sender's wire tags here — the
+ * [ApkApplyProvider] re-derives each entry's tags from its validated [ApkFileEntry.name] via [deriveTags]
+ * first, so a mislabeled wire tag cannot steer the install plan. The byte payload and length are untouched.
  *
  * Policy (ADR-006 D3):
  *  1. Always keep BASE.

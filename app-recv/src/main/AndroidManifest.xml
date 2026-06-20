@@ -86,6 +86,17 @@
           the bridge speaks only to localhost adbd.
         -->
 
+        <!--
+          APK keystone Tier-0 status-receiver (ADR-006 D3/D6): receives the PackageInstaller commit
+          reply and, on STATUS_PENDING_USER_ACTION, launches the system install-confirm dialog. The
+          session commit targets this receiver EXPLICITLY (a same-app broadcast), so it is exported="false"
+          — a manifest receiver is the robust pattern (a runtime receiver can miss the reply when the
+          Activity is backgrounded while the system prepares the confirm intent).
+        -->
+        <receiver
+            android:name=".install.ApkInstallResultReceiver"
+            android:exported="false" />
+
         <!-- === Default-SMS-role eligibility (inert; see SmsRoleComponents.kt) === -->
 
         <!-- Incoming SMS. BROADCAST_SMS restricts the sender to the system. -->

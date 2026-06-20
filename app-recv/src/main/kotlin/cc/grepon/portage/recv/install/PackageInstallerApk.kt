@@ -46,23 +46,32 @@ object PackageInstallerApk {
      * the split's wire-validated [ApkInstallFile.name] (the literal `"base"` or a validated split name —
      * already path-safe by construction via `ApkContainerValidation`); a `.apk` suffix is appended so
      * the session has distinct, well-formed entry names.
+     *
+     * The session OutputStream is guarded with `use {}` so it is always closed (even on a copy fault),
+     * and each split's copied count is checked against its declared [ApkInstallFile.length] — a short
+     * write (a truncated/under-yielding opener) throws rather than sealing a half-written session entry.
      */
     fun writeSplits(writer: SessionWriter, files: List<ApkInstallFile>): Long {
         var total = 0L
         for (file in files) {
             val entryName = "${file.name}.apk"
-            val out = writer.openWrite(entryName, file.length)
-            file.open().use { input ->
-                val buf = ByteArray(CHUNK)
-                while (true) {
-                    val n = input.read(buf)
-                    if (n == -1) break
-                    out.write(buf, 0, n)
-                    total += n
+            val written = writer.openWrite(entryName, file.length).use { out ->
+                var copied = 0L
+                file.open().use { input ->
+                    val buf = ByteArray(CHUNK)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n == -1) break
+                        out.write(buf, 0, n)
+                        copied += n
+                    }
                 }
+                // Android requires fsync BEFORE the stream is closed (use {} closes on exit).
+                writer.fsync(out)
+                copied
             }
-            writer.fsync(out)
-            out.close()
+            require(written == file.length) { "split ${file.name}: wrote $written of ${file.length}" }
+            total += written
         }
         return total
     }

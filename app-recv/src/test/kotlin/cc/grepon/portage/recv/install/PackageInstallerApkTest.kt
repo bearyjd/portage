@@ -69,4 +69,16 @@ class PackageInstallerApkTest {
         PackageInstallerApk.writeSplits(session, listOf(file("base", ByteArray(10))))
         assertThat(session.entries.keys).containsExactly("base.apk")
     }
+
+    @Test
+    fun `an opener that yields fewer bytes than the declared length throws (count guard)`() {
+        // Declared length 8 but the opener only yields 4 bytes — a truncated/under-yielding split must
+        // NOT seal a half-written session entry (pins finding 4: the bytes-written == length guard).
+        val session = FakeSession()
+        val short = ApkInstallFile(name = "base", length = 8L) { ByteArrayInputStream(byteArrayOf(1, 2, 3, 4)) }
+        val error = org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            PackageInstallerApk.writeSplits(session, listOf(short))
+        }
+        assertThat(error).hasMessageThat().contains("wrote 4 of 8")
+    }
 }

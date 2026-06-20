@@ -52,8 +52,9 @@ val deferredSilentInstaller: ApkSilentInstaller = ApkSilentInstaller { _, _ -> A
  * committing a session over our own bytes, NO shell uid. A failed write abandons the session so no
  * half-install is left behind.
  *
- * [resultAction] is the broadcast action the committed session reports back to (the receiver registers a
- * receiver for it); it is package-scoped so only this app sees it.
+ * [resultAction] is the action stamped on the EXPLICIT status broadcast (targeting
+ * [ApkInstallResultReceiver]); the explicit component keeps the reply same-app, and the receiver
+ * launches the system confirm dialog on STATUS_PENDING_USER_ACTION.
  */
 class PackageInstallerApkInstaller(
     private val context: Context,
@@ -90,17 +91,19 @@ class PackageInstallerApkInstaller(
 
     /**
      * Commit a previously-sealed session (the Done-screen tap), firing the system install-confirm UI.
-     * Returns true when the commit was dispatched, false when the session was missing/expired (the
-     * caller should surface a brief "couldn't start install — please retry" message on false).
+     * Returns true when the commit was dispatched, false when the session was missing/expired OR the
+     * commit itself threw (the caller should surface a brief "couldn't start install — please retry"
+     * message on false). The status-receiver PendingIntent is an EXPLICIT broadcast targeting
+     * [ApkInstallResultReceiver], which launches the system confirm dialog on STATUS_PENDING_USER_ACTION.
      */
     fun commit(sessionId: Int): Boolean {
         val session = runCatching { installer.openSession(sessionId) }.getOrNull() ?: return false
-        val intent = Intent(resultAction).setPackage(context.packageName)
+        val intent = Intent(context, ApkInstallResultReceiver::class.java).setAction(resultAction)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
         val pending = PendingIntent.getBroadcast(context, sessionId, intent, flags)
-        runCatching { session.commit(pending.intentSender) }
+        val committed = runCatching { session.commit(pending.intentSender) }.isSuccess
         runCatching { session.close() }
-        return true
+        return committed
     }
 
     /**

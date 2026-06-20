@@ -115,7 +115,11 @@ class ItemStreamReceiver(
             channel.send(ProtocolMessage.BatchAck(final))
             return final
         } finally {
-            runCatching { stagingDir.listFiles()?.forEach { it.delete() } }
+            // deleteRecursively (not delete): a non-recursive sweep would leave a non-empty nested subdir
+            // behind — e.g. the ApkApplyProvider's per-app apk/ staging dir — defeating the partials-never-
+            // survive guarantee. Benign today (the apply provider wipes its own subdir in a finally and the
+            // launch sweep also runs), but this hardens the nested-dir case (ADR-006 defense-in-depth).
+            runCatching { stagingDir.listFiles()?.forEach { it.deleteRecursively() } }
         }
     }
 
