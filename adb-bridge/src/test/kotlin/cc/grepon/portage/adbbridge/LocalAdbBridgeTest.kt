@@ -10,6 +10,7 @@
 package cc.grepon.portage.adbbridge
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -314,6 +315,11 @@ class LocalAdbBridgeTest {
 
     // ── installApk ───────────────────────────────────────────────────────────────────────────
 
+    private fun staged(vararg pairs: Pair<String, String>): List<AdbBridge.StagedApk> =
+        pairs.map { (name, path) -> AdbBridge.StagedApk(name, path) }
+
+    private val baseApk = staged("base" to "/data/local/tmp/base.apk")
+
     @Test
     fun `installApk drives create write commit and maps Success`() = runTest {
         val gate = FakeGate().apply { connected = true }
@@ -327,13 +333,71 @@ class LocalAdbBridgeTest {
                 else -> 1 to "unexpected: $inner"
             }
         }
-        val result = bridge(gate).installApk("/data/local/tmp/base.apk")
+        val result = bridge(gate).installApk(baseApk)
         assertThat(result).isEqualTo(AdbBridge.InstallResult.Installed)
         assertThat(seen).containsExactly(
             "pm install-create --user 0",
-            "pm install-write 42 base.apk /data/local/tmp/base.apk",
+            "pm install-write 42 base /data/local/tmp/base.apk",
             "pm install-commit 42",
         ).inOrder()
+    }
+
+    @Test
+    fun `installApk writes every staged file once in order into a single session`() = runTest {
+        val gate = FakeGate().apply { connected = true }
+        val seen = mutableListOf<String>()
+        gate.respond { inner ->
+            seen += inner
+            when {
+                inner.startsWith("pm install-create") -> 0 to "[42]"
+                inner.startsWith("pm install-write") -> 0 to "Success"
+                inner.startsWith("pm install-commit") -> 0 to "Success"
+                else -> 1 to "unexpected: $inner"
+            }
+        }
+        val files = staged(
+            "base" to "/data/local/tmp/base.apk",
+            "config.arm64_v8a" to "/data/local/tmp/split0.apk",
+            "config.en" to "/data/local/tmp/split1.apk",
+        )
+        val result = bridge(gate).installApk(files)
+        assertThat(result).isEqualTo(AdbBridge.InstallResult.Installed)
+        // create once, one write per file in order (with its own name), then a single commit.
+        assertThat(seen).containsExactly(
+            "pm install-create --user 0",
+            "pm install-write 42 base /data/local/tmp/base.apk",
+            "pm install-write 42 config.arm64_v8a /data/local/tmp/split0.apk",
+            "pm install-write 42 config.en /data/local/tmp/split1.apk",
+            "pm install-commit 42",
+        ).inOrder()
+    }
+
+    @Test
+    fun `installApk abandons the session when an early split write fails`() = runTest {
+        // A failing write on the FIRST split must abandon immediately and never write the rest.
+        val gate = FakeGate().apply { connected = true }
+        val seen = mutableListOf<String>()
+        gate.respond { inner ->
+            seen += inner
+            when {
+                inner.startsWith("pm install-create") -> 0 to "[7]"
+                inner == "pm install-write 7 base /data/local/tmp/base.apk" -> 0 to "Success"
+                inner.startsWith("pm install-write") -> 1 to "failure"
+                else -> 0 to ""
+            }
+        }
+        val files = staged(
+            "base" to "/data/local/tmp/base.apk",
+            "config.arm64_v8a" to "/data/local/tmp/split0.apk",
+            "config.en" to "/data/local/tmp/split1.apk",
+        )
+        val result = bridge(gate).installApk(files)
+        assertThat(result).isInstanceOf(AdbBridge.InstallResult.Failed::class.java)
+        assertThat(seen).contains("pm install-abandon 7")
+        // the base wrote, the failing split was attempted, the LATER split never was, no commit.
+        assertThat(seen).contains("pm install-write 7 config.arm64_v8a /data/local/tmp/split0.apk")
+        assertThat(seen).doesNotContain("pm install-write 7 config.en /data/local/tmp/split1.apk")
+        assertThat(seen.none { it.startsWith("pm install-commit") }).isTrue()
     }
 
     @Test
@@ -348,9 +412,11 @@ class LocalAdbBridgeTest {
                 else -> 0 to ""
             }
         }
-        val result = bridge(gate).installApk("/data/local/tmp/base.apk")
+        val result = bridge(gate).installApk(baseApk)
         assertThat(result).isInstanceOf(AdbBridge.InstallResult.Failed::class.java)
         assertThat(seen).contains("pm install-abandon 7")
+        // a non-zero write exit code is the verdict — no commit success is ever reported.
+        assertThat(seen.none { it.startsWith("pm install-commit") }).isTrue()
     }
 
     @Test
@@ -366,14 +432,215 @@ class LocalAdbBridgeTest {
                 else -> 0 to ""
             }
         }
-        val result = bridge(gate).installApk("/data/local/tmp/base.apk")
+        val result = bridge(gate).installApk(baseApk)
         assertThat(result).isInstanceOf(AdbBridge.InstallResult.Failed::class.java)
         assertThat(seen).contains("pm install-abandon 8")
     }
 
     @Test
+    fun `installApk commit verdict is the exit code not a Success string`() = runTest {
+        // Exit 0 with NO "Success" line still installs; a non-zero exit fails even if stdout
+        // happened to contain the word "Success". The exit code alone is authoritative.
+        val ok = FakeGate().apply { connected = true }
+        ok.respond { inner ->
+            when {
+                inner.startsWith("pm install-create") -> 0 to "[5]"
+                inner.startsWith("pm install-write") -> 0 to ""
+                inner.startsWith("pm install-commit") -> 0 to "" // exit 0, no "Success" text
+                else -> 1 to "unexpected"
+            }
+        }
+        assertThat(bridge(ok).installApk(baseApk)).isEqualTo(AdbBridge.InstallResult.Installed)
+
+        val bad = FakeGate().apply { connected = true }
+        bad.respond { inner ->
+            when {
+                inner.startsWith("pm install-create") -> 0 to "[6]"
+                inner.startsWith("pm install-write") -> 0 to "Success"
+                inner.startsWith("pm install-commit") -> 1 to "Success" // word present, exit non-zero
+                else -> 0 to ""
+            }
+        }
+        assertThat(bridge(bad).installApk(baseApk))
+            .isInstanceOf(AdbBridge.InstallResult.Failed::class.java)
+    }
+
+    @Test
+    fun `installApk base-only no-splits production happy path`() = runTest {
+        // Explicit base-only case: single StagedApk("base",...) → exactly one install-write("base")
+        // → install-commit → Installed. The most common real-world install (non-split APKs).
+        val gate = FakeGate().apply { connected = true }
+        val seen = mutableListOf<String>()
+        gate.respond { inner ->
+            seen += inner
+            when {
+                inner.startsWith("pm install-create") -> 0 to "[20]"
+                inner.startsWith("pm install-write") -> 0 to "Success"
+                inner.startsWith("pm install-commit") -> 0 to "Success"
+                else -> 1 to "unexpected: $inner"
+            }
+        }
+        val result = bridge(gate).installApk(listOf(AdbBridge.StagedApk("base", "/data/local/tmp/base.apk")))
+        assertThat(result).isEqualTo(AdbBridge.InstallResult.Installed)
+        assertThat(seen).containsExactly(
+            "pm install-create --user 0",
+            "pm install-write 20 base /data/local/tmp/base.apk",
+            "pm install-commit 20",
+        ).inOrder()
+    }
+
+    @Test
+    fun `installApk write transport failure is BridgeUnavailable not Failed`() = runTest {
+        // A mid-write transport drop (NotConnected / TransportFailure) must read as BridgeUnavailable,
+        // consistent with install-create and install-commit — the apply provider uses this distinction
+        // to differentiate a dead bridge from a real install rejection (item 2 of review fixes).
+        val gate = FakeGate().apply { connected = true }
+        val seen = mutableListOf<String>()
+        gate.execBehavior = { wrapped ->
+            val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1)
+                ?: error("not sentinel-wrapped: $wrapped")
+            seen += inner
+            when {
+                inner.startsWith("pm install-create") ->
+                    "[30]\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
+                inner.startsWith("pm install-write") -> {
+                    // simulate connection drop mid-write: no sentinel in output
+                    "partial output before socket died"
+                }
+                else -> "${LocalAdbBridge.EXIT_SENTINEL}0\n"
+            }
+        }
+        val result = bridge(gate).installApk(baseApk)
+        assertThat(result).isEqualTo(AdbBridge.InstallResult.BridgeUnavailable)
+        // abandon ran best-effort (may have also failed, but was attempted)
+        assertThat(seen.any { it.startsWith("pm install-abandon") }).isTrue()
+        // no commit was attempted
+        assertThat(seen.none { it.startsWith("pm install-commit") }).isTrue()
+    }
+
+    @Test
+    fun `installApk write non-zero exit is Failed not BridgeUnavailable`() = runTest {
+        // Non-zero exit from install-write (command ran and rejected) stays Failed,
+        // not BridgeUnavailable — the bridge is alive, the install was refused.
+        val gate = FakeGate().apply { connected = true }
+        gate.respond { inner ->
+            when {
+                inner.startsWith("pm install-create") -> 0 to "[31]"
+                inner.startsWith("pm install-write") -> 1 to "Failure [INSTALL_FAILED_INVALID_APK]"
+                else -> 0 to ""
+            }
+        }
+        val result = bridge(gate).installApk(baseApk)
+        assertThat(result).isInstanceOf(AdbBridge.InstallResult.Failed::class.java)
+    }
+
+    /**
+     * The shared name corpus (ADR-006 AC-6b parity guardrail). ACCEPT and REJECT lists are
+     * byte-identical to the corresponding corpus in ApkCodecTest so both regex copies are
+     * pinned to the same expected behaviour and silent divergence is caught immediately.
+     */
+    private val NAME_CORPUS_ACCEPT = listOf("base", "config.arm64_v8a")
+    private val NAME_CORPUS_REJECT = listOf(
+        "../../etc/x",   // path traversal
+        "a;rm -rf",      // shell metachar + whitespace
+        "a/b",           // forward slash
+        "a\\b",          // backslash
+        "..",            // parent dir (defence-in-depth)
+        ".",             // current dir (defence-in-depth)
+        ".hidden",       // leading dot
+        "-rf",           // leading dash
+        "",              // empty
+        "a b",           // space
+        "a\tb",          // tab
+        "a\nb",          // newline
+        "a;b",           // semicolon
+        "a|b",           // pipe
+        "a\$(x)",        // command substitution $()
+        "a`x`",          // command substitution backtick
+    )
+
+    @Test
+    fun `installApk name-corpus REJECT names are all abandoned without writing`() = runTest {
+        // AC-6b parity: every name in NAME_CORPUS_REJECT must be refused — session abandoned,
+        // the bad name never reaches install-write, no commit. Corpus is byte-identical to
+        // ApkCodecTest so both SPLIT_NAME copies are pinned to the same expected behaviour.
+        for (bad in NAME_CORPUS_REJECT) {
+            val gate = FakeGate().apply { connected = true }
+            val seen = mutableListOf<String>()
+            gate.respond { inner ->
+                seen += inner
+                when {
+                    inner.startsWith("pm install-create") -> 0 to "[3]"
+                    else -> 0 to ""
+                }
+            }
+            val files = staged("base" to "/data/local/tmp/base.apk", bad to "/data/local/tmp/x.apk")
+            val result = bridge(gate).installApk(files)
+            assertWithMessage("expected Failed for rejected name [$bad]")
+                .that(result).isInstanceOf(AdbBridge.InstallResult.Failed::class.java)
+            assertWithMessage("expected abandon for rejected name [$bad]")
+                .that(seen).contains("pm install-abandon 3")
+            assertWithMessage("expected no write for rejected name [$bad]")
+                .that(seen.none { it.startsWith("pm install-write") && it.contains("/data/local/tmp/x.apk") })
+                .isTrue()
+            assertWithMessage("expected no commit for rejected name [$bad]")
+                .that(seen.none { it.startsWith("pm install-commit") })
+                .isTrue()
+        }
+    }
+
+    @Test
+    fun `installApk name-corpus ACCEPT names all succeed`() = runTest {
+        // AC-6b parity: every name in NAME_CORPUS_ACCEPT must be accepted. "base" is the
+        // single-file case; "config.arm64_v8a" is exercised as the second file in a split session.
+        val gate = FakeGate().apply { connected = true }
+        gate.respond { inner ->
+            when {
+                inner.startsWith("pm install-create") -> 0 to "[11]"
+                inner.startsWith("pm install-write") -> 0 to "Success"
+                inner.startsWith("pm install-commit") -> 0 to "Success"
+                else -> 1 to "unexpected"
+            }
+        }
+        val files = NAME_CORPUS_ACCEPT.mapIndexed { i, name ->
+            AdbBridge.StagedApk(name, "/data/local/tmp/split$i.apk")
+        }
+        assertThat(bridge(gate).installApk(files)).isEqualTo(AdbBridge.InstallResult.Installed)
+    }
+
+    @Test
+    fun `installApk abandon itself failing does not suppress the install result or throw`() = runTest {
+        // Pins the shellQuietly best-effort contract: if the abandon command itself hits a transport
+        // failure, installApk must still return the correct typed result (Failed or BridgeUnavailable)
+        // with no exception and no hang.
+        val gate = FakeGate().apply { connected = true }
+        var abandonAttempted = false
+        gate.execBehavior = { wrapped ->
+            val inner = wrapPattern.matchEntire(wrapped)?.groupValues?.get(1)
+                ?: error("not sentinel-wrapped: $wrapped")
+            when {
+                inner.startsWith("pm install-create") ->
+                    "[40]\n${LocalAdbBridge.EXIT_SENTINEL}0\n"
+                inner.startsWith("pm install-write") ->
+                    // non-zero exit triggers the abandon path
+                    "failure\n${LocalAdbBridge.EXIT_SENTINEL}1\n"
+                inner.startsWith("pm install-abandon") -> {
+                    abandonAttempted = true
+                    // abandon itself drops the connection — no sentinel returned
+                    "socket closed"
+                }
+                else -> "${LocalAdbBridge.EXIT_SENTINEL}0\n"
+            }
+        }
+        val result = bridge(gate).installApk(baseApk)
+        // write failed with non-zero exit → Failed (not BridgeUnavailable), no throw
+        assertThat(result).isInstanceOf(AdbBridge.InstallResult.Failed::class.java)
+        assertThat(abandonAttempted).isTrue()
+    }
+
+    @Test
     fun `installApk on a dead bridge is BridgeUnavailable`() = runTest {
-        assertThat(bridge(FakeGate()).installApk("/data/local/tmp/base.apk"))
+        assertThat(bridge(FakeGate()).installApk(baseApk))
             .isEqualTo(AdbBridge.InstallResult.BridgeUnavailable)
     }
 

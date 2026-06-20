@@ -64,6 +64,7 @@ object ApkContainerValidation {
      * excludes '/', '\', any other path separator, control characters, whitespace, and shell
      * metacharacters, so a validated split name can never traverse, escape, or inject. Note `".."` and
      * `"."` are additionally rejected explicitly below as defence in depth.
+     * Parity: keep byte-identical to the other module's copy; pinned by the name-corpus test in each module.
      */
     private val SPLIT_NAME = Regex("""[A-Za-z0-9][A-Za-z0-9._-]*""")
 

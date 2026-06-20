@@ -64,8 +64,18 @@ interface AdbBridge {
     /** ADR-001 Phase A one-shot: `pm grant <self> <permission>`. Persists across reboots (V5). */
     suspend fun selfGrant(permission: String): GrantResult
 
-    /** Batched silent install via `pm install-create/-write/-commit` (ADR-001 V6). */
-    suspend fun installApk(stagedApkPath: String): InstallResult
+    /**
+     * Batched silent install of a single app from one or more staged APK files (ADR-001 V6,
+     * ADR-006 split support): one `pm install-create` session into which every [StagedApk] is
+     * written, then a single commit. A base APK plus zero or more configuration splits all land
+     * in the same session — that is how the platform installs a split app atomically.
+     *
+     * Each [StagedApk.path] is a device file path the caller has already staged; shell uid (2000)
+     * must be able to READ every path at install time (see [StagedApk]). The [StagedApk.name] is
+     * re-validated at this boundary before it reaches `pm install-write` (defence in depth — the
+     * name is wire-derived).
+     */
+    suspend fun installApk(staged: List<StagedApk>): InstallResult
 
     /**
      * Probe what this device actually allows (ADR-001 V4–V7), one independent check per
@@ -177,6 +187,18 @@ interface AdbBridge {
     }
 
     enum class GrantResult { GRANTED, REJECTED, BRIDGE_UNAVAILABLE }
+
+    /**
+     * One staged APK file in an install session: its [name] (the literal `"base"` for the base
+     * APK, or a validated split name) and the device [path] it has already been written to.
+     *
+     * P6 on-device VERIFY_FIRST: the bridge runs `pm install-write` as shell uid (2000), so the
+     * device must be able to read [path] as that uid AT INSTALL TIME. The receiver app's own
+     * `cacheDir` is app-private (uid mismatch) — staging the file to a shell-readable location
+     * (or switching to stdin streaming) is a P4 concern owned by the caller; the bridge only
+     * documents and validates here, it does not choose the staging location.
+     */
+    data class StagedApk(val name: String, val path: String)
 
     sealed interface InstallResult {
         data object Installed : InstallResult

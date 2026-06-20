@@ -29,7 +29,7 @@ class NoopAdbBridgeTest {
         assertThat(NoopAdbBridge.shell("id")).isEqualTo(AdbBridge.ShellResult.NotConnected)
         assertThat(NoopAdbBridge.selfGrant("android.permission.WRITE_SECURE_SETTINGS"))
             .isEqualTo(AdbBridge.GrantResult.BRIDGE_UNAVAILABLE)
-        assertThat(NoopAdbBridge.installApk("/data/local/tmp/a.apk"))
+        assertThat(NoopAdbBridge.installApk(listOf(AdbBridge.StagedApk("base", "/data/local/tmp/a.apk"))))
             .isEqualTo(AdbBridge.InstallResult.BridgeUnavailable)
         assertThat(NoopAdbBridge.probeCapabilities()).isEmpty()
     }
