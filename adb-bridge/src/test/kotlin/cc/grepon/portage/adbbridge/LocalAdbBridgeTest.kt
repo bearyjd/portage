@@ -535,9 +535,11 @@ class LocalAdbBridgeTest {
     }
 
     /**
-     * The shared name corpus (ADR-006 AC-6b parity guardrail). ACCEPT and REJECT lists are
-     * byte-identical to the corresponding corpus in ApkCodecTest so both regex copies are
-     * pinned to the same expected behaviour and silent divergence is caught immediately.
+     * The bridge-side name corpus (ADR-006 AC-6b). This exercises the bridge's own
+     * [LocalAdbBridge.validatedSplitNameOrNull] against hostile names. It is NOT a cross-module pin:
+     * :adb-bridge is dependency-isolated from :providers, so there is no shared corpus. The real
+     * parity guardrail is the `SPLIT_NAME pattern is pinned` test in each module, which hardcodes the
+     * canonical regex string so a divergent edit fails that module's CI.
      */
     private val NAME_CORPUS_ACCEPT = listOf("base", "config.arm64_v8a")
     private val NAME_CORPUS_REJECT = listOf(
@@ -551,6 +553,9 @@ class LocalAdbBridgeTest {
         "-rf",           // leading dash
         "",              // empty
         "a b",           // space
+        // "a\tb" and "a\nb" are ShellArgs-masked: ShellArgs rejects control chars before the name
+        // guard sees them, so these are defence-in-depth, NOT name-guard coverage — a future reader
+        // should not credit them to validatedSplitNameOrNull.
         "a\tb",          // tab
         "a\nb",          // newline
         "a;b",           // semicolon
@@ -561,9 +566,9 @@ class LocalAdbBridgeTest {
 
     @Test
     fun `installApk name-corpus REJECT names are all abandoned without writing`() = runTest {
-        // AC-6b parity: every name in NAME_CORPUS_REJECT must be refused — session abandoned,
-        // the bad name never reaches install-write, no commit. Corpus is byte-identical to
-        // ApkCodecTest so both SPLIT_NAME copies are pinned to the same expected behaviour.
+        // AC-6b: every name in NAME_CORPUS_REJECT must be refused — session abandoned, the bad name
+        // never reaches install-write, no commit. (Cross-module regex parity is pinned separately by
+        // the `SPLIT_NAME pattern is pinned` test in each module, not by sharing this corpus.)
         for (bad in NAME_CORPUS_REJECT) {
             val gate = FakeGate().apply { connected = true }
             val seen = mutableListOf<String>()
@@ -591,8 +596,8 @@ class LocalAdbBridgeTest {
 
     @Test
     fun `installApk name-corpus ACCEPT names all succeed`() = runTest {
-        // AC-6b parity: every name in NAME_CORPUS_ACCEPT must be accepted. "base" is the
-        // single-file case; "config.arm64_v8a" is exercised as the second file in a split session.
+        // AC-6b: every name in NAME_CORPUS_ACCEPT must be accepted. "base" is the single-file case;
+        // "config.arm64_v8a" is exercised as the second file in a split session.
         val gate = FakeGate().apply { connected = true }
         gate.respond { inner ->
             when {
@@ -606,6 +611,14 @@ class LocalAdbBridgeTest {
             AdbBridge.StagedApk(name, "/data/local/tmp/split$i.apk")
         }
         assertThat(bridge(gate).installApk(files)).isEqualTo(AdbBridge.InstallResult.Installed)
+    }
+
+    @Test
+    fun `SPLIT_NAME pattern is pinned`() {
+        // Cross-module parity pin: :adb-bridge and :providers each REPLICATE the split-name regex
+        // (no shared dep by design). Both pins hardcode the SAME canonical string, so editing either
+        // copy breaks that module's pin test and forces the other to be updated in lockstep.
+        assertThat(LocalAdbBridge.SPLIT_NAME.pattern).isEqualTo("[A-Za-z0-9][A-Za-z0-9._-]*")
     }
 
     @Test
@@ -642,6 +655,36 @@ class LocalAdbBridgeTest {
     fun `installApk on a dead bridge is BridgeUnavailable`() = runTest {
         assertThat(bridge(FakeGate()).installApk(baseApk))
             .isEqualTo(AdbBridge.InstallResult.BridgeUnavailable)
+    }
+
+    @Test
+    fun `installApk rejects a zero-base set before opening a session`() = runTest {
+        // Structural invariant at the privilege boundary: a set with no "base" is refused cheaply,
+        // never opening a session — crucially, NO pm install-create is issued.
+        val gate = FakeGate().apply { connected = true }
+        gate.respond { 0 to "" }
+        val files = staged(
+            "config.arm64_v8a" to "/data/local/tmp/split0.apk",
+            "config.en" to "/data/local/tmp/split1.apk",
+        )
+        val result = bridge(gate).installApk(files)
+        assertThat(result).isInstanceOf(AdbBridge.InstallResult.Failed::class.java)
+        // The guard fires before any shell op — the fake gate saw no create.
+        assertThat(gate.execCalls).isEmpty()
+    }
+
+    @Test
+    fun `installApk rejects a multi-base set before opening a session`() = runTest {
+        // Two base files is also a malformed set — refused before any session opens, no create.
+        val gate = FakeGate().apply { connected = true }
+        gate.respond { 0 to "" }
+        val files = staged(
+            "base" to "/data/local/tmp/base0.apk",
+            "base" to "/data/local/tmp/base1.apk",
+        )
+        val result = bridge(gate).installApk(files)
+        assertThat(result).isInstanceOf(AdbBridge.InstallResult.Failed::class.java)
+        assertThat(gate.execCalls).isEmpty()
     }
 
     // ── probeCapabilities ────────────────────────────────────────────────────────────────────

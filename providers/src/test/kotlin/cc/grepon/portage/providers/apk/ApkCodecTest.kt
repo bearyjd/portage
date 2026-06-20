@@ -320,6 +320,14 @@ class ApkCodecTest {
     }
 
     @Test
+    fun `SPLIT_NAME pattern is pinned`() {
+        // Cross-module parity pin: this module and :adb-bridge each REPLICATE the split-name regex
+        // (no shared dep by design). Both pins hardcode the SAME canonical string, so editing either
+        // copy breaks that module's pin test and forces the other to be updated in lockstep.
+        assertThat(ApkContainerValidation.SPLIT_NAME.pattern).isEqualTo("[A-Za-z0-9][A-Za-z0-9._-]*")
+    }
+
+    @Test
     fun `the split-name guard accepts base and legitimate split names`() {
         val legit = listOf("base", "config.arm64_v8a", "config.xxhdpi", "config.en", "split_config.armeabi-v7a", "feature_dynamic")
         for (name in legit) {

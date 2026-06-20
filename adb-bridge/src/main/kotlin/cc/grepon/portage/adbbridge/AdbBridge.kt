@@ -197,6 +197,11 @@ interface AdbBridge {
      * `cacheDir` is app-private (uid mismatch) — staging the file to a shell-readable location
      * (or switching to stdin streaming) is a P4 concern owned by the caller; the bridge only
      * documents and validates here, it does not choose the staging location.
+     *
+     * The path-based mechanism, the eventual stdin switch (`pm install-write -S <size> .. -`), and
+     * the staging-location security review are tracked in docs/prp/P6-apk-hardware-runbook.md (the
+     * P4/P6 staging-location PR routes through security-reviewer; the stdin path is a protocol
+     * change needing `-S`, not a drop-in).
      */
     data class StagedApk(val name: String, val path: String)
 

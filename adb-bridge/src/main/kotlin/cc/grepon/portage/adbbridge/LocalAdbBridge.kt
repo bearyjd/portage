@@ -162,11 +162,24 @@ class LocalAdbBridge internal constructor(
      * AC-6b defence in depth: every [AdbBridge.StagedApk.name] is re-validated here — the bridge is
      * the privilege boundary and the name is wire-derived, so it is checked again right before it
      * becomes a `pm install-write` argument even though the caller already validated it. A bad name
-     * abandons the session and fails the install; it is never written. The file PATHS are
-     * caller-generated (not sender-controlled) but still flow through [ShellArgs.command].
+     * abandons the session and fails the install; it is never written. The bridge also enforces the
+     * one-base structural invariant (exactly one [BASE_NAME] file) BEFORE opening a session, so a
+     * zero-base or multi-base set is refused cheaply rather than relying on `pm install-commit` to
+     * reject it. The file PATHS are caller-generated (not sender-controlled) but still flow through
+     * [ShellArgs.command].
+     *
+     * The staging mechanism is path-based (files already laid down by the caller). The eventual
+     * switch to streaming over stdin (`pm install-write -S <size> .. -`) and the
+     * staging-location security review are tracked in docs/prp/P6-apk-hardware-runbook.md (the
+     * P4/P6 staging-location PR routes through security-reviewer; the stdin path is a protocol
+     * change needing `-S`, not a drop-in).
      */
     override suspend fun installApk(staged: List<AdbBridge.StagedApk>): AdbBridge.InstallResult {
         if (staged.isEmpty()) return AdbBridge.InstallResult.Failed("no staged apk files")
+        // Structural invariant at the privilege boundary: exactly one base before any session opens.
+        if (staged.count { it.name == BASE_NAME } != 1) {
+            return AdbBridge.InstallResult.Failed("install set must contain exactly one base")
+        }
 
         val create = ShellArgs.command("pm", "install-create", "--user", "0")
             ?: return AdbBridge.InstallResult.Failed("bad arguments")
@@ -392,6 +405,11 @@ class LocalAdbBridge internal constructor(
         const val KEY_REFUSED = "adbd refused our key — re-pair required"
         const val CONNECT_FAILED = "debug connection failed — toggle Wireless debugging and retry"
 
+        /**
+         * Parses the session id from `pm install-create`, assumed to emit exactly one bracketed id
+         * on a single line (first match wins) — the same output-format-drift exposure the commit
+         * verdict deliberately avoids, accepted here under GOS-stable targeting.
+         */
         val SESSION_ID = Regex("\\[(\\d+)]")
 
         /** The wire name a base APK must carry, exactly (ADR-006); anything else is a split name. */
@@ -399,8 +417,11 @@ class LocalAdbBridge internal constructor(
 
         /**
          * The strict split-name allowlist (ADR-006 AC-6b): alphanumeric first char, then only
-         * `[A-Za-z0-9._-]`. Parity: keep byte-identical to the other module's copy; pinned by the
-         * name-corpus test in each module.
+         * `[A-Za-z0-9._-]`. Parity: `:adb-bridge` is intentionally dependency-isolated from
+         * `:providers`, so this regex is REPLICATED from `ApkContainerValidation.SPLIT_NAME`, not
+         * shared. There is no cross-module dep; each module's `SPLIT_NAME pattern is pinned` test
+         * hardcodes the canonical string, so a divergent edit fails CI. Keep both copies and both
+         * pins in lockstep.
          */
         val SPLIT_NAME = Regex("[A-Za-z0-9][A-Za-z0-9._-]*")
     }
