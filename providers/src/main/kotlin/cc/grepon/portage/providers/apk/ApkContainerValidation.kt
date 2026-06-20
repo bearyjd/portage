@@ -38,6 +38,14 @@ object ApkContainerValidation {
      */
     const val MAX_APK_TOTAL_BYTES = 8L * 1024 * 1024 * 1024   // ADR-006 D4
 
+    /**
+     * Split-name length ceiling. An in-grammar name is otherwise bounded only by [ApkCodec]'s 4 KiB
+     * header guard, which is far past the filesystem `NAME_MAX` (255 on common Linux/Android FSes) —
+     * an over-long name would survive validation only to fail downstream with `ENAMETOOLONG`. 255 caps
+     * it at that limit so an oversized name is refused HERE, cleanly.
+     */
+    const val MAX_SPLIT_NAME_LENGTH = 255
+
     /** The wire name a base APK must carry, exactly. Anything else is treated as a split name. */
     const val BASE_NAME = "base"
 
@@ -63,24 +71,29 @@ object ApkContainerValidation {
      * Validate [ApkFileEntry.name] BEFORE it is ever used as a staged filename (ADR-006 AC-6b).
      * Returns the trusted name on success, or null to REJECT.
      *  - `"base"` is accepted verbatim.
-     *  - any other name must match the strict [SPLIT_NAME] allowlist AND not be `"."`/`".."`.
-     * Empty, path-bearing, control-char, or shell-metacharacter names are all refused by construction.
+     *  - any other name must be at most [MAX_SPLIT_NAME_LENGTH] chars, match the strict [SPLIT_NAME]
+     *    allowlist, AND not be `"."`/`".."`.
+     * Empty, over-long, path-bearing, control-char, or shell-metacharacter names are all refused.
      */
     fun validatedSplitNameOrNull(name: String): String? {
         if (name == BASE_NAME) return name
         if (name.isEmpty()) return null
+        if (name.length > MAX_SPLIT_NAME_LENGTH) return null
         if (name == "." || name == "..") return null
         if (!SPLIT_NAME.matches(name)) return null
         return name
     }
 
     /**
-     * Reject a single [ApkFileEntry] whose name fails the split-name gate or whose declared length is
-     * negative. Returns the entry unchanged on success (its name is already trusted), or null to
-     * REJECT. The streamed-vs-declared byte cross-check is the caller's job; this validates the line.
+     * Reject a single [ApkFileEntry] whose name fails the split-name gate, whose declared length is
+     * negative, or whose declared length exceeds [MAX_APK_ITEM_BYTES] (ADR-006 D4 — bounds sender-side
+     * staging and kills the integer-overflow class at the leaf so the aggregate sum can never wrap).
+     * Returns the entry unchanged on success (its name is already trusted), or null to REJECT. The
+     * streamed-vs-declared byte cross-check is the caller's job; this validates the line.
      */
     fun validatedEntryOrNull(entry: ApkFileEntry): ApkFileEntry? {
         if (entry.length < 0L) return null
+        if (entry.length > MAX_APK_ITEM_BYTES) return null
         if (validatedSplitNameOrNull(entry.name) == null) return null
         // A BASE-role file MUST carry the literal base name, and only a BASE-role file may.
         val isBaseName = entry.name == BASE_NAME

@@ -10,6 +10,7 @@
 package cc.grepon.portage.providers.apk
 
 import com.google.common.truth.Truth.assertThat
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -170,6 +171,36 @@ class ApkCodecTest {
         assertThat(ApkCodec.readFrom(ByteArrayInputStream(out.toByteArray()))).isNull()
     }
 
+    @Test
+    fun `writeContainer throws when a file streams fewer bytes than its declared length (TOCTOU app update)`() {
+        // The entry declares 100 bytes but the opener yields only 40 — a mid-export app update that
+        // shrank the source. writeContainer must throw so the caller drops this item rather than
+        // shipping a length-desynced container that corrupts every following file.
+        val desynced = ApkSourceFile(ApkFileEntry("base", ApkFileRole.BASE, length = 100L)) {
+            ByteArrayInputStream(ByteArray(40))
+        }
+        val header = ApkContainerHeader("com.example.app", 1L, fileCount = 1)
+        val ex = assertThrows(IllegalArgumentException::class.java) {
+            ApkCodec.writeContainer(ByteArrayOutputStream(), header, listOf(desynced))
+        }
+        assertThat(ex.message).contains("declared 100")
+        assertThat(ex.message).contains("streamed 40")
+    }
+
+    @Test
+    fun `streamBlob breaks on a no-progress zero read rather than busy-spinning`() {
+        // A source that returns 0 from read() forever (a legal non-EOF zero read). streamBlob must
+        // break, not loop forever — the caller then sees written != expected and rejects the frame.
+        val zeroReader = object : InputStream() {
+            override fun read(): Int = 0
+            override fun read(b: ByteArray, off: Int, len: Int): Int = 0
+        }
+        val sink = ByteArrayOutputStream()
+        val written = ApkCodec.streamBlob(zeroReader, sink, expectedBytes = 100L)
+        assertThat(written).isEqualTo(0L)
+        assertThat(written).isLessThan(100L)
+    }
+
     // ---- validation: fileCount bound, negative length, BASE cardinality ----
 
     @Test
@@ -290,23 +321,41 @@ class ApkCodecTest {
         }
     }
 
+    @Test
+    fun `the split-name guard rejects an in-grammar name longer than 255 chars (ENAMETOOLONG guard)`() {
+        // A 300-char all-alphanumeric name is in-grammar but exceeds NAME_MAX → must be refused HERE,
+        // not survive to fail downstream with ENAMETOOLONG.
+        val tooLong = "a".repeat(300)
+        assertThat(tooLong.length).isGreaterThan(ApkContainerValidation.MAX_SPLIT_NAME_LENGTH)
+        assertThat(ApkContainerValidation.validatedSplitNameOrNull(tooLong)).isNull()
+    }
+
+    @Test
+    fun `the split-name guard accepts a normal split name at or under the length cap`() {
+        val name = "config.arm64_v8a"
+        assertThat(name.length).isAtMost(ApkContainerValidation.MAX_SPLIT_NAME_LENGTH)
+        assertThat(ApkContainerValidation.validatedSplitNameOrNull(name)).isEqualTo(name)
+    }
+
     // ---- adversarial codec tests (security M1 / L1) ----
 
     @Test
-    fun `entry list whose declared lengths overflow to negative is documented at the validator boundary`() {
-        // Two entries each declaring Long.MAX_VALUE / 2 + 1; their sum overflows to negative.
-        // Individual entry lengths are non-negative, so validatedEntryOrNull accepts each one;
-        // the aggregate overflow is the receiver-side streaming apply path's responsibility
-        // (MAX_APK_TOTAL_BYTES), not the per-entry validator's. This test pins that boundary.
+    fun `entry list whose declared lengths would overflow to negative is rejected at the per-item leaf (Fix 4)`() {
+        // Two entries each declaring Long.MAX_VALUE / 2 + 1; their UNCAPPED sum overflows to negative.
+        // Fix 4 closes this class at the LEAF: validatedEntryOrNull now rejects any length over
+        // MAX_APK_ITEM_BYTES, so each entry (vastly over the 1 GiB cap) is refused individually and the
+        // aggregate sum can never be formed from validated entries. This pins the stronger control.
         val halfMax = Long.MAX_VALUE / 2 + 1
         val header = ApkContainerHeader("com.example.app", 1L, fileCount = 2)
         val entries = listOf(
             ApkFileEntry("base", ApkFileRole.BASE, length = halfMax),
             ApkFileEntry("config.x86_64", ApkFileRole.CONFIG, abi = "x86_64", length = halfMax),
         )
-        assertThat(entries.sumOf { it.length }).isLessThan(0L) // confirm overflow
-        // Per-entry validator: each length >= 0 individually, so entries pass.
-        assertThat(ApkContainerValidation.validatedEntriesOrNull(header, entries)).isNotNull()
+        assertThat(entries.sumOf { it.length }).isLessThan(0L) // confirm the uncapped sum overflows
+        assertThat(halfMax).isGreaterThan(ApkContainerValidation.MAX_APK_ITEM_BYTES)
+        // Per-item leaf cap rejects each oversized entry, so the list is refused before any sum.
+        assertThat(ApkContainerValidation.validatedEntryOrNull(entries[0])).isNull()
+        assertThat(ApkContainerValidation.validatedEntriesOrNull(header, entries)).isNull()
     }
 
     @Test
@@ -340,6 +389,9 @@ class ApkCodecTest {
         val header = ApkCodec.readHeaderFrom(java.io.ByteArrayInputStream(json.toByteArray(Charsets.UTF_8)))
         assertThat(header).isNotNull()
         assertThat(header!!.packageName).isEqualTo("evil") // last-value wins
+        // The REAL control: the smuggled single-segment "evil" fails the package grammar at the
+        // validator boundary, so the last-wins decode never produces a usable (validated) header.
+        assertThat(ApkContainerValidation.validatedHeaderOrNull(header)).isNull()
     }
 
     // ---- small helpers ----

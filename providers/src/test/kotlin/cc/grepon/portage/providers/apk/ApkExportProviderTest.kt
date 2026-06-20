@@ -23,6 +23,13 @@ private fun source(name: String, role: ApkFileRole, size: Int, abi: String? = nu
     }
 }
 
+/**
+ * A source that DECLARES [declaredLength] without allocating that many bytes — `available()` reads only
+ * the entry length, so this lets a test exercise the multi-GiB item/total caps without huge fixtures.
+ */
+private fun declaredSource(name: String, role: ApkFileRole, declaredLength: Long): ApkSourceFile =
+    ApkSourceFile(ApkFileEntry(name, role, length = declaredLength)) { ByteArrayInputStream(ByteArray(0)) }
+
 class ApkExportProviderTest {
 
     private fun providerOf(files: List<ApkSourceFile>, permissions: List<String> = emptyList()) =
@@ -158,5 +165,68 @@ class ApkExportProviderTest {
         )
         val provider = providerOf(files)
         assertThat(provider.available()).isFalse()
+    }
+
+    @Test
+    fun `available is false when a single file exceeds MAX_APK_ITEM_BYTES`() = runTest {
+        // A base file declaring 1 byte over the per-item ceiling is a defined skip (no overflow path).
+        val provider = providerOf(
+            listOf(declaredSource("base", ApkFileRole.BASE, ApkContainerValidation.MAX_APK_ITEM_BYTES + 1)),
+        )
+        assertThat(provider.available()).isFalse()
+    }
+
+    @Test
+    fun `available is true at exactly MAX_APK_ITEM_BYTES`() = runTest {
+        val provider = providerOf(
+            listOf(declaredSource("base", ApkFileRole.BASE, ApkContainerValidation.MAX_APK_ITEM_BYTES)),
+        )
+        assertThat(provider.available()).isTrue()
+    }
+
+    @Test
+    fun `available is false when the declared total exceeds MAX_APK_TOTAL_BYTES`() = runTest {
+        // Nine 1-GiB files: each within the item cap, but their sum (9 GiB) exceeds the 8 GiB total cap.
+        val files = mutableListOf(declaredSource("base", ApkFileRole.BASE, ApkContainerValidation.MAX_APK_ITEM_BYTES))
+        repeat(8) { i ->
+            files.add(declaredSource("config.split$i", ApkFileRole.CONFIG, ApkContainerValidation.MAX_APK_ITEM_BYTES))
+        }
+        assertThat(files.sumOf { it.entry.length }).isGreaterThan(ApkContainerValidation.MAX_APK_TOTAL_BYTES)
+        val provider = providerOf(files)
+        assertThat(provider.available()).isFalse()
+    }
+
+    @Test
+    fun `available is true when the declared total is at MAX_APK_TOTAL_BYTES`() = runTest {
+        // Eight 1-GiB files sum to exactly the 8 GiB total cap — accepted (boundary inclusive).
+        val files = mutableListOf(declaredSource("base", ApkFileRole.BASE, ApkContainerValidation.MAX_APK_ITEM_BYTES))
+        repeat(7) { i ->
+            files.add(declaredSource("config.split$i", ApkFileRole.CONFIG, ApkContainerValidation.MAX_APK_ITEM_BYTES))
+        }
+        assertThat(files.sumOf { it.entry.length }).isEqualTo(ApkContainerValidation.MAX_APK_TOTAL_BYTES)
+        val provider = providerOf(files)
+        assertThat(provider.available()).isTrue()
+    }
+
+    // ---- deriveTags documentation tests (Fix 7): pin current behaviour, do NOT change the logic ----
+
+    @Test
+    fun `deriveTags classifies a digit-bearing ABI like x86 as CONFIG with that abi`() {
+        // config.x86 — the dimension carries a digit, so it is NOT a 2-letter language code and falls
+        // through to ABI. Documents that digit-bearing ABIs land in the CONFIG/abi bucket.
+        assertThat(deriveTags("config.x86"))
+            .isEqualTo(ApkSplitTags(ApkFileRole.CONFIG, abi = "x86"))
+    }
+
+    @Test
+    fun `deriveTags classifies config_mips as CONFIG abi - documents the regex abi-language tradeoff`() {
+        // Pinned behaviour: "mips" is a 4-letter all-alpha ABI with NO separator, so it does NOT match
+        // LANG_CODE = [a-z]{2}([_-][A-Za-z0-9]{2,})? (the tail needs a separator) and falls through to
+        // ABI. KNOWN FUZZINESS at this boundary: a bare 2-letter all-lowercase ABI (none exist today)
+        // WOULD match LANG_CODE and be tagged LANGUAGE instead. This advisory tag never gates the
+        // install plan; the test pins current output so a future LANG_CODE/ABI change is visible and
+        // the tradeoff is explicit to the next editor.
+        assertThat(deriveTags("config.mips"))
+            .isEqualTo(ApkSplitTags(ApkFileRole.CONFIG, abi = "mips"))
     }
 }

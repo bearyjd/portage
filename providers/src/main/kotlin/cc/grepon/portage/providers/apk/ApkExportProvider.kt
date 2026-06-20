@@ -43,7 +43,12 @@ class ApkExportProvider(
     override suspend fun available(): Boolean {
         if (files.size !in 1..ApkContainerValidation.MAX_APK_FILES) return false
         if (files.count { it.entry.role == ApkFileRole.BASE } != 1) return false
-        return files.all { it.entry.length > 0L }
+        if (!files.all { it.entry.length > 0L }) return false
+        // Enforce the per-item ceiling first (ADR-006 D4): a single file over MAX_APK_ITEM_BYTES is a
+        // defined skip. Bounding each file at <= 1 GiB also means the <=64-file sum below cannot wrap a
+        // Long, so the aggregate check is overflow-safe by construction.
+        if (files.any { it.entry.length > ApkContainerValidation.MAX_APK_ITEM_BYTES }) return false
+        return files.sumOf { it.entry.length } <= ApkContainerValidation.MAX_APK_TOTAL_BYTES
     }
 
     override suspend fun exportTo(sink: OutputStream) {

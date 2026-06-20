@@ -134,8 +134,13 @@ class SenderViewModel(
         inventorySource?.let { source ->
             _relayCandidates.value = runCatching { RelayAppDetector.detect(source) }.getOrDefault(emptyList())
         }
+        // Enumerating installed user apps walks PackageManager + reads each app's APK file sizes across
+        // every user app — too heavy for the MAIN thread (ANR/jank). Run it on [relayResolveDispatcher]
+        // (IO in production, the test dispatcher under test); _availableApps populates asynchronously.
         installedAppSource?.let { source ->
-            _availableApps.value = runCatching { source.installedUserApps() }.getOrDefault(emptyList())
+            viewModelScope.launch(relayResolveDispatcher) {
+                _availableApps.value = runCatching { source.installedUserApps() }.getOrDefault(emptyList())
+            }
         }
     }
 

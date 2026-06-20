@@ -15,8 +15,10 @@ import java.io.InputStream
 import java.io.OutputStream
 
 /**
- * Wire codec for an APK container: the proven [cc.grepon.portage.providers.relay.RelayCodec] framing
- * (`UTF-8 JSON line + '\n' + bytes`) recursively applied from one blob to N files (ADR-006 D1):
+ * Wire codec for an APK container, modeled on [cc.grepon.portage.providers.relay.RelayCodec]'s
+ * streaming shape (`UTF-8 JSON line + '\n' + bytes`) and applied recursively from one blob to N files
+ * (ADR-006 D1). It is structurally similar to RelayCodec, NOT byte-identical: the container framing
+ * recurses per file and the line-scan/empty-line handling differ from the single-blob relay path.
  *
  * ```
  * <JSON ApkContainerHeader> '\n'
@@ -44,13 +46,22 @@ object ApkCodec {
      * Write the container: the header line, then for each file its entry line followed by exactly
      * `file.entry.length` bytes streamed verbatim from `file.open()`. The per-file source stream is
      * closed (it is opened here via [ApkSourceFile.open]); the caller-owned [sink] is flushed but NOT
-     * closed (mirrors [cc.grepon.portage.providers.relay.RelayCodec]).
+     * closed (the same lifecycle [cc.grepon.portage.providers.relay.RelayCodec] uses).
+     *
+     * The streamed byte count is verified to equal the entry's declared [ApkFileEntry.length]: a
+     * concurrent app update mid-export can shrink/grow a source file AFTER its length was captured, and
+     * a length-desynced frame would corrupt every following file in the container. On mismatch this
+     * throws so the caller's per-item try/catch (ManifestBuilder) cleanly DROPS that item rather than
+     * shipping a desynced container.
      */
     fun writeContainer(sink: OutputStream, header: ApkContainerHeader, files: List<ApkSourceFile>) {
         writeLine(sink, JsonLines.format.encodeToString(ApkContainerHeader.serializer(), header))
         for (file in files) {
             writeLine(sink, JsonLines.format.encodeToString(ApkFileEntry.serializer(), file.entry))
-            file.open().use { it.copyTo(sink) }
+            val n = file.open().use { it.copyTo(sink) }
+            require(n == file.entry.length) {
+                "apk ${file.entry.name}: declared ${file.entry.length}, streamed $n"
+            }
         }
         sink.flush()
     }
@@ -96,6 +107,7 @@ object ApkCodec {
             val toRead = minOf(buf.size.toLong(), remaining).toInt()
             val n = source.read(buf, 0, toRead)
             if (n == -1) break
+            if (n == 0) break // no progress (a legal non-EOF zero read): break rather than busy-spin
             sink.write(buf, 0, n)
             written += n
             remaining -= n
@@ -133,17 +145,20 @@ object ApkCodec {
      * the line as a UTF-8 string. Returns null on EOF-before-newline, on an empty line, or when the
      * line exceeds [MAX_HEADER_BYTES] (runaway guard). On success the stream sits immediately after the
      * consumed newline.
+     *
+     * This reads one byte at a time, so callers should pass a buffered [source] (the staging layer
+     * already wraps the socket stream) to avoid a syscall per byte.
      */
     private fun readLineBytes(source: InputStream): String? {
-        val buf = mutableListOf<Byte>()
+        val buf = ByteArrayOutputStream()
         while (true) {
             val b = source.read()
             if (b == -1) return null
             if (b.toByte() == NEWLINE) break
-            buf.add(b.toByte())
-            if (buf.size > MAX_HEADER_BYTES) return null
+            buf.write(b)
+            if (buf.size() > MAX_HEADER_BYTES) return null
         }
-        if (buf.isEmpty()) return null
+        if (buf.size() == 0) return null
         return String(buf.toByteArray(), Charsets.UTF_8)
     }
 }

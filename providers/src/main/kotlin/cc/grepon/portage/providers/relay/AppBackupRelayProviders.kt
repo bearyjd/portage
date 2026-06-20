@@ -218,6 +218,7 @@ object RelayCodec {
             val toRead = minOf(buf.size.toLong(), remaining).toInt()
             val n = source.read(buf, 0, toRead)
             if (n == -1) break
+            if (n == 0) break // no progress (a legal non-EOF zero read): break rather than busy-spin
             sink.write(buf, 0, n)
             written += n
             remaining -= n

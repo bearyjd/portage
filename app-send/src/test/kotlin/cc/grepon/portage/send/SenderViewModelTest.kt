@@ -525,6 +525,7 @@ class SenderViewModelTest {
                 ),
             ),
         )
+        advanceUntilIdle() // enumeration is now off-main (init launch); drain it before asserting
         assertThat(vm.availableApps.value.map { it.packageName }).containsExactly("com.a.app", "com.b.app")
         assertThat(vm.selectedAppPackages.value).isEmpty()
     }
@@ -557,6 +558,7 @@ class SenderViewModelTest {
                 listOf(onDiskApp(tmp.root, "com.a.app", "Alpha"), onDiskApp(tmp.root, "com.b.app", "Bravo")),
             ),
         )
+        advanceUntilIdle() // selectAllApps reads availableApps, populated by the off-main init launch
 
         vm.selectAllApps()
         assertThat(vm.selectedAppPackages.value).containsExactly("com.a.app", "com.b.app")
@@ -574,6 +576,7 @@ class SenderViewModelTest {
                 listOf(onDiskApp(tmp.root, "com.a.app", "Alpha"), onDiskApp(tmp.root, "com.b.app", "Bravo")),
             ),
         )
+        advanceUntilIdle() // drain the off-main enumeration so selectedApps() sees the populated set
         // Select ONLY Alpha — Bravo must NOT be staged/manifested.
         vm.toggleApp("com.a.app")
 
@@ -613,6 +616,7 @@ class SenderViewModelTest {
                 listOf(onDiskApp(tmp.root, "com.a.app", "Alpha"), onDiskApp(tmp.root, "com.b.app", "Bravo")),
             ),
         )
+        advanceUntilIdle() // selectAllApps reads availableApps, populated by the off-main init launch
         vm.selectAllApps()
 
         vm.onStartTransfer()
