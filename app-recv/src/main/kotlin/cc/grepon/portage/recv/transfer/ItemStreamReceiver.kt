@@ -20,6 +20,7 @@ import cc.grepon.portage.transport.SecureChannel
 import cc.grepon.portage.transport.TransportException
 import kotlinx.coroutines.CancellationException
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
@@ -49,6 +50,9 @@ class ItemStreamReceiver(
     // Usable-space probe for the staging volume, seam-injected so tests can simulate a near-full disk
     // deterministically (ADR-006 AC-16). Production reads the real free space; the gate is APK-only.
     private val freeSpace: (File) -> Long = { it.usableSpace },
+    // Staging-file sink factory, seam-injected so tests can simulate a mid-stream disk fault (ENOSPC)
+    // deterministically. Production opens the real cacheDir file; only the LOCAL staging write throws.
+    private val openSink: (File) -> OutputStream = { it.outputStream() },
 ) {
 
     /** The effective per-item byte cap for [kind]: its override if any, else the default. */
@@ -162,7 +166,9 @@ class ItemStreamReceiver(
         }
 
         // The item cleared every up-front gate — commit its size to the APK aggregate budget so the
-        // NEXT APK item is judged against the running total (only accepted items consume budget).
+        // NEXT APK item is judged against the running total. Only items that clear every up-front gate
+        // consume budget; a later stream-time rejection does not refund the charge (this is the
+        // intended DoS bound — we bound what the sender CLAIMS up front, before staging).
         if (failure == null && isApk) apkBudget.add(begin.size)
 
         // Generated name — display fields are NEVER paths (THREAT_MODEL, path traversal).
@@ -172,13 +178,17 @@ class ItemStreamReceiver(
         var nextSeq = 0
         var endSha: String? = null
 
-        val sink: OutputStream? = if (failure == null) file.outputStream() else null
+        val sink: OutputStream? = if (failure == null) openSink(file) else null
         try {
             chunks@ while (true) {
                 val message = receiveSkippingPing(channel)
                     ?: throw TransportException("connection lost mid-item")
                 when (message) {
                     is ProtocolMessage.ItemData -> {
+                        // Drain mode: a failed item still reads its frames to stay sync'd. Drained bytes
+                        // are not separately capped here — the new aggregate/free-space gates route more
+                        // item classes into drain, and that bound is delegated to the aggregate
+                        // dataPhaseTimeoutMs (ReceiverViewModel) that fences the whole data phase.
                         if (failure != null) continue@chunks // drain mode
                         if (message.itemId != begin.itemId || message.seq != nextSeq) {
                             failure = ItemResult(begin.itemId, ItemStatus.WRITE_ERROR, "stream out of order")
@@ -192,7 +202,16 @@ class ItemStreamReceiver(
                             continue@chunks
                         }
                         nextSeq++
-                        sink?.write(message.bytes)
+                        // Only the LOCAL staging write is guarded here: a disk fault (e.g. mid-stream
+                        // ENOSPC, the one disk-pressure path AC-16 can't pre-check) becomes a per-item
+                        // WRITE_ERROR + drain, never a batch abort. Transport reads stay outside this
+                        // try, so a dead channel still throws and ends the batch as the contract states.
+                        try {
+                            sink?.write(message.bytes)
+                        } catch (e: IOException) {
+                            failure = ItemResult(begin.itemId, ItemStatus.WRITE_ERROR, "staging write failed")
+                            continue@chunks
+                        }
                         digest.update(message.bytes)
                         if (meta != null) onEvent(Event.ItemProgressed(begin.itemId, received, meta.size))
                     }
@@ -253,11 +272,14 @@ class ItemStreamReceiver(
     }
 
     /**
-     * AC-16 free-space gate: the staging volume must hold the double-stage — the cacheDir item file
-     * PLUS the split files the apply session re-materializes from it — so we require usable space of
-     * at least `2 * size`. `floor(usable / 2) >= size` is equivalent to `usable >= 2 * size` for
-     * even usable, and slightly stricter for odd usable — it never admits when `usable < 2 * size`.
-     * Reads the seam-injected [freeSpace] so tests can simulate a near-full disk deterministically.
+     * AC-16 free-space gate: the staging volume must hold the projected double-stage — the cacheDir
+     * item file PLUS a second-stage volume the eventual install session is assumed to re-materialize
+     * from it — so we require usable space of at least `2 * size`. The second-stage `* 1` is a
+     * forward/projected assumption: there is no ApkApplyProvider in this phase (the registry is
+     * emptyList), so the real install-session staging target is not yet known — revisit the factor
+     * once it is. `floor(usable / 2) >= size` is equivalent to `usable >= 2 * size` for even usable,
+     * and slightly stricter for odd usable — it never admits when `usable < 2 * size`. Reads the
+     * seam-injected [freeSpace] so tests can simulate a near-full disk deterministically.
      */
     private fun hasRoomToStage(size: Long): Boolean {
         val usable = freeSpace(stagingDir)

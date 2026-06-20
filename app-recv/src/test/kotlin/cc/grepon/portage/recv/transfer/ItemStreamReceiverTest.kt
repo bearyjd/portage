@@ -22,7 +22,9 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.security.MessageDigest
 
 private fun sha256(bytes: ByteArray): String =
@@ -644,9 +646,10 @@ class ItemStreamReceiverTest {
         assertThat(results.first { it.itemId == 1 }.status).isEqualTo(ItemStatus.OVERSIZE)
         assertThat(results.first { it.itemId == 1 }.detail).contains("aggregate")
         // Item 2: the rejected item 1 must NOT have entered acceptedBytes (budget still 0), so item 2
-        // (1 GiB) is well under the ceiling and accepted — it fails only on hash (no bytes sent),
-        // NOT on OVERSIZE.
-        assertThat(results.first { it.itemId == 2 }.status).isNotEqualTo(ItemStatus.OVERSIZE)
+        // (1 GiB) is well under the ceiling and clears the aggregate gate. With no ItemData frames it
+        // reaches verifyStaged with an empty digest → HASH_MISMATCH, the EXACT status a gate-passing,
+        // no-bytes-sent item reaches; asserting it (not isNotEqualTo(OVERSIZE)) proves the gate passed.
+        assertThat(results.first { it.itemId == 2 }.status).isEqualTo(ItemStatus.HASH_MISMATCH)
     }
 
     @Test
@@ -669,7 +672,10 @@ class ItemStreamReceiverTest {
         )
         val resultsA = apkReceiver(maxBytesByKind = mapOf(ItemKind.APK to perItemCap))
             .run(ScriptedChannel(*framesA.toTypedArray()), mapOf(1 to item1Meta, 2 to exactMeta), { _, _ -> ApplyOutcome(ItemStatus.OK) }) { }
-        assertThat(resultsA.first { it.itemId == 2 }.status).isNotEqualTo(ItemStatus.OVERSIZE)
+        // Item 2 exactly closed the budget → it cleared the aggregate gate. With no ItemData frames it
+        // reaches verifyStaged with an empty digest, so its EXACT terminal status is HASH_MISMATCH —
+        // asserting that (not the looser isNotEqualTo(OVERSIZE)) proves it traversed the aggregate gate.
+        assertThat(resultsA.first { it.itemId == 2 }.status).isEqualTo(ItemStatus.HASH_MISMATCH)
 
         // Case B: second item is one byte over (size = 2) → OVERSIZE.
         val overMeta = ItemMeta(2, ItemKind.APK, 2L, "c".repeat(64), "Over", "Apps")
@@ -690,7 +696,10 @@ class ItemStreamReceiverTest {
     fun `per-item APK cap exact boundary — MAX_APK_ITEM_BYTES accepted, MAX plus one refused`() = runTest {
         val cap = ApkContainerValidation.MAX_APK_ITEM_BYTES
 
-        // Exactly at cap: accepted (not OVERSIZE; fails later on hash since no bytes sent).
+        // Exactly at cap: cleared the per-item gate. With no ItemData frames it reaches verifyStaged
+        // with an empty digest, so it terminates at HASH_MISMATCH — the EXACT status a gate-passing,
+        // no-bytes-sent item reaches. Asserting that exact status proves it traversed the cap gate
+        // (vs. a looser isNotEqualTo(OVERSIZE) that would also green for SKIPPED/UNKNOWN_KIND).
         val atCapMeta = ItemMeta(1, ItemKind.APK, cap, "a".repeat(64), "At cap", "Apps")
         val framesAt = listOf(
             ProtocolMessage.ItemBegin(1, ItemKind.APK, cap, 8),
@@ -699,7 +708,7 @@ class ItemStreamReceiverTest {
         )
         val resultsAt = apkReceiver()
             .run(ScriptedChannel(*framesAt.toTypedArray()), mapOf(1 to atCapMeta), { _, _ -> ApplyOutcome(ItemStatus.OK) }) { }
-        assertThat(resultsAt.single().status).isNotEqualTo(ItemStatus.OVERSIZE)
+        assertThat(resultsAt.single().status).isEqualTo(ItemStatus.HASH_MISMATCH)
 
         // One byte over cap: OVERSIZE before staging.
         val overCapMeta = ItemMeta(1, ItemKind.APK, cap + 1L, "b".repeat(64), "Over cap", "Apps")
@@ -760,4 +769,115 @@ class ItemStreamReceiverTest {
         assertThat(results.first { it.itemId == 1 }.status).isNotEqualTo(ItemStatus.OVERSIZE)
         assertThat(results.first { it.itemId == 3 }.status).isNotEqualTo(ItemStatus.OVERSIZE)
     }
+
+    // --- Mid-stream disk fault (ENOSPC) + default-seam + negative-size arm coverage (2026-06-20) ---
+
+    @Test
+    fun `a mid-stream staging-write fault is a per-item WRITE_ERROR and does not abort the batch`() = runTest {
+        // The one disk-pressure path AC-16 can't pre-check: free space looked sufficient, but the
+        // staging write fails mid-stream (e.g. ENOSPC). It must become a per-item WRITE_ERROR + drain,
+        // NOT a batch abort — the FOLLOWING item must still stage, verify, and apply. The openSink seam
+        // throws ONLY for the first staged file; the second item gets a real sink.
+        val blob1 = "FIRST-ITEM-BYTES".toByteArray()
+        val item1 = ItemMeta(1, ItemKind.CONTACTS_VCF, blob1.size.toLong(), sha256(blob1), "First", "People")
+        val blob2 = "SECOND-ITEM".toByteArray()
+        val item2 = ItemMeta(2, ItemKind.CONTACTS_VCF, blob2.size.toLong(), sha256(blob2), "Second", "People")
+        val frames = itemFrames(item1, blob1) + itemFrames(item2, blob2) +
+            ProtocolMessage.BatchEnd(listOf(1, 2), "done")
+        val channel = ScriptedChannel(*frames.toTypedArray())
+        val applied = mutableListOf<ByteArray>()
+
+        val results = ItemStreamReceiver(
+            tmp.newFolder(),
+            // Fail the write for item 1's staged file only; item 2 gets a real, working sink.
+            openSink = { file ->
+                if (file.name == "stage-1.bin") FailingSink else file.outputStream()
+            },
+        ).run(channel, mapOf(1 to item1, 2 to item2), { _, src ->
+            applied += src.readBytes()
+            ApplyOutcome(ItemStatus.OK)
+        }) { }
+
+        // Item 1: the staging write threw → WRITE_ERROR, drained, never applied.
+        assertThat(results.first { it.itemId == 1 }.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(results.first { it.itemId == 1 }.detail).contains("staging write failed")
+        // Item 2: the batch was NOT aborted — it stages, verifies, and applies byte-exact.
+        assertThat(results.first { it.itemId == 2 }.status).isEqualTo(ItemStatus.OK)
+        assertThat(applied.single()).isEqualTo(blob2)
+    }
+
+    @Test
+    fun `the production default freeSpace seam admits an item against a real staging dir with ample space`() = runTest {
+        // Every other APK test injects a fake freeSpace; this one constructs the receiver WITHOUT the
+        // override so the production default arg (it.usableSpace on the real temp staging volume) is
+        // exercised. The temp dir has ample space, so the APK free-space gate must admit the item.
+        val blob = "APK-ON-REAL-DISK".toByteArray()
+        val apkMeta = ItemMeta(1, ItemKind.APK, blob.size.toLong(), sha256(blob), "Some app", "Apps")
+        val frames = itemFrames(apkMeta, blob) + ProtocolMessage.BatchEnd(listOf(1), "done")
+        val channel = ScriptedChannel(*frames.toTypedArray())
+        val applied = mutableListOf<ByteArray>()
+
+        val results = ItemStreamReceiver(
+            tmp.newFolder(),
+            maxBytesByKind = mapOf(ItemKind.APK to ApkContainerValidation.MAX_APK_ITEM_BYTES),
+            // No freeSpace override — the real usableSpace default decides, and it is ample here.
+        ).run(channel, mapOf(1 to apkMeta), { _, src ->
+            applied += src.readBytes()
+            ApplyOutcome(ItemStatus.OK)
+        }) { }
+
+        assertThat(results.single().status).isEqualTo(ItemStatus.OK)
+        assertThat(applied.single()).isEqualTo(blob) // byte-exact through the real staging file
+    }
+
+    @Test
+    fun `a negative declared size on a NON-APK kind is refused OVERSIZE before the meta and kind arms`() = runTest {
+        // The negative-size floor runs for ALL kinds and precedes the meta-null / kind / size arms.
+        // A requested SETTINGS item with size = -1 must be refused OVERSIZE("negative declared size"),
+        // proving the floor is not APK-scoped — it guards every numeric gate downstream.
+        val negMeta = ItemMeta(1, ItemKind.SETTINGS, -1L, "a".repeat(64), "Evil settings", "System")
+        val frames = listOf(
+            ProtocolMessage.ItemBegin(1, ItemKind.SETTINGS, -1L, 8),
+            ProtocolMessage.ItemEnd(1, negMeta.sha256),
+            ProtocolMessage.BatchEnd(listOf(1), "done"),
+        )
+        val channel = ScriptedChannel(*frames.toTypedArray())
+        var applyCalled = false
+
+        val results = receiver().run(channel, mapOf(1 to negMeta), { _, _ ->
+            applyCalled = true
+            ApplyOutcome(ItemStatus.OK)
+        }) { }
+
+        assertThat(applyCalled).isFalse()
+        assertThat(results.single().status).isEqualTo(ItemStatus.OVERSIZE)
+        assertThat(results.single().detail).contains("negative declared size")
+    }
+
+    @Test
+    fun `a negative declared size on an UNREQUESTED item is OVERSIZE, not SKIPPED — the floor precedes the meta-null arm`() = runTest {
+        // An unrequested item (meta == null) with size = -1: the negative-size floor must fire FIRST as
+        // OVERSIZE, NOT the meta-null SKIPPED arm — locking the load-bearing arm ordering (a negative
+        // size must never reach a downstream numeric gate, even for an unknown item id).
+        val frames = listOf(
+            ProtocolMessage.ItemBegin(7, ItemKind.SETTINGS, -1L, 8), // id 7 not in expected
+            ProtocolMessage.ItemEnd(7, "0".repeat(64)),
+        ) + itemFrames(meta, payload) + ProtocolMessage.BatchEnd(listOf(7, 1), "done")
+        val channel = ScriptedChannel(*frames.toTypedArray())
+
+        val results = receiver().run(channel, mapOf(1 to meta), { _, _ -> ApplyOutcome(ItemStatus.OK) }) { }
+
+        val rogue = results.first { it.itemId == 7 }
+        assertThat(rogue.status).isEqualTo(ItemStatus.OVERSIZE)
+        assertThat(rogue.detail).contains("negative declared size")
+        // The legit requested item is unharmed.
+        assertThat(results.first { it.itemId == 1 }.status).isEqualTo(ItemStatus.OK)
+    }
+}
+
+/** A sink whose every write throws [IOException], simulating a mid-stream disk fault (ENOSPC). */
+private object FailingSink : OutputStream() {
+    override fun write(b: Int) = throw IOException("simulated ENOSPC")
+    override fun write(b: ByteArray) = throw IOException("simulated ENOSPC")
+    override fun write(b: ByteArray, off: Int, len: Int) = throw IOException("simulated ENOSPC")
 }
