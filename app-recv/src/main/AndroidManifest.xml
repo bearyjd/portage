@@ -30,11 +30,19 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
     <!--
       Assisted reinstall opens each app's store page via ACTION_VIEW — the store performs the
-      install, so NO install permission is needed here. QUERY_ALL_PACKAGES lets the receiver
-      skip apps already present. REQUEST_INSTALL_PACKAGES is intentionally NOT declared: it is
-      reserved for the Tier-1 batch installer (its own PR), per least-privilege.
+      install, so NO install permission is needed for the inventory path. QUERY_ALL_PACKAGES lets
+      the receiver skip apps already present (inventory dedup + APK AC-18 version check, ADR-006 D3).
     -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!--
+      APK keystone Tier-0 fallback (ADR-006 D3/D6): the carried-app install routes through our own
+      PackageInstaller MODE_FULL_INSTALL session, whose commit fires the system install-confirm UI.
+      REQUEST_INSTALL_PACKAGES makes the app ELIGIBLE to commit such a session — the USER still
+      confirms each install in the system dialog (one tap per app); nothing installs silently here.
+      The silent (no-confirm) path is the DEFERRED P6 ADB-gate concern and uses NO extra manifest
+      permission (it would run shell-uid via :adb-bridge, not REQUEST_INSTALL_PACKAGES).
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
       SMS restore (DEVILS_ADVOCATE.md Q4): to be ELIGIBLE for the default-SMS role, the app must

@@ -26,14 +26,19 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -45,7 +50,9 @@ import cc.grepon.portage.providers.relay.RelayRestorePrompt
 import cc.grepon.portage.recv.ReceiverState
 import cc.grepon.portage.recv.ReceiverViewModel
 import cc.grepon.portage.recv.checklist.ReceiverChecklist
+import cc.grepon.portage.recv.install.ApkInstallPrompt
 import cc.grepon.portage.recv.install.InstallLaunch
+import cc.grepon.portage.recv.install.PackageInstallerApkInstaller
 import cc.grepon.portage.recv.ui.theme.LocalSpacing
 import cc.grepon.portage.recv.ui.theme.PortageTheme
 import cc.grepon.portage.wizard.PrivilegeWizard
@@ -66,11 +73,18 @@ fun ReceiverApp(
     // Wizard visibility is UI chrome; the wizard's own progress lives in the process-scoped
     // state machine and survives recreation (PrivilegeWizardHolder).
     var wizardOpen by rememberSaveable { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     PortageTheme {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             topBar = { SwissMasthead() },
+            snackbarHost = {
+                SnackbarHost(hostState = snackbarHostState) { data ->
+                    Snackbar(snackbarData = data)
+                }
+            },
         ) { padding ->
             Column(
                 modifier = Modifier
@@ -121,6 +135,13 @@ fun ReceiverApp(
                                 wizard.start()
                                 wizardOpen = true
                             },
+                            onApkInstallFailed = {
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        "Couldn't start install — please retry",
+                                    )
+                                }
+                            },
                         )
                     }
                 }
@@ -135,6 +156,7 @@ private fun StateBody(
     current: ReceiverState,
     viewModel: ReceiverViewModel,
     onSetup: () -> Unit,
+    onApkInstallFailed: () -> Unit = {},
 ) {
     val context = LocalContext.current
     when (current) {
@@ -169,7 +191,11 @@ private fun StateBody(
                 installActions = current.installActions,
                 repairEntries = current.repairEntries,
                 relayPrompts = current.relayPrompts,
+                apkInstallPrompts = current.apkInstallPrompts,
                 onInstall = { action -> launchInstall(context, action) },
+                onInstallApk = { prompt ->
+                    if (!commitApkInstall(context, prompt)) onApkInstallFailed()
+                },
                 onOpenBluetoothSettings = { launchBluetoothSettings(context) },
                 onOpenRelayApp = { prompt -> launchRelayApp(context, prompt) },
                 backupActionLabel = if (seedvaultIntent(context) != null) {
@@ -252,6 +278,15 @@ private fun launchInstall(context: Context, action: InstallAction) {
         )
     }
 }
+
+/**
+ * Commit one carried-APK install (ADR-006 D3/D6): fire the system install-confirm UI for the prompt's
+ * already-sealed `PackageInstaller` session — our own app committing our own carried bytes, NO shell uid.
+ * The session was created during apply; here we only commit it. Returns false when the session is
+ * missing/expired so the caller can surface a brief retry prompt (fix 6).
+ */
+private fun commitApkInstall(context: Context, prompt: ApkInstallPrompt): Boolean =
+    PackageInstallerApkInstaller(context).commit(prompt.sessionId)
 
 /**
  * The Seedvault handoff (division-of-labor framing, PRP §3): portage moved the parity layer;

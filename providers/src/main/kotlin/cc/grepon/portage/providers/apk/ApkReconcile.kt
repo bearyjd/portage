@@ -1,0 +1,87 @@
+/*
+ * portage — GrapheneOS device-parity transfer
+ * Copyright (C) 2026 Grepon Labs LLC
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version. See <https://www.gnu.org/licenses/>.
+ */
+package cc.grepon.portage.providers.apk
+
+/**
+ * The PURE split target-compatibility reconcile (ADR-006 D3/AC-15). Byte-exact reconstruction does not
+ * guarantee installability: the source device's config splits (abi/density/language) may not match the
+ * target's, and the source never held the target's splits. Given the container's [ApkFileEntry] tags
+ * (re-derived on the receiver, never trusting the sender's wire tags blindly) and the target
+ * [ApkTargetConfig], this computes the installable subset BEFORE any install is attempted — no Android
+ * types, fully unit-testable, lives beside the codec (ADR-006 D2/D3).
+ *
+ * Policy (ADR-006 D3):
+ *  1. Always keep BASE.
+ *  2. ABI config splits: keep only those whose abi matches a target [ApkTargetConfig.supportedAbis].
+ *     If the source carries ANY abi split but NONE matches the target → INCOMPATIBLE (the required ABI
+ *     dimension is genuinely absent — portage cannot synthesize a split it never had; pretending
+ *     otherwise produces a broken app). A base with no abi splits at all is the trivial single-APK case
+ *     and stays compatible.
+ *  3. Density config splits: keep only the target's [ApkTargetConfig.densityBucket]. A missing density
+ *     split is NOT fatal — Android falls back to a present density or to base resources — so an absent
+ *     density just means none is kept, never INCOMPATIBLE.
+ *  4. Language splits: keep ALL of them (ADR-006 D3 step 1: "+ all language splits the user kept"). The
+ *     user may switch locale on the new phone; carrying every language split keeps that honest.
+ *  5. FEATURE splits: keep all (dynamic-feature modules are install-time-optional; carrying them is safe).
+ */
+object ApkReconcile {
+
+    /** The outcome of reconciling one container against the target device. */
+    sealed interface Result {
+        /** Installable: [files] is base + the kept subset, in a stable order (base first). */
+        data class Compatible(val files: List<ApkFileEntry>) : Result
+
+        /**
+         * A REQUIRED config dimension's split is genuinely absent from the source set for THIS device
+         * (today: no source ABI split matches a target ABI). The honest terminal — surface an
+         * "incompatible on this device — install from store" outcome and route to the inventory-style
+         * fallback; never attempt a known-broken install (ADR-006 D3 step 2).
+         */
+        data class Incompatible(val reason: String) : Result
+    }
+
+    /**
+     * Reconcile [entries] (already validated by [ApkContainerValidation.validatedEntriesOrNull]) against
+     * [target]. Returns [Result.Compatible] with the installable subset, or [Result.Incompatible] when a
+     * required ABI split is absent. The BASE entry is always first in the returned list.
+     */
+    fun reconcile(entries: List<ApkFileEntry>, target: ApkTargetConfig): Result {
+        val base = entries.firstOrNull { it.role == ApkFileRole.BASE }
+            ?: return Result.Incompatible("no base apk in container")
+
+        val abiSplits = entries.filter { it.role == ApkFileRole.CONFIG && it.abi != null }
+        val matchedAbis = abiSplits.filter { it.abi in target.supportedAbis }
+        if (abiSplits.isNotEmpty() && matchedAbis.isEmpty()) {
+            return Result.Incompatible(
+                "needs an ABI this device doesn't have (${abiSplits.mapNotNull { it.abi }.distinct().joinToString()})",
+            )
+        }
+
+        // nodpi and anydpi splits are density-INDEPENDENT: they must always be kept regardless of the
+        // target bucket (a device never self-reports "nodpi"/"anydpi" but these splits serve all
+        // densities — dropping them produces a broken install). All other density splits are kept only
+        // when they match the target bucket.
+        val densitySplits = entries
+            .filter { it.role == ApkFileRole.CONFIG && it.density != null }
+            .filter { it.density == target.densityBucket || it.density == "nodpi" || it.density == "anydpi" }
+
+        val languageSplits = entries.filter { it.role == ApkFileRole.LANGUAGE }
+        val featureSplits = entries.filter { it.role == ApkFileRole.FEATURE }
+
+        val kept = buildList {
+            add(base)
+            addAll(matchedAbis)
+            addAll(densitySplits)
+            addAll(languageSplits)
+            addAll(featureSplits)
+        }
+        return Result.Compatible(kept)
+    }
+}

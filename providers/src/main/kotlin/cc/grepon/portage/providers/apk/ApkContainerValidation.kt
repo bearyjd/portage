@@ -133,6 +133,9 @@ object ApkContainerValidation {
         if (entries.size != header.fileCount) return null
         if (entries.any { validatedEntryOrNull(it) == null }) return null
         if (entries.count { it.role == ApkFileRole.BASE } != 1) return null
+        // Reject a hostile container whose split names aren't unique: duplicate names would allow a
+        // name-keyed join in the apply path to silently drop or mis-assign splits (security M3 / D1).
+        if (entries.map { it.name }.toSet().size != entries.size) return null
         return entries
     }
 }

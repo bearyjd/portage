@@ -40,6 +40,7 @@ import cc.grepon.portage.providers.relay.RelayApp
 import cc.grepon.portage.providers.relay.RelayRestorePrompt
 import cc.grepon.portage.recv.ItemPhase
 import cc.grepon.portage.recv.ItemProgress
+import cc.grepon.portage.recv.install.ApkInstallPrompt
 import cc.grepon.portage.recv.ui.theme.LocalSpacing
 
 /**
@@ -182,14 +183,18 @@ fun DoneScreen(
     installActions: List<InstallAction> = emptyList(),
     repairEntries: List<RePairEntry> = emptyList(),
     relayPrompts: List<RelayRestorePrompt> = emptyList(),
+    apkInstallPrompts: List<ApkInstallPrompt> = emptyList(),
     onInstall: (InstallAction) -> Unit = {},
+    onInstallApk: (ApkInstallPrompt) -> Unit = {},
     onOpenBluetoothSettings: () -> Unit = {},
     onOpenRelayApp: (RelayRestorePrompt) -> Unit = {},
     backupActionLabel: String = "Open backup settings",
     onOpenBackup: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
-    if (installActions.isEmpty() && repairEntries.isEmpty() && relayPrompts.isEmpty()) {
+    if (installActions.isEmpty() && repairEntries.isEmpty() &&
+        relayPrompts.isEmpty() && apkInstallPrompts.isEmpty()
+    ) {
         Column(
             modifier = modifier
                 .fillMaxSize()
@@ -222,6 +227,31 @@ fun DoneScreen(
                     backupActionLabel = backupActionLabel,
                     onOpenBackup = onOpenBackup,
                 )
+            }
+            if (apkInstallPrompts.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(s.lg))
+                    Text(
+                        text = "INSTALL · ${apkInstallPrompts.size} ${if (apkInstallPrompts.size == 1) "APP" else "APPS"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = s.sm),
+                    )
+                    HairlineDivider()
+                }
+                items(apkInstallPrompts, key = { "apk:${it.sessionId}" }) { prompt ->
+                    ApkInstallRow(prompt = prompt, onInstallApk = onInstallApk)
+                }
+                item {
+                    Spacer(Modifier.height(s.md))
+                    Text(
+                        // GOS-batching UX open question (ADR-006 follow-ups): A16 may not batch multiple
+                        // PackageInstaller confirm intents, so this is one tap per app and the copy says so.
+                        text = "These came over with your phone. Tap to install — Android asks you to confirm each one.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             if (installActions.isNotEmpty()) {
                 item {
@@ -403,6 +433,49 @@ private fun storeName(store: InstallStore): String = when (store) {
     InstallStore.FDROID -> "F-Droid"
     InstallStore.AURORA -> "Aurora Store"
     InstallStore.UNKNOWN -> "Any store"
+}
+
+/**
+ * One carried-APK install row (ADR-006 D3/D6): the app over a "carried with your phone" caption, the
+ * whole row a tap that commits its already-sealed `PackageInstaller` session and fires the system
+ * install-confirm UI. Our own app installing our own carried bytes — NO shell uid, NO silent install
+ * (the silent path is the deferred P6 concern). The package was wire-validated before staging.
+ */
+@Composable
+private fun ApkInstallRow(prompt: ApkInstallPrompt, onInstallApk: (ApkInstallPrompt) -> Unit) {
+    val s = LocalSpacing.current
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onInstallApk(prompt) }
+                .padding(vertical = s.md),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = prompt.label,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(s.xs))
+                Text(
+                    text = "Carried with your phone",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = "INSTALL",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        HairlineDivider()
+    }
 }
 
 /**

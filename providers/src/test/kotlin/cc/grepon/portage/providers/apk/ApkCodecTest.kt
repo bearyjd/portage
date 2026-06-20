@@ -278,6 +278,21 @@ class ApkCodecTest {
     }
 
     @Test
+    fun `entries with duplicate split names are rejected`() {
+        // Isolates the uniqueness reject (ADR-006 D1 / security M3): every line here passes the
+        // size, per-entry, and single-BASE guards, so WITHOUT the duplicate-name check this container
+        // would validate. Two splits sharing a name would let the apply path's name-keyed join drop
+        // or mis-assign a split into an under-filled PackageInstaller session.
+        val header = ApkContainerHeader("com.example.app", 1L, fileCount = 3)
+        val entries = listOf(
+            ApkFileEntry("base", ApkFileRole.BASE, length = 1L),
+            ApkFileEntry("config.arm64_v8a", ApkFileRole.CONFIG, abi = "arm64_v8a", length = 1L),
+            ApkFileEntry("config.arm64_v8a", ApkFileRole.CONFIG, abi = "arm64_v8a", length = 1L),
+        )
+        assertThat(ApkContainerValidation.validatedEntriesOrNull(header, entries)).isNull()
+    }
+
+    @Test
     fun `a well-formed base-plus-split entry list validates`() {
         val header = ApkContainerHeader("com.example.app", 1L, fileCount = 2)
         val entries = listOf(

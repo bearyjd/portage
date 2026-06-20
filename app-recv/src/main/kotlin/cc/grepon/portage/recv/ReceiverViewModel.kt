@@ -24,6 +24,7 @@ import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.providers.relay.AppBackupRelayApplyProvider
 import cc.grepon.portage.providers.relay.RelayRestorePrompt
 import cc.grepon.portage.recv.checklist.ReceiverChecklist
+import cc.grepon.portage.recv.install.ApkInstallPrompt
 import cc.grepon.portage.recv.sms.SmsRoleCoordinator
 import cc.grepon.portage.recv.sms.SmsRoleStrand
 import cc.grepon.portage.recv.transfer.ItemStreamReceiver
@@ -68,7 +69,10 @@ class ReceiverViewModel(
     // actions and bonded-Bluetooth re-pair entries. Both surface their list on the Done screen;
     // neither performs a silent side effect (install/bond) — they produce user-driven checklists.
     applyRegistryFactory: ApplyRegistryFactory =
-        ApplyRegistryFactory { _, _, _ -> ApplyProviderRegistry(emptyList()) },
+        ApplyRegistryFactory { _, _, _, _ -> ApplyProviderRegistry(emptyList()) },
+    // Called on reset to abandon sealed-but-uncommitted PackageInstaller sessions from this run.
+    // No-op default; production wires PackageInstallerApkInstaller.abandonUncommittedSessions (fix 5).
+    abandonSessions: () -> Unit = {},
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ReceiverState>(ReceiverState.Idle)
@@ -91,6 +95,14 @@ class ReceiverViewModel(
     val relayPrompts: StateFlow<List<RelayRestorePrompt>> = _relayPrompts.asStateFlow()
 
     /**
+     * Tier-0 APK install prompts produced by the APK apply fallback (ADR-006 D3/D6): one row per app
+     * whose split set was reconciled, sealed into a `PackageInstaller` session, and awaits a one-tap
+     * system install-confirm on the Done screen. Empty unless an APK item routed to the Tier-0 path.
+     */
+    private val _apkInstallPrompts = MutableStateFlow<List<ApkInstallPrompt>>(emptyList())
+    val apkInstallPrompts: StateFlow<List<ApkInstallPrompt>> = _apkInstallPrompts.asStateFlow()
+
+    /**
      * Non-null ⇒ portage is still the default SMS app from an interrupted handoff (process death,
      * dismissed restore prompt). Drives an in-app one-tap restore — the persistent backstop to the
      * `finally` relinquish, which cannot survive a kill (DEVILS_ADVOCATE.md Q4 §3).
@@ -98,13 +110,29 @@ class ReceiverViewModel(
     private val _smsRoleStrand = MutableStateFlow<SmsRoleStrand?>(null)
     val smsRoleStrand: StateFlow<SmsRoleStrand?> = _smsRoleStrand.asStateFlow()
 
+    /**
+     * Called on [reset] (return-home) to abandon any sealed-but-uncommitted `PackageInstaller`
+     * sessions from this run. Injected from `:app-recv` so the ViewModel stays Android-free (fix 5).
+     * Default is a no-op; production wires [PackageInstallerApkInstaller.abandonUncommittedSessions].
+     */
+    private val onAbandonSessions: () -> Unit = abandonSessions
+
     private val applyRegistry: ApplyProviderRegistry =
         applyRegistryFactory.create(
-            onInstallActions = { actions -> _installActions.value = actions },
+            // MERGE, not replace: both the App-Inventory apply (the full reinstall list) and the APK
+            // apply's "incompatible on this device — get it from the store" fallback feed this sink, and
+            // items apply sequentially in arbitrary order. Dedup by package so a reinstall row and an
+            // incompatible-APK row for the same app never key the LazyColumn twice.
+            onInstallActions = { actions ->
+                _installActions.value = (_installActions.value + actions).distinctBy { it.packageName }
+            },
             onRepairEntries = { entries -> _repairEntries.value = entries },
             // Relay items arrive one per apply call; append each prompt so multiple relayed backups
             // (e.g. Signal AND Aegis in one session) all surface on the Done screen.
             onRelayPrompt = { prompt -> _relayPrompts.value = _relayPrompts.value + prompt },
+            // APK items arrive one per apply call; append each Tier-0 install prompt so multiple apps
+            // in one session all surface their one-tap install row on the Done screen.
+            onApkInstallPrompt = { prompt -> _apkInstallPrompts.value = _apkInstallPrompts.value + prompt },
         )
 
     /**
@@ -220,6 +248,7 @@ class ReceiverViewModel(
                     installActions = _installActions.value,
                     repairEntries = _repairEntries.value,
                     relayPrompts = _relayPrompts.value,
+                    apkInstallPrompts = _apkInstallPrompts.value,
                 )
                 channel?.close()
                 channel = null
@@ -312,9 +341,15 @@ class ReceiverViewModel(
     fun reset() {
         channel?.close()
         channel = null
+        // Abandon any sealed-but-uncommitted PackageInstaller sessions from this run before clearing
+        // the prompt list — a user who never tapped install and hits Home must not leave APK bytes
+        // lingering in uncommitted sessions (fix 5). Best-effort: abandonUncommittedSessions is
+        // wrapped in runCatching inside the adapter so this can never throw.
+        onAbandonSessions()
         _installActions.value = emptyList()
         _repairEntries.value = emptyList()
         _relayPrompts.value = emptyList()
+        _apkInstallPrompts.value = emptyList()
         _state.value = ReceiverState.Idle
         // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
         refreshSmsRoleStrand()
@@ -366,6 +401,7 @@ fun interface ApplyRegistryFactory {
         onInstallActions: (List<InstallAction>) -> Unit,
         onRepairEntries: (List<RePairEntry>) -> Unit,
         onRelayPrompt: (RelayRestorePrompt) -> Unit,
+        onApkInstallPrompt: (ApkInstallPrompt) -> Unit,
     ): ApplyProviderRegistry
 }
 
