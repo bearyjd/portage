@@ -15,6 +15,7 @@ import cc.grepon.portage.model.ItemResult
 import cc.grepon.portage.model.ItemStatus
 import cc.grepon.portage.model.ProtocolMessage
 import cc.grepon.portage.providers.ApplyOutcome
+import cc.grepon.portage.providers.apk.ApkContainerValidation
 import cc.grepon.portage.transport.SecureChannel
 import cc.grepon.portage.transport.TransportException
 import kotlinx.coroutines.CancellationException
@@ -45,6 +46,9 @@ class ItemStreamReceiver(
     // ALONE gets a raised, still-finite ceiling here. Every kind NOT in this map keeps [maxItemBytes]
     // — the raised relay cap MUST NOT leak into the Tier-0/PII item paths (PRP-06 §5).
     private val maxBytesByKind: Map<ItemKind, Long> = emptyMap(),
+    // Usable-space probe for the staging volume, seam-injected so tests can simulate a near-full disk
+    // deterministically (ADR-006 AC-16). Production reads the real free space; the gate is APK-only.
+    private val freeSpace: (File) -> Long = { it.usableSpace },
 ) {
 
     /** The effective per-item byte cap for [kind]: its override if any, else the default. */
@@ -70,6 +74,10 @@ class ItemStreamReceiver(
         // closes the one otherwise-unbounded loop (security review 2026-06-11, MEDIUM).
         val maxItems = expected.size + UNREQUESTED_ITEM_SLACK
         var begun = 0
+        // Running sum of ACCEPTED APK-item declared sizes, bounded by MAX_APK_TOTAL_BYTES (ADR-006
+        // D4 / AC-17). APK-only: no other kind is aggregate-bounded. An item is added only after it
+        // clears every up-front gate, so a rejected item never consumes budget.
+        val apkBudget = ApkAggregateBudget()
         try {
             stream@ while (true) {
                 val message = receiveSkippingPing(channel)
@@ -79,7 +87,7 @@ class ItemStreamReceiver(
                         if (++begun > maxItems) {
                             throw TransportException("sender exceeded the item-count cap")
                         }
-                        val result = receiveOneItem(channel, message, expected[message.itemId], apply, onEvent)
+                        val result = receiveOneItem(channel, message, expected[message.itemId], apkBudget, apply, onEvent)
                         results[message.itemId] = result
                         onEvent(Event.ItemFinished(result))
                     }
@@ -111,6 +119,7 @@ class ItemStreamReceiver(
         channel: SecureChannel,
         begin: ProtocolMessage.ItemBegin,
         meta: ItemMeta?,
+        apkBudget: ApkAggregateBudget,
         apply: suspend (ItemMeta, InputStream) -> ApplyOutcome,
         onEvent: (Event) -> Unit,
     ): ItemResult {
@@ -119,9 +128,18 @@ class ItemStreamReceiver(
         // The cap is resolved from the manifest-agreed kind (begin.kind is cross-checked against
         // meta.kind first, so a relay raise can't be claimed by mislabeling a PII item).
         val itemCap = capFor(begin.kind)
+        val isApk = begin.kind == ItemKind.APK
 
-        // Refuse BEFORE staging a byte; the stream is still drained to stay in sync.
+        // Refuse BEFORE staging a byte; the stream is still drained to stay in sync. The two
+        // APK-only gates (aggregate budget, free space) run LAST, after the manifest/kind/size/
+        // per-item-cap agreement, so they only ever judge an otherwise-valid APK item — and never
+        // touch any non-APK kind (ADR-006 AC-16/AC-17).
         var failure: ItemResult? = when {
+            // Floor: a negative declared size clears every numeric guard (cap, aggregate, free-space)
+            // and would poison the APK aggregate budget. Reject as OVERSIZE before any other check
+            // so downstream gates always operate on non-negative sizes (security review 2026-06-20).
+            begin.size < 0L ->
+                ItemResult(begin.itemId, ItemStatus.OVERSIZE, "negative declared size")
             meta == null ->
                 ItemResult(begin.itemId, ItemStatus.SKIPPED, "not requested")
             begin.kind != meta.kind ->
@@ -130,8 +148,22 @@ class ItemStreamReceiver(
                 ItemResult(begin.itemId, ItemStatus.OVERSIZE, "size disagrees with the manifest")
             begin.size > itemCap ->
                 ItemResult(begin.itemId, ItemStatus.OVERSIZE, "exceeds the receiver's per-item cap")
+            // AC-17: this APK item's declared size would push the running APK total past the
+            // aggregate ceiling. OVERSIZE — it is a size-bound refusal, just at the batch scope.
+            isApk && apkBudget.wouldExceed(begin.size) ->
+                ItemResult(begin.itemId, ItemStatus.OVERSIZE, "exceeds the aggregate APK byte budget")
+            // AC-16: fail CLOSED if the staging volume can't hold the double-stage (cacheDir item
+            // file -> split files -> pm session). Not a size-cap breach, so WRITE_ERROR, the kind's
+            // existing local-staging failure status. Runs AFTER begin.size == meta.size agreement
+            // so hasRoomToStage consults the validated size — the ordering is load-bearing.
+            isApk && !hasRoomToStage(begin.size) ->
+                ItemResult(begin.itemId, ItemStatus.WRITE_ERROR, "not enough free space to stage this APK")
             else -> null
         }
+
+        // The item cleared every up-front gate — commit its size to the APK aggregate budget so the
+        // NEXT APK item is judged against the running total (only accepted items consume budget).
+        if (failure == null && isApk) apkBudget.add(begin.size)
 
         // Generated name — display fields are NEVER paths (THREAT_MODEL, path traversal).
         val file = File(stagingDir, "stage-${begin.itemId}.bin")
@@ -220,10 +252,51 @@ class ItemStreamReceiver(
         }
     }
 
+    /**
+     * AC-16 free-space gate: the staging volume must hold the double-stage — the cacheDir item file
+     * PLUS the split files the apply session re-materializes from it — so we require usable space of
+     * at least `2 * size`. `floor(usable / 2) >= size` is equivalent to `usable >= 2 * size` for
+     * even usable, and slightly stricter for odd usable — it never admits when `usable < 2 * size`.
+     * Reads the seam-injected [freeSpace] so tests can simulate a near-full disk deterministically.
+     */
+    private fun hasRoomToStage(size: Long): Boolean {
+        val usable = freeSpace(stagingDir)
+        return usable / 2 >= size
+    }
+
     private suspend fun receiveSkippingPing(channel: SecureChannel): ProtocolMessage? {
         while (true) {
             val message = channel.receive() ?: return null
             if (message !is ProtocolMessage.Ping) return message
+        }
+    }
+
+    /**
+     * Running APK-only aggregate budget (ADR-006 AC-17). Sums the declared sizes of ACCEPTED APK
+     * items in one batch and refuses the item that would carry the total past
+     * [ApkContainerValidation.MAX_APK_TOTAL_BYTES]. Single-coroutine by construction — items are
+     * processed serially — so plain mutation is safe. APK-scoped: the caller only consults this for
+     * [ItemKind.APK], leaving every other kind unbounded in aggregate (as before).
+     */
+    private class ApkAggregateBudget {
+        private var acceptedBytes = 0L
+
+        /**
+         * True if adding [size] to the running total would breach the aggregate ceiling.
+         * The negative-size check makes the budget poison-proof regardless of gate ordering:
+         * a negative [size] always returns true (rejected), never underflows the subtraction.
+         */
+        fun wouldExceed(size: Long): Boolean =
+            size < 0L || size > ApkContainerValidation.MAX_APK_TOTAL_BYTES - acceptedBytes
+
+        /**
+         * Commit an ACCEPTED APK item's declared size to the running total.
+         * [size] must be non-negative — the caller's negative-floor gate guarantees this, and
+         * [require] enforces it defensively so a future gate reorder cannot silently corrupt state.
+         */
+        fun add(size: Long) {
+            require(size >= 0L) { "APK budget add called with negative size: $size" }
+            acceptedBytes += size
         }
     }
 

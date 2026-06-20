@@ -18,6 +18,7 @@ import cc.grepon.portage.model.ItemStatus
 import cc.grepon.portage.model.ProtocolMessage
 import cc.grepon.portage.providers.ApplyOutcome
 import cc.grepon.portage.providers.ApplyProviderRegistry
+import cc.grepon.portage.providers.apk.ApkContainerValidation
 import cc.grepon.portage.providers.bluetooth.RePairEntry
 import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.providers.relay.AppBackupRelayApplyProvider
@@ -187,10 +188,15 @@ class ReceiverViewModel(
                         ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
                         ItemStreamReceiver(
                             stagingDir = stagingDir,
-                            // Raise the per-item cap FOR THE RELAY KIND ONLY (PRP-06 §5): app backups
-                            // (Signal/Aegis) routinely exceed the 64 MiB Tier-0 default. Every other
-                            // kind keeps the default — the raise never leaks into the PII item paths.
-                            maxBytesByKind = mapOf(ItemKind.APP_BACKUP_RELAY to MAX_RELAY_ITEM_BYTES),
+                            // Raise the per-item cap for the two large-payload kinds, each to its OWN
+                            // documented ceiling: the APP_BACKUP_RELAY opaque blob (PRP-06 §5) and the
+                            // APK container item (ADR-006 D4, 1 GiB via ApkContainerValidation). Every
+                            // other kind keeps the 64 MiB Tier-0 default — the raise never leaks into
+                            // the PII/Tier-0 item paths.
+                            maxBytesByKind = mapOf(
+                                ItemKind.APP_BACKUP_RELAY to MAX_RELAY_ITEM_BYTES,
+                                ItemKind.APK to ApkContainerValidation.MAX_APK_ITEM_BYTES,
+                            ),
                         ).run(
                             channel = ch,
                             expected = selected.associateBy { it.itemId },
