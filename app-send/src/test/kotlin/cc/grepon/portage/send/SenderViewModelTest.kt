@@ -15,6 +15,9 @@ import cc.grepon.portage.model.ItemStatus
 import cc.grepon.portage.model.PairingPayload
 import cc.grepon.portage.model.ProtocolMessage
 import cc.grepon.portage.providers.ExportProvider
+import cc.grepon.portage.providers.apk.InstalledApkFile
+import cc.grepon.portage.providers.apk.InstalledApp
+import cc.grepon.portage.providers.apk.InstalledAppSource
 import cc.grepon.portage.providers.inventory.AppRecord
 import cc.grepon.portage.providers.inventory.InventorySource
 import cc.grepon.portage.providers.relay.RelayApp
@@ -95,6 +98,22 @@ private class FakeInventorySource(private val packages: Set<String>) : Inventory
     override fun installedPackageNames(): Set<String> = packages
 }
 
+/** Fake installed-app seam reporting a fixed app list for the "apps to carry" selection (ADR-006 1b). */
+private class FakeInstalledAppSource(private val apps: List<InstalledApp>) : InstalledAppSource {
+    override fun installedUserApps(): List<InstalledApp> = apps
+}
+
+/** A single-base on-disk app fixture: a real base.apk so the default opener can read it at staging. */
+private fun onDiskApp(dir: java.io.File, packageName: String, label: String, size: Int = 16): InstalledApp {
+    val base = java.io.File(dir, "$packageName-base.apk").apply { writeBytes(ByteArray(size) { it.toByte() }) }
+    return InstalledApp(
+        packageName = packageName,
+        label = label,
+        versionCode = 1L,
+        files = listOf(InstalledApkFile("base.apk", base.absolutePath, base.length())),
+    )
+}
+
 private class FakeFactory(
     private val channel: SecureChannel? = null,
     private val acceptError: Throwable? = null,
@@ -139,6 +158,7 @@ class SenderViewModelTest {
         providers: List<ExportProvider> = listOf(BytesExport(ItemKind.CONTACTS_VCF, "vcard".toByteArray())),
         hints: List<String> = listOf("192.168.1.2"),
         inventorySource: InventorySource? = null,
+        installedAppSource: InstalledAppSource? = null,
     ) = SenderViewModel(
         providers = providers,
         stagingDir = tmp.root,
@@ -150,6 +170,7 @@ class SenderViewModelTest {
         portFinder = { 40123 },
         nowEpochSeconds = { 1_000 },
         inventorySource = inventorySource,
+        installedAppSource = installedAppSource,
         // Resolve relay picks on the SAME test dispatcher so advanceUntilIdle() drives the off-main
         // resolution deterministically (in production this is Dispatchers.IO, off the UI thread).
         relayResolveDispatcher = dispatcher,
@@ -489,5 +510,131 @@ class SenderViewModelTest {
         advanceUntilIdle()
 
         assertThat(vm.relayPicks.value).isEmpty()
+    }
+
+    // ---- apps to carry (ADR-006 Phase 1b): selection + sender-side APK provider append ----
+
+    @Test
+    fun `available apps populate from the installed-app seam, none selected by default`() = runTest(dispatcher) {
+        val vm = viewModel(
+            FakeFactory(happyChannel()),
+            installedAppSource = FakeInstalledAppSource(
+                listOf(
+                    onDiskApp(tmp.root, "com.a.app", "Alpha"),
+                    onDiskApp(tmp.root, "com.b.app", "Bravo"),
+                ),
+            ),
+        )
+        assertThat(vm.availableApps.value.map { it.packageName }).containsExactly("com.a.app", "com.b.app")
+        assertThat(vm.selectedAppPackages.value).isEmpty()
+    }
+
+    @Test
+    fun `available apps are empty when no installed-app seam is wired`() = runTest(dispatcher) {
+        val vm = viewModel(FakeFactory(happyChannel()))
+        assertThat(vm.availableApps.value).isEmpty()
+    }
+
+    @Test
+    fun `toggleApp adds then removes a package from the selection`() = runTest(dispatcher) {
+        val vm = viewModel(
+            FakeFactory(happyChannel()),
+            installedAppSource = FakeInstalledAppSource(listOf(onDiskApp(tmp.root, "com.a.app", "Alpha"))),
+        )
+
+        vm.toggleApp("com.a.app")
+        assertThat(vm.selectedAppPackages.value).containsExactly("com.a.app")
+
+        vm.toggleApp("com.a.app")
+        assertThat(vm.selectedAppPackages.value).isEmpty()
+    }
+
+    @Test
+    fun `selectAllApps then clearAppSelection flip the whole set`() = runTest(dispatcher) {
+        val vm = viewModel(
+            FakeFactory(happyChannel()),
+            installedAppSource = FakeInstalledAppSource(
+                listOf(onDiskApp(tmp.root, "com.a.app", "Alpha"), onDiskApp(tmp.root, "com.b.app", "Bravo")),
+            ),
+        )
+
+        vm.selectAllApps()
+        assertThat(vm.selectedAppPackages.value).containsExactly("com.a.app", "com.b.app")
+
+        vm.clearAppSelection()
+        assertThat(vm.selectedAppPackages.value).isEmpty()
+    }
+
+    @Test
+    fun `onStartTransfer builds APK items only for selected apps`() = runTest(dispatcher) {
+        val channel = happyChannel()
+        val vm = viewModel(
+            FakeFactory(channel),
+            installedAppSource = FakeInstalledAppSource(
+                listOf(onDiskApp(tmp.root, "com.a.app", "Alpha"), onDiskApp(tmp.root, "com.b.app", "Bravo")),
+            ),
+        )
+        // Select ONLY Alpha — Bravo must NOT be staged/manifested.
+        vm.toggleApp("com.a.app")
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        val manifest = channel.sent.filterIsInstance<ProtocolMessage.Manifest>().single().manifest
+        // The base contacts item plus exactly ONE APK item (Alpha), not two.
+        assertThat(manifest.items.map { it.kind })
+            .containsExactly(ItemKind.CONTACTS_VCF, ItemKind.APK)
+        val apkItem = manifest.items.single { it.kind == ItemKind.APK }
+        assertThat(apkItem.displayName).isEqualTo("Alpha")
+    }
+
+    @Test
+    fun `no selected apps means no APK items in the manifest`() = runTest(dispatcher) {
+        val channel = happyChannel()
+        val vm = viewModel(
+            FakeFactory(channel),
+            installedAppSource = FakeInstalledAppSource(listOf(onDiskApp(tmp.root, "com.a.app", "Alpha"))),
+        )
+        // Default: nothing selected.
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        val manifest = channel.sent.filterIsInstance<ProtocolMessage.Manifest>().single().manifest
+        assertThat(manifest.items.map { it.kind }).containsExactly(ItemKind.CONTACTS_VCF)
+    }
+
+    @Test
+    fun `two selected apps produce two distinct APK items`() = runTest(dispatcher) {
+        val channel = happyChannel()
+        val vm = viewModel(
+            FakeFactory(channel),
+            installedAppSource = FakeInstalledAppSource(
+                listOf(onDiskApp(tmp.root, "com.a.app", "Alpha"), onDiskApp(tmp.root, "com.b.app", "Bravo")),
+            ),
+        )
+        vm.selectAllApps()
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        val manifest = channel.sent.filterIsInstance<ProtocolMessage.Manifest>().single().manifest
+        val apkItems = manifest.items.filter { it.kind == ItemKind.APK }
+        assertThat(apkItems).hasSize(2)
+        assertThat(apkItems.map { it.itemId }.toSet()).hasSize(2)
+    }
+
+    @Test
+    fun `reset clears the app selection`() = runTest(dispatcher) {
+        val vm = viewModel(
+            FakeFactory(happyChannel()),
+            installedAppSource = FakeInstalledAppSource(listOf(onDiskApp(tmp.root, "com.a.app", "Alpha"))),
+        )
+        vm.toggleApp("com.a.app")
+        assertThat(vm.selectedAppPackages.value).isNotEmpty()
+
+        vm.reset()
+
+        assertThat(vm.selectedAppPackages.value).isEmpty()
     }
 }

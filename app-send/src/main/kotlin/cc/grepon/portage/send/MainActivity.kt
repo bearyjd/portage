@@ -42,6 +42,7 @@ import cc.grepon.portage.providers.sound.SoundSelectionExportProvider
 import cc.grepon.portage.providers.wallpaper.AndroidWallpaperStore
 import cc.grepon.portage.providers.wallpaper.WallpaperExportProvider
 import cc.grepon.portage.providers.wallpaper.WallpaperSurface
+import cc.grepon.portage.send.apk.AndroidInstalledAppSource
 import cc.grepon.portage.send.ui.DeviceSummary
 import cc.grepon.portage.send.ui.SenderApp
 import cc.grepon.portage.send.ui.formatBytes
@@ -177,6 +178,10 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
             // apps (Signal/Molly/Aegis) are installed so the Home screen can offer to ferry their
             // user-exported backups (PRP-06). No new permission: it reuses QUERY_ALL_PACKAGES.
             inventorySource = AndroidInventorySource(context.packageManager),
+            // Enumerates installed user apps + their split-APK files so the Home screen lets the user
+            // SELECT which apps to carry (ADR-006 Phase 1b). READ-ONLY PackageManager + file reads —
+            // no privilege, no ADB bridge, reuses the same install-time QUERY_ALL_PACKAGES.
+            installedAppSource = AndroidInstalledAppSource(context.packageManager),
         ) as T
     }
 }
