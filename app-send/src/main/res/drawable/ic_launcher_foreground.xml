@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  portage-send — adaptive icon foreground (v3)
+  Hero: single bold side-on canoe. Amber #E9A23B. Drop arc + shore dots.
+
+  Canoe geometry (108×108 viewport, safe zone 18–90, hull center ~54,52):
+    Side profile — long axis horizontal, upturned bow + stern (classic crescent).
+    Hull spans x=18 to x=90 (72px), tips upcurved to y≈38.
+    OUTER HULL path (clockwise, bottom then top):
+      Stern tip (18,42) → bottom-left arc → nadir (54,72) → bottom-right arc → bow tip (90,42)
+      → top-right sheer → sheer peak (54,32) → top-left sheer → back to stern tip.
+    INNER CAVITY (open vessel): inset ~7px from outer, same crescent shape, filled
+      background color so it reads as the hollow interior.
+    2 THWARTS: vertical strokes spanning the cavity at x≈38 and x≈70.
+    KEEL: thin arc along outer bottom for depth.
+    WATERLINE: 1 subtle horizontal stroke below hull.
+
+  Departing (send): group rotated -8° about (54,52).
+    2 short motion ticks trailing the stern, drawn in screen space outside the rotation.
+
+  Copyright (C) 2026 Grepon Labs LLC. Licensed under AGPL-3.0.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Rotated group: entire canoe tilted -8° bow-up toward right -->
+    <group
+        android:pivotX="54"
+        android:pivotY="52"
+        android:rotation="-8">
+
+        <!--
+          OUTER HULL — bold amber fill.
+          Stern tip (18,42), bow tip (90,42), bottom nadir (54,72), sheer peak (54,32).
+          Cubic beziers give smooth upswept ends.
+        -->
+        <path
+            android:pathData="M18,42
+                C20,58 38,74 54,74
+                C70,74 88,58 90,42
+                C86,28 68,30 54,30
+                C40,30 22,28 18,42 Z"
+            android:fillColor="#E9A23B" />
+
+        <!--
+          INNER CAVITY — punched out to reveal the open hollow interior.
+          Inset ~7px. Filled with the water background deep teal.
+        -->
+        <path
+            android:pathData="M25,43
+                C27,57 41,67 54,67
+                C67,67 81,57 83,43
+                C80,32 66,34 54,34
+                C42,34 28,32 25,43 Z"
+            android:fillColor="#0E3A45" />
+
+        <!--
+          THWART 1 — forward cross-brace at x≈38, spanning the cavity.
+          Slight curve (bows inward under load). Amber so it reads as hull material.
+        -->
+        <path
+            android:pathData="M37,39 Q38,52 39,64"
+            android:strokeColor="#E9A23B"
+            android:strokeWidth="3.2"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000" />
+
+        <!--
+          THWART 2 — aft cross-brace at x≈70.
+        -->
+        <path
+            android:pathData="M69,39 Q70,52 71,64"
+            android:strokeColor="#E9A23B"
+            android:strokeWidth="3.2"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000" />
+
+        <!--
+          KEEL — subtle outer-bottom arc reinforcing the hull depth.
+        -->
+        <path
+            android:pathData="M22,52 Q54,76 86,52"
+            android:strokeColor="#C47B1A"
+            android:strokeWidth="1.5"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000"
+            android:strokeAlpha="0.7" />
+
+        <!--
+          WATERLINE — one quiet aqua stroke sitting beneath the hull.
+        -->
+        <path
+            android:pathData="M14,78 Q54,83 94,78"
+            android:strokeColor="#5FD0C6"
+            android:strokeWidth="2.2"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000"
+            android:strokeAlpha="0.50" />
+
+    </group>
+
+    <!--
+      MOTION TICKS — 2 short strokes in screen space, trailing the stern.
+      After -8° tilt, the stern end is roughly at screen (21,48).
+      Ticks point away from the hull, lower-left direction.
+    -->
+    <path
+        android:pathData="M13,56 L20,50"
+        android:strokeColor="#E9A23B"
+        android:strokeWidth="3.0"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:strokeAlpha="0.80" />
+    <path
+        android:pathData="M10,64 L17,58"
+        android:strokeColor="#E9A23B"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:strokeAlpha="0.42" />
+
+</vector>

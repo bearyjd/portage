@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  portage — master logo (square, 512×512) v3
+  Hero: single bold side-on canoe, aqua #5FD0C6. No arc, no shore dots.
+
+  Canoe geometry (scaled ×4.74 from 108px icon, centered at 256,247):
+    Outer hull: stern (86,199) → nadir (256,351) → bow (426,199) → sheer peak (256,143)
+    Inner cavity: inset ~33px
+    2 thwarts at x≈180 and x≈332
+    Keel arc along outer bottom
+    1 waterline stroke beneath hull
+
+  Background: water gradient #0E3A45→#0B2E38, rounded-rect.
+  Copyright (C) 2026 Grepon Labs LLC. Licensed under AGPL-3.0.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0E3A45"/>
+      <stop offset="100%" stop-color="#0B2E38"/>
+    </linearGradient>
+    <radialGradient id="vignette" cx="50%" cy="50%" r="60%">
+      <stop offset="55%" stop-color="#0E3A45" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#091F28" stop-opacity="0.5"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" ry="96" fill="url(#water)"/>
+  <rect width="512" height="512" rx="96" ry="96" fill="url(#vignette)"/>
+
+  <!--
+    CANOE — side profile, level, centered at (256,247).
+    Outer hull spans x=86–426 (340px wide), tips upturned to y≈199, nadir y=351.
+    Sheer peak at (256,143).
+  -->
+
+  <!-- Outer hull — bold aqua -->
+  <path
+    d="M86,199
+       C94,275 180,353 256,353
+       C332,353 418,275 426,199
+       C408,133 322,143 256,143
+       C190,143 104,133 86,199 Z"
+    fill="#5FD0C6"/>
+
+  <!-- Inner cavity — background teal, creates open vessel illusion -->
+  <path
+    d="M119,201
+       C128,271 195,320 256,320
+       C317,320 384,271 393,201
+       C378,152 314,161 256,161
+       C198,161 134,152 119,201 Z"
+    fill="#0C3340"/>
+
+  <!-- Thwart 1 — forward cross-brace at x≈180 -->
+  <path
+    d="M174,185 Q180,247 186,307"
+    fill="none"
+    stroke="#5FD0C6"
+    stroke-width="15"
+    stroke-linecap="round"/>
+
+  <!-- Thwart 2 — aft cross-brace at x≈332 -->
+  <path
+    d="M326,185 Q332,247 338,307"
+    fill="none"
+    stroke="#5FD0C6"
+    stroke-width="15"
+    stroke-linecap="round"/>
+
+  <!-- Keel — thin arc along outer hull bottom -->
+  <path
+    d="M104,247 Q256,362 408,247"
+    fill="none"
+    stroke="#2A9990"
+    stroke-width="7"
+    stroke-linecap="round"
+    opacity="0.7"/>
+
+  <!-- Waterline — quiet stroke beneath hull -->
+  <path
+    d="M66,372 Q256,396 446,372"
+    fill="none"
+    stroke="#5FD0C6"
+    stroke-width="10"
+    stroke-linecap="round"
+    opacity="0.50"/>
+</svg>

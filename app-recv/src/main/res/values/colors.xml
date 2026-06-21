@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  portage-recv — brand color tokens
+  Copyright (C) 2026 Grepon Labs LLC. Licensed under AGPL-3.0.
+-->
+<resources>
+    <!-- Water background gradient — top to bottom -->
+    <color name="portage_water_deep">#0E3A45</color>
+    <color name="portage_water_deep2">#0B2E38</color>
+
+    <!-- Shared palette -->
+    <color name="portage_aqua">#5FD0C6</color>
+    <color name="portage_sand">#E9A23B</color>
+
+    <!-- Role accent: portage-recv = aqua -->
+    <color name="portage_accent">#5FD0C6</color>
+</resources>
