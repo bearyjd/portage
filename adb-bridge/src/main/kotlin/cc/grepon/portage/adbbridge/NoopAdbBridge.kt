@@ -32,7 +32,7 @@ object NoopAdbBridge : AdbBridge {
     override suspend fun selfGrant(permission: String): AdbBridge.GrantResult =
         AdbBridge.GrantResult.BRIDGE_UNAVAILABLE
 
-    override suspend fun installApk(stagedApkPath: String): AdbBridge.InstallResult =
+    override suspend fun installApk(staged: List<AdbBridge.StagedApk>): AdbBridge.InstallResult =
         AdbBridge.InstallResult.BridgeUnavailable
 
     override suspend fun probeCapabilities(): Set<AdbBridge.PrivilegedCapability> = emptySet()

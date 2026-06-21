@@ -64,8 +64,13 @@ object ApkContainerValidation {
      * excludes '/', '\', any other path separator, control characters, whitespace, and shell
      * metacharacters, so a validated split name can never traverse, escape, or inject. Note `".."` and
      * `"."` are additionally rejected explicitly below as defence in depth.
+     * Parity: `:adb-bridge` is intentionally dependency-isolated from `:providers`, so this regex is
+     * REPLICATED in [cc.grepon.portage.adbbridge.LocalAdbBridge], not shared. There is no cross-module
+     * dep; each module's `SPLIT_NAME pattern is pinned` test hardcodes the canonical string, so a
+     * divergent edit fails CI. Keep both copies and both pins in lockstep. `internal` so the same-module
+     * pin test can read the pattern.
      */
-    private val SPLIT_NAME = Regex("""[A-Za-z0-9][A-Za-z0-9._-]*""")
+    internal val SPLIT_NAME = Regex("""[A-Za-z0-9][A-Za-z0-9._-]*""")
 
     /**
      * Validate [ApkFileEntry.name] BEFORE it is ever used as a staged filename (ADR-006 AC-6b).

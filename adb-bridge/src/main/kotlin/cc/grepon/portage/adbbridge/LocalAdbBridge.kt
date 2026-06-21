@@ -154,11 +154,33 @@ class LocalAdbBridge internal constructor(
     }
 
     /**
-     * Batched silent install (ADR-001 V6): create a session, stream the staged APK in, commit.
-     * Degrades to [AdbBridge.InstallResult.Failed] on any step — the Tier-0 per-tap installer
-     * remains the fallback.
+     * Batched silent install of a split app (ADR-001 V6, ADR-006): open ONE session, write every
+     * staged file into it under its own name, then commit once. Degrades to
+     * [AdbBridge.InstallResult.Failed] on any step — the Tier-0 per-tap installer remains the
+     * fallback.
+     *
+     * AC-6b defence in depth: every [AdbBridge.StagedApk.name] is re-validated here — the bridge is
+     * the privilege boundary and the name is wire-derived, so it is checked again right before it
+     * becomes a `pm install-write` argument even though the caller already validated it. A bad name
+     * abandons the session and fails the install; it is never written. The bridge also enforces the
+     * one-base structural invariant (exactly one [BASE_NAME] file) BEFORE opening a session, so a
+     * zero-base or multi-base set is refused cheaply rather than relying on `pm install-commit` to
+     * reject it. The file PATHS are caller-generated (not sender-controlled) but still flow through
+     * [ShellArgs.command].
+     *
+     * The staging mechanism is path-based (files already laid down by the caller). The eventual
+     * switch to streaming over stdin (`pm install-write -S <size> .. -`) and the
+     * staging-location security review are tracked in docs/prp/P6-apk-hardware-runbook.md (the
+     * P4/P6 staging-location PR routes through security-reviewer; the stdin path is a protocol
+     * change needing `-S`, not a drop-in).
      */
-    override suspend fun installApk(stagedApkPath: String): AdbBridge.InstallResult {
+    override suspend fun installApk(staged: List<AdbBridge.StagedApk>): AdbBridge.InstallResult {
+        if (staged.isEmpty()) return AdbBridge.InstallResult.Failed("no staged apk files")
+        // Structural invariant at the privilege boundary: exactly one base before any session opens.
+        if (staged.count { it.name == BASE_NAME } != 1) {
+            return AdbBridge.InstallResult.Failed("install set must contain exactly one base")
+        }
+
         val create = ShellArgs.command("pm", "install-create", "--user", "0")
             ?: return AdbBridge.InstallResult.Failed("bad arguments")
         val created = shell(create)
@@ -168,12 +190,34 @@ class LocalAdbBridge internal constructor(
         val sessionId = SESSION_ID.find(created.stdout)?.groupValues?.get(1)
             ?: return AdbBridge.InstallResult.Failed("no install session: ${created.stdout.trim().take(120)}")
 
-        val write = ShellArgs.command("pm", "install-write", sessionId, "base.apk", stagedApkPath)
-            ?: return AdbBridge.InstallResult.Failed("bad apk path")
-        val written = shell(write)
-        if (written !is AdbBridge.ShellResult.Completed || !written.ok) {
-            shellQuietly("pm", "install-abandon", sessionId)
-            return AdbBridge.InstallResult.Failed("install-write failed")
+        for (file in staged) {
+            // Re-validate the name at the boundary; a bad one never reaches install-write.
+            val name = validatedSplitNameOrNull(file.name)
+            if (name == null) {
+                shellQuietly("pm", "install-abandon", sessionId)
+                return AdbBridge.InstallResult.Failed("rejected split name")
+            }
+            val write = ShellArgs.command("pm", "install-write", sessionId, name, file.path)
+            if (write == null) {
+                shellQuietly("pm", "install-abandon", sessionId)
+                return AdbBridge.InstallResult.Failed("bad apk path")
+            }
+            val written = shell(write)
+            // Transport failures (NotConnected / TransportFailure) classify as BridgeUnavailable,
+            // consistent with install-create and install-commit — Phase 4's apply provider uses this
+            // distinction to fall back to Tier-0 on a dead bridge vs. a real install rejection.
+            // A non-zero exit (command ran, returned non-zero) stays Failed.
+            when {
+                written is AdbBridge.ShellResult.Completed && written.ok -> Unit // success, continue
+                written is AdbBridge.ShellResult.Completed -> {
+                    shellQuietly("pm", "install-abandon", sessionId)
+                    return AdbBridge.InstallResult.Failed("install-write failed")
+                }
+                else -> {
+                    shellQuietly("pm", "install-abandon", sessionId)
+                    return AdbBridge.InstallResult.BridgeUnavailable
+                }
+            }
         }
 
         val commit = ShellArgs.command("pm", "install-commit", sessionId)
@@ -316,6 +360,22 @@ class LocalAdbBridge internal constructor(
         }
     }
 
+    /**
+     * AC-6b name guard at the privilege boundary (defence in depth — the name is wire-derived and
+     * attacker-influenced). Replicated locally so :adb-bridge stays free of a :providers dependency;
+     * it must stay equivalent to providers' `ApkContainerValidation.validatedSplitNameOrNull`. Accepts
+     * exactly [BASE_NAME] or a strict allowlist name (alphanumeric first char, then only
+     * `[A-Za-z0-9._-]`); the allowlist structurally excludes '/', '\\', '..', whitespace, control
+     * characters, and shell metacharacters. Returns the trusted name, or null to REJECT.
+     */
+    private fun validatedSplitNameOrNull(name: String): String? {
+        if (name == BASE_NAME) return name
+        if (name.isEmpty()) return null
+        if (name == "." || name == "..") return null
+        if (!SPLIT_NAME.matches(name)) return null
+        return name
+    }
+
     private suspend fun shellQuietly(vararg argv: String) {
         val command = ShellArgs.command(*argv) ?: return
         try {
@@ -345,6 +405,24 @@ class LocalAdbBridge internal constructor(
         const val KEY_REFUSED = "adbd refused our key — re-pair required"
         const val CONNECT_FAILED = "debug connection failed — toggle Wireless debugging and retry"
 
+        /**
+         * Parses the session id from `pm install-create`, assumed to emit exactly one bracketed id
+         * on a single line (first match wins) — the same output-format-drift exposure the commit
+         * verdict deliberately avoids, accepted here under GOS-stable targeting.
+         */
         val SESSION_ID = Regex("\\[(\\d+)]")
+
+        /** The wire name a base APK must carry, exactly (ADR-006); anything else is a split name. */
+        const val BASE_NAME = "base"
+
+        /**
+         * The strict split-name allowlist (ADR-006 AC-6b): alphanumeric first char, then only
+         * `[A-Za-z0-9._-]`. Parity: `:adb-bridge` is intentionally dependency-isolated from
+         * `:providers`, so this regex is REPLICATED from `ApkContainerValidation.SPLIT_NAME`, not
+         * shared. There is no cross-module dep; each module's `SPLIT_NAME pattern is pinned` test
+         * hardcodes the canonical string, so a divergent edit fails CI. Keep both copies and both
+         * pins in lockstep.
+         */
+        val SPLIT_NAME = Regex("[A-Za-z0-9][A-Za-z0-9._-]*")
     }
 }

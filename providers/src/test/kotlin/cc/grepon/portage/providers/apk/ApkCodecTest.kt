@@ -291,6 +291,8 @@ class ApkCodecTest {
 
     @Test
     fun `the split-name guard rejects path traversal, separators, shell metacharacters, dotdot, leading dot, leading dash, and empty`() {
+        // Parity: keep byte-identical to LocalAdbBridgeTest.NAME_CORPUS_REJECT; pinned by
+        // the name-corpus test in each module so both SPLIT_NAME copies cannot silently diverge.
         val hostile = listOf(
             "../../etc/x",   // path traversal
             "a;rm -rf /",    // shell metacharacters + whitespace
@@ -299,11 +301,15 @@ class ApkCodecTest {
             "..",            // parent dir (defence-in-depth; also blocked by leading-dot rule)
             ".",             // current dir (defence-in-depth; also blocked by leading-dot rule)
             "",              // empty
-            "a b",           // whitespace
+            "a b",           // space
+            "a\tb",          // tab
+            "a\nb",          // newline embedded mid-name
             "name\u0000",    // embedded NUL control char
             "name ",         // trailing space (not in allowlist)
-            "name\n",        // newline
-            "\$(whoami)",    // command substitution
+            "name\n",        // trailing newline
+            "a;b",           // semicolon
+            "\$(whoami)",    // command substitution $()
+            "a`x`",          // command substitution backtick
             "a|b",           // pipe
             ".hidden",       // leading dot (tightened grammar, Fix 1)
             "-rf",           // leading dash (tightened grammar, Fix 1)
@@ -311,6 +317,14 @@ class ApkCodecTest {
         for (name in hostile) {
             assertThat(ApkContainerValidation.validatedSplitNameOrNull(name)).isNull()
         }
+    }
+
+    @Test
+    fun `SPLIT_NAME pattern is pinned`() {
+        // Cross-module parity pin: this module and :adb-bridge each REPLICATE the split-name regex
+        // (no shared dep by design). Both pins hardcode the SAME canonical string, so editing either
+        // copy breaks that module's pin test and forces the other to be updated in lockstep.
+        assertThat(ApkContainerValidation.SPLIT_NAME.pattern).isEqualTo("[A-Za-z0-9][A-Za-z0-9._-]*")
     }
 
     @Test
