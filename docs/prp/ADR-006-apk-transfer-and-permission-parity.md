@@ -106,7 +106,8 @@ target's splits. The receiver therefore RECONCILES before committing, and uses t
 
 1. **Reconcile + subset-install.** Compute the target's required config splits (`Build.SUPPORTED_ABIS`,
    `densityDpi`, configured locales) and install `base` + the matching subset of the source's splits + all language
-   splits the user kept. For the dominant GOS migration (Pixel→Pixel, same ABI) this succeeds cleanly. **Mechanics
+   splits the user kept (for DENSITY, keep a fallback split when none matches the bucket — see (4)). For the dominant
+   GOS migration (Pixel→Pixel, same ABI) this succeeds cleanly. **Mechanics
    (P3):** the install session MUST issue one `pm install-write` per staged file (base + each kept split) into the
    single `install-create` session before `install-commit` — today's `installApk` writes exactly one hardcoded
    `base.apk` (`LocalAdbBridge.kt:171`), so P3 must not ship a base-only session by omission.
@@ -115,13 +116,22 @@ target's splits. The receiver therefore RECONCILES before committing, and uses t
    had; pretending otherwise produces a broken app. This is the honest terminal.
 3. **Commit still rejects for a split/ABI/density/locale reason despite reconciliation → Tier-0 `PackageInstaller`
    confirm retry**, then the (2) skip if that also fails.
-4. **base-only install is NOT an automatic fallback** — a base missing its required ABI/density split installs but
-   crashes/renders wrong. base-only is used only for apps that are genuinely single-APK (no required splits), which
-   is just the trivial case of (1).
+4. **Never drop a config split to zero when the base may require one.** A base built from an App Bundle that marks a
+   split type REQUIRED (the bundletool default for density — e.g. Termux) makes `PackageInstaller` **reject the commit
+   outright — `Missing split for <pkg>`** — when no split of that type is present. This is NOT the "installs but
+   renders wrong" we first assumed: it does not install at all (verified on hardware 2026-06-21 — husky forced to
+   `xhdpi` ← rango `xxhdpi`-only source → reconcile dropped the lone density split → `Missing split for com.termux`,
+   install rejected). So for DENSITY, when no source split matches the target bucket, reconcile keeps the source's
+   density split(s) ANYWAY (`ApkReconcile.kt` — Android accepts a non-exact density and scales it) rather than
+   dropping to zero. ABI differs: a missing required ABI cannot be scaled or substituted, so it stays the (2) per-app
+   SKIP. base-only is used only for apps that are genuinely single-APK (no required splits) — the trivial case of (1).
 
-A split-attributable commit rejection is a **distinct, surfaced `ApplyOutcome`** (not a generic failure). Its
-real-device closure is **OPEN**: single-device smoke has source == target and cannot exercise it (joins the
-cross-device OPEN set, ADR-003 §7).
+A split-attributable commit rejection is a **distinct, surfaced `ApplyOutcome`** (not a generic failure). **Density
+branch CLOSED on hardware (2026-06-21):** the forced-config test (`wm density` override) exercised the
+source≠target-density path on metal, FOUND the drop-to-zero `Missing split` bug above, and the fix (keep a fallback
+density split) is verified by the reconcile unit tests. The **ABI Incompatible** branch is structurally unreachable on
+the arm64-only GOS/Pixel fleet (no device reports a non-arm64 `SUPPORTED_ABIS`); it stays JVM-unit-tested, closable
+end-to-end only on an x86_64 emulator.
 
 ### D4 — Byte ceilings
 
@@ -237,9 +247,18 @@ The probed `Set<PrivilegedCapability>` lives only in the wizard's `StateFlow` (`
   `CONFIRM_INSTALL` dialog in ~1s, no freeze. Closes the silent self-install + Tier-0 fallback VERIFY_FIRST items.
   Also closes ADR-003 §7 (cross-device pair→connect→probe→`SILENT_INSTALL` on metal; the wizard disconnects after
   the probe — no held shell uid).
-- **OPEN (needs differing hardware):** split target-compatibility (D3/AC-15) — a target of a different ABI/density
-  class than the source; both verification devices were arm64 / similar density, so single-pair smoke cannot
-  exercise it.
+- **VERIFIED + BUG FOUND→FIXED on hardware (2026-06-21) — P6 AC-15 density reconcile.** A native ABI/density delta is
+  structurally unavailable on the GOS fleet (all Pixels are arm64-only; husky 360 / rango 390 both bucket to xxhdpi),
+  so a forced-config test was used: husky's receiver `densityDpi` overridden via `wm density 280` (→ xhdpi) ← rango
+  exporting `xxhdpi`-only Termux. Reconcile DROPPED the lone density split → `PackageInstaller: Session … destroyed
+  because of [Missing split for com.termux]`, install **rejected** (NOT the assumed "installs but renders wrong" — it
+  does not install at all). Control run at native xxhdpi → split kept → installs cleanly, all 5 splits,
+  `installerPackageName=cc.grepon.portage.recv`, Termux launches. **Fix:** `ApkReconcile` now keeps the source's
+  density split(s) as a fallback when none matches the target bucket (Android scales a non-exact density) instead of
+  dropping to zero; D3 step 4 corrected; reconcile unit tests flipped + a Termux-shape regression added.
+- **OPEN — AC-15 ABI leg only:** the `Incompatible` (non-arm64 target) branch is JVM-unit-tested but structurally
+  unreachable on the arm64-only Pixel/GOS fleet; closable end-to-end only on an x86_64 emulator, not "differing
+  hardware."
 - Phase 5 GO/NO-GO: finalize the default permission allowlist + the opt-in confirm granularity.
 - UX: confirm whether GOS A16 can batch multiple `PackageInstaller` confirm intents into fewer taps; if not, the
   Tier-0 fallback is one-tap-per-app and the UX copy must say so.
