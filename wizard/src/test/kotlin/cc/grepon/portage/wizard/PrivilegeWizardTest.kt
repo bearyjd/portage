@@ -81,6 +81,16 @@ class PrivilegeWizardTest {
         detector: PairingPortDetector = PairingPortDetector { 37123 },
     ) = PrivilegeWizard(bridge, environment, detector, scope = this, detectTimeoutMs = 5_000)
 
+    @Test
+    fun `adb_wifi_enabled key is pinned`() {
+        // Cross-module parity pin: :wizard (AndroidWizardEnvironment) and :adb-bridge
+        // (LibAdbDeviceGate) each REPLICATE this AOSP Settings.Global key (dependency-isolated by
+        // design). Both pins hardcode the SAME canonical string, so editing either copy breaks that
+        // module's pin and forces the other to be updated in lockstep. The key gates bridge connect
+        // (WD-off ⇒ Tier-0 fallback), so a silent drift would break the hang-prevention guard.
+        assertThat(AndroidWizardEnvironment.ADB_WIFI_ENABLED).isEqualTo("adb_wifi_enabled")
+    }
+
     // ── step 1: the skip-everything checks ───────────────────────────────────────────────────
 
     @Test

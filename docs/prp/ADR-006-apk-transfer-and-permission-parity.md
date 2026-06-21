@@ -222,11 +222,24 @@ The probed `Set<PrivilegedCapability>` lives only in the wizard's `StateFlow` (`
   permission prompt, no crash → byte integrity). (c) AC-18 already-installed quiet-skip — AntennaPod (equal
   versionCode 3110495) skipped, not install-attempted. (d) the inventory store-reinstall row correctly deep-links
   (`play.google.com` VIEW → `com.android.vending` install) — distinct from the carried path. Closes the CLAUDE.md
-  Tier-0 VERIFY_FIRST hardware item. STILL OPEN: the silent stdin path (P6 Part 2) and the 2-device legs below.
-- Record single-device smoke evidence (silent self-install + Tier-0 fallback) with the GOS build fingerprint
-  (`ro.build.fingerprint`) and the literal `pm install-commit` exit code (ADR-001 §2.6 fingerprint discipline).
-- **OPEN (no completion claim without two devices):** cross-device pair→install (ADR-003 §7) and split
-  target-compatibility (D3).
+  Tier-0 VERIFY_FIRST hardware item.
+- **VERIFIED on hardware (2026-06-21) — P6 Part 2, silent stdin-streaming install + WD-gate fallback.** Same
+  receiver = Pixel 10 Pro Fold (`rango`), `ro.build.fingerprint=google/rango/rango:16/BP4A.260205.001/2026061601`.
+  (a) **Silent install** — ntfy (multi-split) installed **silently via the `exec:` bridge**: no per-app confirm
+  dialog, no tap, `installerPackageName=null` (shell-uid `pm`, not the Tier-0/store installer), app launches (byte
+  integrity → the `exec:`-vs-`shell:` binary-stdin question is answered correctly). (b) **Stale-positive → Tier-0
+  fallback (bug found → fixed → re-verified)** — with `SILENT_INSTALL` probed present but Wireless Debugging then
+  toggled off, the apply HUNG indefinitely on "APPLYING" (libadb `connectTls`→`autoConnect`→NsdManager mDNS
+  discovery ignores thread interruption, defeating the connect timeout). Fixed in `c9ef2a2` (PR #70):
+  `LocalAdbBridge.connect()` now gates on `gate.isWirelessDebuggingEnabled()` (reads `Settings.Global
+  adb_wifi_enabled`, fail-closed) BEFORE `gate.connect()` → `NoEndpoint` → `BridgeUnavailable` → Tier-0, plus a
+  `withTimeoutOrNull(90s)` backstop in `AdbApkInstaller`. Re-tested on-device: WD-off now degrades to the Tier-0
+  `CONFIRM_INSTALL` dialog in ~1s, no freeze. Closes the silent self-install + Tier-0 fallback VERIFY_FIRST items.
+  Also closes ADR-003 §7 (cross-device pair→connect→probe→`SILENT_INSTALL` on metal; the wizard disconnects after
+  the probe — no held shell uid).
+- **OPEN (needs differing hardware):** split target-compatibility (D3/AC-15) — a target of a different ABI/density
+  class than the source; both verification devices were arm64 / similar density, so single-pair smoke cannot
+  exercise it.
 - Phase 5 GO/NO-GO: finalize the default permission allowlist + the opt-in confirm granularity.
 - UX: confirm whether GOS A16 can batch multiple `PackageInstaller` confirm intents into fewer taps; if not, the
   Tier-0 fallback is one-tap-per-app and the UX copy must say so.

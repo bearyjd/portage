@@ -35,7 +35,13 @@ class AndroidWizardEnvironment(context: Context) : WizardEnvironment {
         Settings.Global.getInt(resolver, ADB_WIFI_ENABLED, 0) == 1
     }.getOrDefault(false)
 
-    private companion object {
+    internal companion object {
+        /**
+         * AOSP `Settings.Global` key for the Wireless Debugging toggle (no SDK constant exists).
+         * REPLICATED from `:adb-bridge`'s `LibAdbDeviceGate` (the two modules are dependency-
+         * isolated by design). Each module's `adb_wifi_enabled key is pinned` test hardcodes this
+         * canonical string, so a divergent edit fails CI — keep both copies in lockstep.
+         */
         const val ADB_WIFI_ENABLED = "adb_wifi_enabled"
     }
 }
