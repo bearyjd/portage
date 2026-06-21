@@ -76,39 +76,62 @@ Compose BOM against the **current** GrapheneOS Android version at build time.
 
 ## Status
 
-**Tier 0 transfer is implemented end-to-end and on `main`.** Both apps build (`assembleDebug`
-produces both debug APKs in CI), with unit + integration tests green on every push. What
-works, phone-to-phone over the Noise/TCP channel:
+**Tier 0 transfer and the APK-transfer keystone are implemented end-to-end and on `main`.**
+Both apps build (`assembleDebug` produces both debug APKs in CI), with unit + integration
+tests green on every push. What works, phone-to-phone over the Noise/TCP channel:
 
 - **`portage-send`** — permissions → pack → pairing QR (the trust anchor, `FLAG_SECURE`) →
   accept one receiver → stream the selected items with per-chunk AEAD + per-item SHA-256.
 - **`portage-recv`** — scan QR → handshake → checklist built from the live manifest (absent
   kinds shown disabled) → stage, verify, apply each item → done summary with real counts.
-- **All six Tier-0 providers**: contacts (vCard 3.0), calendar (ICS), call log, SMS export
-  (apply is role-gated and **inert until the SMS-role mini-project lands**), app inventory
-  (assisted-reinstall deep links), and the SAFE `Settings.System` allowlist slice.
+- **All six Tier-0 providers**: contacts (vCard 3.0), calendar (ICS), call log, SMS
+  (role-gated default-SMS handoff), app inventory, and the SAFE `Settings.System` allowlist
+  slice.
+- **APK transfer (ADR-006, Phases 1–4, PRs #66–#69)**: streamed multi-file container codec,
+  sender UI with running size total, receiver free-space gate, and the apply provider with
+  Tier-0 `PackageInstaller` confirm-install fallback. Split-aware (base + config splits
+  streamed and staged). Settings sync (Tier-1) and APK install are the two privileged item
+  kinds.
 
-Landed across PRs #5 (providers + receiver apply wiring), #6 (`portage-send`), #7 (receiver
-live channel) — each through TDD plus independent code-review and security-review gates.
+**Hardware-verified on real GOS devices (as of `main` tip):**
 
-**Not yet done:** the two-phone on-device validation walk-through (the one DoD step that
-needs real hardware), and on-device verification of the self-contained Tier-1 privilege
-bridge (`:adb-bridge` pairing → connect → self-grant on a real GOS device — see ADR-003's
-verify-first list). Live security follow-ups (noise-java verbatim-diff review, CI
-dependency audit, libadb-android dependency review) are tracked in `CLAUDE.md`.
+- **Tier-0 APK install** — Pixel 9 Pro Fold (`comet`) → Pixel 10 Pro Fold (`rango`),
+  GrapheneOS Android 16. Single-APK (Molly) and multi-split (Termux: base + arm64-v8a + en
+  + es + xxhdpi) both staged and installed via the carried Tier-0 chain; apps launch.
+- **Silent `exec:` install (Tier-1 bridge, PR #70)** — APK bytes stdin-streamed into
+  `pm install-write -S`, the commit exit code is the verdict; WD-off → Tier-0 fallback (no hang). Hang caused by calling `connect()`
+  when Wireless Debugging is off was found and fixed (PR #70 + gated on `adb_wifi_enabled`).
+- **Tier-1 privilege bootstrap (ADR-003 §7, now CLOSED)** — pair → connect → probe →
+  `WRITE_SECURE_SETTINGS` grant works on metal; wizard disconnects after the capability
+  probe, no held shell uid.
+- **AC-15 density-reconcile (PR #73)** — a real "Missing split" install rejection was found
+  on a Pixel 8 Pro (`husky`) using a forced-density override and fixed: reconcile now keeps
+  a fallback density split instead of dropping to zero when no exact bucket match exists.
 
-The design artifacts live in [`docs/prp/`](docs/prp/):
+**Genuinely still open:**
+
+- **Phase 5 — runtime-permission parity**: separate GO/NO-GO, not built yet (needs the
+  first production `grantRuntimePermission()` call site).
+- **AC-15 ABI leg**: structurally unreachable on the arm64-only Pixel/GOS fleet; closable
+  only on an x86_64 emulator.
+
+Design artifacts live in [`docs/prp/`](docs/prp/) and [`docs/`](docs/):
 
 - [`portage-prp-prompt.md`](docs/prp/portage-prp-prompt.md) — execution brief
-- [`ADR-001-privilege-feasibility.md`](docs/prp/ADR-001-privilege-feasibility.md) — Tier 1 go-no-go + verification procedure (grant architecture; originally verified via Shizuku)
+- [`ADR-001-privilege-feasibility.md`](docs/prp/ADR-001-privilege-feasibility.md) — Tier 1 go-no-go + verification procedure (grant architecture)
 - [`ADR-003-self-contained-privilege.md`](docs/prp/ADR-003-self-contained-privilege.md) — self-contained ADB bridge replacing Shizuku
+- [`ADR-006-apk-transfer-and-permission-parity.md`](docs/prp/ADR-006-apk-transfer-and-permission-parity.md) — APK transfer keystone: wire format, reconcile policy, privilege seams, phase plan
+- [`P6-apk-hardware-runbook.md`](docs/prp/P6-apk-hardware-runbook.md) — on-device verification runbook + silent-install design + hardware evidence
 - [`VERIFICATION-RUNBOOK.md`](docs/prp/VERIFICATION-RUNBOOK.md) — **pre-build** Tier-1 privilege *feasibility* probes (V1–V8 + results template)
-- [`TRANSFER-RUNBOOK.md`](docs/prp/TRANSFER-RUNBOOK.md) — two-phone Tier-0 transfer acceptance test (the DoD gate)
-- [`E2E-VERIFICATION-RUNBOOK.md`](docs/prp/E2E-VERIFICATION-RUNBOOK.md) — **post-build** two-phone end-to-end verification across the full current feature set (wizard, settings, wallpaper, sound, bluetooth, relay); superset of the Tier-0 transfer test
+- [`TRANSFER-RUNBOOK.md`](docs/prp/TRANSFER-RUNBOOK.md) — two-phone Tier-0 transfer acceptance test
+- [`E2E-VERIFICATION-RUNBOOK.md`](docs/prp/E2E-VERIFICATION-RUNBOOK.md) — **post-build** two-phone end-to-end verification (wizard, settings, APK install, relay)
 - [`PROTOCOL.md`](docs/prp/PROTOCOL.md) — pairing + transfer wire format (QR anchor, Noise XXpsk3)
 - [`THREAT_MODEL.md`](docs/prp/THREAT_MODEL.md) — semi-trusted-LAN adversary, attack→defense table
 - [`settings_allowlist.md`](docs/prp/settings_allowlist.md) — SAFE / RISKY / DEVICE_SPECIFIC key classification
 - [`DEVILS_ADVOCATE.md`](docs/prp/DEVILS_ADVOCATE.md) — adversarial review of the plan
+- [`CODEMAPS/`](docs/CODEMAPS/) — architecture maps (module graph, data-flow, privilege boundary)
+- [`CONTRIBUTING.md`](docs/CONTRIBUTING.md) — contribution guide (branching, review gates, CI)
+- [`RUNBOOK.md`](docs/RUNBOOK.md) — operational runbook (build, flash, device setup, common failures)
 
 > Note: this project was briefly drafted under the working name `malle`; it has been
 > renamed to `portage` (app IDs `cc.grepon.portage.*`) throughout the design docs.
