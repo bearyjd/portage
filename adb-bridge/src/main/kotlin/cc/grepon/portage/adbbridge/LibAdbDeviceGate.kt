@@ -73,28 +73,64 @@ internal class LibAdbDeviceGate(
     override suspend fun exec(command: String): String = runInterruptible(io) {
         val stream = manager.openStream("shell:$command")
         try {
-            val out = ByteArrayOutputStream()
-            val input = stream.openInputStream()
-            val buffer = ByteArray(READ_BUFFER_BYTES)
-            while (out.size() < MAX_OUTPUT_BYTES) {
-                val n = try {
-                    input.read(buffer)
-                } catch (e: IOException) {
-                    // A blocked read surfaces stream teardown as "Stream closed." — EOF for us.
-                    if (e.message.orEmpty().contains("Stream closed", ignoreCase = true)) -1 else throw e
-                }
-                if (n < 0) break
-                out.write(buffer, 0, n)
-            }
-            out.toString(Charsets.UTF_8.name())
+            drainToEof(stream.openInputStream())
         } finally {
             runCatching { stream.close() }
         }
     }
 
+    override suspend fun execWithStdin(
+        command: String,
+        input: java.io.InputStream,
+        size: Long,
+    ): String = runInterruptible(io) {
+        // The binary-safe `exec:` service: no pty, no line-ending translation — the only channel
+        // safe for `pm install-write -S <size> .. -`'s binary write phase. Ordering is load-bearing:
+        // write ALL `size` stdin bytes and flush FIRST, then read stdout. `pm install-write -S`
+        // reads exactly `size` bytes, then prints its result — interleaving would deadlock.
+        val stream = manager.openStream("exec:$command")
+        try {
+            val sink = stream.openOutputStream()
+            val buffer = ByteArray(WRITE_BUFFER_BYTES)
+            var remaining = size
+            while (remaining > 0) {
+                val want = minOf(buffer.size.toLong(), remaining).toInt()
+                val n = input.read(buffer, 0, want)
+                if (n < 0) throw IOException("stdin ended early: $remaining of $size unsent")
+                sink.write(buffer, 0, n)
+                remaining -= n
+            }
+            sink.flush()
+            drainToEof(stream.openInputStream())
+        } finally {
+            runCatching { stream.close() }
+        }
+    }
+
+    /**
+     * Read [stdout] to EOF, capped at [MAX_OUTPUT_BYTES]. A blocked read surfaces stream teardown as
+     * "Stream closed." — treated as EOF, exactly as the legacy `shell:` path does.
+     */
+    private fun drainToEof(stdout: java.io.InputStream): String {
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(READ_BUFFER_BYTES)
+        while (out.size() < MAX_OUTPUT_BYTES) {
+            val n = try {
+                stdout.read(buffer)
+            } catch (e: IOException) {
+                // A blocked read surfaces stream teardown as "Stream closed." — EOF for us.
+                if (e.message.orEmpty().contains("Stream closed", ignoreCase = true)) -1 else throw e
+            }
+            if (n < 0) break
+            out.write(buffer, 0, n)
+        }
+        return out.toString(Charsets.UTF_8.name())
+    }
+
     private companion object {
         const val LOCALHOST = "127.0.0.1"
         const val READ_BUFFER_BYTES = 8192
+        const val WRITE_BUFFER_BYTES = 8192
         const val MAX_OUTPUT_BYTES = 4 * 1024 * 1024 // defensive cap; no portage op needs more
     }
 }

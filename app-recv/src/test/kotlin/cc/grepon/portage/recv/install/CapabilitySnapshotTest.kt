@@ -10,10 +10,8 @@
 package cc.grepon.portage.recv.install
 
 import cc.grepon.portage.adbbridge.AdbBridge.PrivilegedCapability
-import cc.grepon.portage.providers.apk.ApkInstallResult
 import cc.grepon.portage.wizard.PrivilegeWizard
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
 /** D6 capability plumbing: read the probed set from the wizard step; choose the silent seam. */
@@ -43,11 +41,5 @@ class CapabilitySnapshotTest {
         assertThat(hasSilentInstall(PrivilegeWizard.Step.Ready(setOf(PrivilegedCapability.SHELL))))
             .isFalse()
         assertThat(hasSilentInstall(PrivilegeWizard.Step.Skipped)).isFalse()
-    }
-
-    @Test
-    fun `the deferred silent installer always returns Deferred (routes to Tier-0)`() = runTest {
-        val result = deferredSilentInstaller.install("com.example.app", emptyList())
-        assertThat(result).isEqualTo(ApkInstallResult.Deferred)
     }
 }

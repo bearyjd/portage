@@ -47,4 +47,12 @@ internal interface AdbDeviceGate {
      */
     @Throws(Exception::class)
     suspend fun exec(command: String): String
+
+    /** Run one binary-safe `exec:` command, streaming EXACTLY [size] bytes from [input] to the
+     *  command's stdin, then return everything it wrote to stdout until EOF. Uses the adb `exec:`
+     *  service (no pty, no line-ending translation) — the only safe channel for a binary write
+     *  phase like `pm install-write -S <size> ... -`. `exec:` has NO exit code; callers parse the
+     *  command's own output. Throws on transport failure. */
+    @Throws(Exception::class)
+    suspend fun execWithStdin(command: String, input: java.io.InputStream, size: Long): String
 }

@@ -15,8 +15,6 @@ import android.content.Intent
 import android.content.pm.PackageInstaller
 import cc.grepon.portage.providers.apk.ApkInstallAction
 import cc.grepon.portage.providers.apk.ApkInstallFile
-import cc.grepon.portage.providers.apk.ApkInstallResult
-import cc.grepon.portage.providers.apk.ApkSilentInstaller
 import cc.grepon.portage.providers.apk.ApkTargetConfig
 import cc.grepon.portage.providers.apk.InstalledPackageVersions
 import java.io.OutputStream
@@ -26,23 +24,12 @@ import java.io.OutputStream
  * concerns the `:providers` [cc.grepon.portage.providers.apk.ApkApplyProvider] is wired through live
  * here, never in `:providers` (C1/D2 module discipline).
  *
- *  - [deferredSilentInstaller]: the P6-deferred silent path — returns [ApkInstallResult.Deferred] so
- *    every install routes to the Tier-0 `PackageInstaller` fallback.
  *  - [PackageInstallerApkInstaller]: the REAL Tier-0 fallback — turns an [ApkInstallAction] into a
  *    `PackageInstaller` multi-split session and surfaces an [ApkInstallPrompt] to commit on the Done
  *    screen (the system install-confirm UI).
  *  - [androidInstalledPackageVersions] / [androidApkTargetConfig]: the AC-18 version lookup and the
  *    AC-15 target config, read from `PackageManager` / `Build` / `Resources`.
  */
-
-/**
- * The DEFERRED silent installer (ADR-006 D3/D6/LOW-1). Returns [ApkInstallResult.Deferred] for every
- * call: stdin-streaming over the ADB gate (`pm install-write -S <size> .. -`) is the deferred P6 silent
- * path — the receiver's app-private staging is not shell-uid-readable, so the bridge cannot read a
- * staged path and silent install is not yet wired. Until then every install routes through the Tier-0
- * `PackageInstaller` fallback. Do NOT implement stdin streaming here; that is a P6 hardware-session task.
- */
-val deferredSilentInstaller: ApkSilentInstaller = ApkSilentInstaller { _, _ -> ApkInstallResult.Deferred }
 
 /**
  * The Tier-0 `PackageInstaller` adapter (ADR-006 D3/D6). On [install] it creates a `MODE_FULL_INSTALL`

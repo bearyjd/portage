@@ -168,11 +168,13 @@ class LocalAdbBridge internal constructor(
      * reject it. The file PATHS are caller-generated (not sender-controlled) but still flow through
      * [ShellArgs.command].
      *
-     * The staging mechanism is path-based (files already laid down by the caller). The eventual
-     * switch to streaming over stdin (`pm install-write -S <size> .. -`) and the
-     * staging-location security review are tracked in docs/prp/P6-apk-hardware-runbook.md (the
-     * P4/P6 staging-location PR routes through security-reviewer; the stdin path is a protocol
-     * change needing `-S`, not a drop-in).
+     * Each file's bytes are STREAMED over the adb `exec:` stream's stdin into
+     * `pm install-write -S <size> <session> <name> -` (ADR-006 P6); no shell-readable path ever
+     * exists, so the receiver's app-private staging stays unreadable to shell uid as required. The
+     * `exec:` service has no exit code — install-write success is parsed from pm's own output (it
+     * prints "Success" on a good write), and a transport-level failure of the streamed write
+     * classifies as [AdbBridge.InstallResult.BridgeUnavailable] (consistent with create/commit) so
+     * Phase 4's apply provider falls back to Tier-0 on a dead bridge rather than reporting a refusal.
      */
     override suspend fun installApk(staged: List<AdbBridge.StagedApk>): AdbBridge.InstallResult {
         if (staged.isEmpty()) return AdbBridge.InstallResult.Failed("no staged apk files")
@@ -197,26 +199,28 @@ class LocalAdbBridge internal constructor(
                 shellQuietly("pm", "install-abandon", sessionId)
                 return AdbBridge.InstallResult.Failed("rejected split name")
             }
-            val write = ShellArgs.command("pm", "install-write", sessionId, name, file.path)
+            // `-S <size> .. -`: pm reads exactly <size> bytes from stdin, so the bytes are piped over
+            // the `exec:` stream and never staged to a shell-readable path. The size and name flow
+            // through ShellArgs like every other argument.
+            val write = ShellArgs.command(
+                "pm", "install-write", "-S", file.size.toString(), sessionId, name, "-",
+            )
             if (write == null) {
                 shellQuietly("pm", "install-abandon", sessionId)
-                return AdbBridge.InstallResult.Failed("bad apk path")
+                return AdbBridge.InstallResult.Failed("bad install-write arguments")
             }
-            val written = shell(write)
-            // Transport failures (NotConnected / TransportFailure) classify as BridgeUnavailable,
-            // consistent with install-create and install-commit — Phase 4's apply provider uses this
-            // distinction to fall back to Tier-0 on a dead bridge vs. a real install rejection.
-            // A non-zero exit (command ran, returned non-zero) stays Failed.
-            when {
-                written is AdbBridge.ShellResult.Completed && written.ok -> Unit // success, continue
-                written is AdbBridge.ShellResult.Completed -> {
-                    shellQuietly("pm", "install-abandon", sessionId)
-                    return AdbBridge.InstallResult.Failed("install-write failed")
-                }
-                else -> {
+            // `exec:` has no exit code — a transport throw is null (→ BridgeUnavailable), and the
+            // verdict otherwise comes from pm's own output. install-create/commit keep the
+            // BridgeUnavailable-vs-Failed distinction the apply provider relies on; a streamed-write
+            // transport failure joins them so a dead bridge falls back to Tier-0, not a fake refusal.
+            val output = installWriteStreamed(write, file)
+                ?: run {
                     shellQuietly("pm", "install-abandon", sessionId)
                     return AdbBridge.InstallResult.BridgeUnavailable
                 }
+            if (!output.contains(INSTALL_WRITE_SUCCESS)) {
+                shellQuietly("pm", "install-abandon", sessionId)
+                return AdbBridge.InstallResult.Failed("install-write $name: ${output.trim().take(200)}")
             }
         }
 
@@ -376,6 +380,33 @@ class LocalAdbBridge internal constructor(
         return name
     }
 
+    /**
+     * Run one `pm install-write … -` command, streaming [file]'s exactly-[size] bytes to its stdin
+     * over the binary-safe `exec:` channel, and return pm's stdout. Mirrors how [shell] wraps
+     * [shellLocked]: serialized under [opLock], dispatched on [io], bounded by [shellTimeoutMs].
+     * Returns null on a transport-level failure (dead link / timeout / I/O) — the caller treats that
+     * as [AdbBridge.InstallResult.BridgeUnavailable]. [open]'s stream is always closed.
+     */
+    private suspend fun installWriteStreamed(
+        command: String,
+        file: AdbBridge.StagedApk,
+    ): String? = withContext(io) {
+        opLock.withLock {
+            if (!gate.isConnected()) return@withLock null
+            try {
+                withTimeout(shellTimeoutMs) {
+                    file.open().use { input -> gate.execWithStdin(command, input, file.size) }
+                }
+            } catch (t: TimeoutCancellationException) {
+                null
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                null
+            }
+        }
+    }
+
     private suspend fun shellQuietly(vararg argv: String) {
         val command = ShellArgs.command(*argv) ?: return
         try {
@@ -390,6 +421,13 @@ class LocalAdbBridge internal constructor(
     internal companion object {
         const val EXIT_SENTINEL = "__PORTAGE_EXIT__"
         const val WRITE_SECURE_SETTINGS = "android.permission.WRITE_SECURE_SETTINGS"
+
+        /**
+         * The `exec:` service has no exit code, so a streamed `pm install-write` is judged by pm's
+         * own output: it prints "Success" on a good write (case-sensitive, as pm emits it). Anything
+         * else (a "Failure [INSTALL_FAILED_…]" line or empty output) is a failed write.
+         */
+        const val INSTALL_WRITE_SUCCESS = "Success"
 
         const val PAIR_TIMEOUT_MS = 30_000L
         const val CONNECT_TIMEOUT_MS = 15_000L
