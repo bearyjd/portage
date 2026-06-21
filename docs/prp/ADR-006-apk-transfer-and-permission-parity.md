@@ -210,6 +210,19 @@ The probed `Set<PrivilegedCapability>` lives only in the wizard's `StateFlow` (`
 
 ## Follow-ups
 
+- **VERIFIED on hardware (2026-06-21) — P6 Part 1, Tier-0 carried-bytes install.** Receiver = Pixel 10 Pro Fold
+  (`rango`), `ro.build.fingerprint=google/rango/rango:16/BP4A.260205.001/2026061601:user/release-keys`, Android 16,
+  security patch 2026-06-01. Cross-device transfer from a Pixel 9 Pro Fold (`comet`,
+  `…/BP4A.260205.002/2026061600`) over LAN. Evidence: (a) single-APK carried install — Molly (`im.molly.app`, not on
+  Play Store) installed via the Tier-0 chain: `ActivityTaskManager: START {act=CONFIRM_INSTALL
+  pkg=com.android.packageinstaller} from uid …(cc.grepon.portage.recv)` → `PackageInstallerSession: Marking session
+  … as applied`, `installerPackageName=cc.grepon.portage.recv` (NOT `com.android.vending`). (b) multi-split carried
+  install — Termux (`com.termux`) `pm path` shows `base + split_config.{arm64_v8a,en,es,xxhdpi}` (all 5; base-only =
+  the D3 failure case), `installerPackageName=cc.grepon.portage.recv`, session applied, app launches (first-run
+  permission prompt, no crash → byte integrity). (c) AC-18 already-installed quiet-skip — AntennaPod (equal
+  versionCode 3110495) skipped, not install-attempted. (d) the inventory store-reinstall row correctly deep-links
+  (`play.google.com` VIEW → `com.android.vending` install) — distinct from the carried path. Closes the CLAUDE.md
+  Tier-0 VERIFY_FIRST hardware item. STILL OPEN: the silent stdin path (P6 Part 2) and the 2-device legs below.
 - Record single-device smoke evidence (silent self-install + Tier-0 fallback) with the GOS build fingerprint
   (`ro.build.fingerprint`) and the literal `pm install-commit` exit code (ADR-001 §2.6 fingerprint discipline).
 - **OPEN (no completion claim without two devices):** cross-device pair→install (ADR-003 §7) and split

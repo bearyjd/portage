@@ -14,6 +14,15 @@ two devices of different ABI/density class. Record `ro.build.fingerprint` with e
 
 ## Part 1 — Tier-0 path verification (functional today; just unproven on metal)
 
+> **VERIFIED 2026-06-21.** Cross-device (Pixel 9 Pro Fold `comet` → Pixel 10 Pro Fold `rango`,
+> receiver fp `google/rango/rango:16/BP4A.260205.001/2026061601`, Android 16, patch 2026-06-01).
+> Single-APK (Molly, not on Play Store) AND multi-split (Termux, `base + arm64_v8a + en + es +
+> xxhdpi` all staged) both installed via the carried Tier-0 chain — `CONFIRM_INSTALL` launched from
+> the receiver's uid, session applied, `installerPackageName=cc.grepon.portage.recv` (NOT vending),
+> apps launch (byte integrity). AC-18 already-installed quiet-skip confirmed (AntennaPod, equal
+> versionCode). Evidence recorded in ADR-006 §Follow-ups. Edge cases (reset hygiene, commit-retry)
+> and the silent stdin path (Part 2) + 2-device legs remain.
+
 The Tier-0 `PackageInstaller` confirm path runs entirely as the receiver app (no shell uid), so it
 should work on-device now. Verify it end-to-end.
 
@@ -132,7 +141,7 @@ sensor app before trusting it in the default set (VERIFICATION-RUNBOOK V7 TENTAT
 | P2 (receiver gate) | ✅ | JVM (incl. negative-size HIGH fix) |
 | P3 (split install session) | ✅ | JVM (path-based; readability → stdin here) |
 | P4 (apply provider + Tier-0) | ✅ | JVM + assemble |
-| P6 Tier-0 on-device | ⏳ | **this runbook, Part 1** |
+| P6 Tier-0 on-device | ✅ | **hardware-verified 2026-06-21** (rango / Pixel 10 Pro Fold; single-APK + multi-split, carried not store) |
 | P6 silent stdin-stream | ⏳ | **this runbook, Part 2** |
 | Cross-device / AC-15 | ⛔ | OPEN — needs 2 devices |
 | Phase 5 (perm parity) | ⏳ | gated, separate |
