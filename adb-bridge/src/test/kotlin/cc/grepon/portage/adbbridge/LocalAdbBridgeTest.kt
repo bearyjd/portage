@@ -632,6 +632,16 @@ class LocalAdbBridgeTest {
     }
 
     @Test
+    fun `adb_wifi_enabled key is pinned`() {
+        // Cross-module parity pin: :adb-bridge (LibAdbDeviceGate) and :wizard (AndroidWizardEnvironment)
+        // each REPLICATE this AOSP Settings.Global key (dependency-isolated by design). Both pins
+        // hardcode the SAME canonical string, so editing either copy breaks that module's pin and
+        // forces the other to be updated in lockstep. The key gates bridge connect (WD-off ⇒ Tier-0
+        // fallback), so a silent drift would break the hang-prevention guard — hence the CI pin.
+        assertThat(LibAdbDeviceGate.ADB_WIFI_ENABLED).isEqualTo("adb_wifi_enabled")
+    }
+
+    @Test
     fun `installApk abandon itself failing does not suppress the install result or throw`() = runTest {
         // Pins the shellQuietly best-effort contract: if the abandon command itself hits a transport
         // failure, installApk must still return the correct typed result (Failed) with no exception

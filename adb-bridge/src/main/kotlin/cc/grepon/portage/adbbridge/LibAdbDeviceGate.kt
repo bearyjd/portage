@@ -134,13 +134,18 @@ internal class LibAdbDeviceGate(
         return out.toString(Charsets.UTF_8.name())
     }
 
-    private companion object {
+    internal companion object {
         const val LOCALHOST = "127.0.0.1"
         const val READ_BUFFER_BYTES = 8192
         const val WRITE_BUFFER_BYTES = 8192
         const val MAX_OUTPUT_BYTES = 4 * 1024 * 1024 // defensive cap; no portage op needs more
 
-        /** AOSP `Settings.Global` key for the Wireless Debugging toggle (no SDK constant exists). */
+        /**
+         * AOSP `Settings.Global` key for the Wireless Debugging toggle (no SDK constant exists).
+         * REPLICATED in `:wizard`'s `AndroidWizardEnvironment` (the two modules are dependency-
+         * isolated by design). Each module's `adb_wifi_enabled key is pinned` test hardcodes this
+         * canonical string, so a divergent edit fails CI — keep both copies in lockstep.
+         */
         const val ADB_WIFI_ENABLED = "adb_wifi_enabled"
     }
 }

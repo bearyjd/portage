@@ -61,6 +61,15 @@ should work on-device now. Verify it end-to-end.
 
 ## Part 2 — Silent stdin-streaming install (the deferred build — do this WITH the device)
 
+> **VERIFIED 2026-06-21.** Receiver = Pixel 10 Pro Fold `rango`, fp
+> `google/rango/rango:16/BP4A.260205.001/2026061601`. ntfy (multi-split) installed **silently via
+> the `exec:` bridge** — no per-app confirm dialog, no tap, `installerPackageName=null` (shell-uid
+> `pm`, not Tier-0/store), app launches (byte integrity). Stale-positive → Tier-0 fallback found a
+> hang bug (libadb `connectTls`→NsdManager mDNS ignores thread interruption) → fixed in `c9ef2a2`
+> (PR #70): `LocalAdbBridge.connect()` gates on `adb_wifi_enabled` before connecting + a 90s
+> `AdbApkInstaller` backstop → WD-off now degrades to the Tier-0 `CONFIRM_INSTALL` dialog in ~1s, no
+> freeze. ADR-003 §7 (cross-device pair→connect→probe) also closed. Evidence in ADR-006 §Follow-ups.
+
 ### Why it was deferred (the constraint)
 `pm install-write` runs as **shell uid 2000**. The receiver stages split APKs in app-private storage,
 which shell uid **cannot read** (SELinux + 0700 dirs, not just file mode). A shared on-disk path is not
@@ -116,10 +125,12 @@ branch already falls through to Tier-0 (stale-positive tolerance).
    that the `exec:`-vs-`shell:` binary-stdin question was answered correctly.
 
 ### Still OPEN after this session (state honestly)
-- **Cross-device** old→new pairing + install (ADR-003 §7 / AC-X) — needs two devices.
-- **Split target-compatibility** (AC-15) — needs a target of a different ABI/density class than the
-  source; single-device smoke (source == target) cannot exercise it.
-- No "verified/complete" claim on either leg without that hardware.
+- ~~**Cross-device** old→new pairing + install (ADR-003 §7)~~ — **CLOSED 2026-06-21** (comet → rango:
+  pair→connect→probe→`SILENT_INSTALL` on metal; wizard disconnects after the probe — no held shell uid).
+- **Split target-compatibility** (AC-15) — STILL OPEN: needs a target of a different ABI/density class
+  than the source; both verification devices were arm64 / similar density, so this pair cannot
+  exercise it.
+- No "verified/complete" claim on AC-15 without that differing hardware.
 
 ---
 
@@ -142,6 +153,7 @@ sensor app before trusting it in the default set (VERIFICATION-RUNBOOK V7 TENTAT
 | P3 (split install session) | ✅ | JVM (path-based; readability → stdin here) |
 | P4 (apply provider + Tier-0) | ✅ | JVM + assemble |
 | P6 Tier-0 on-device | ✅ | **hardware-verified 2026-06-21** (rango / Pixel 10 Pro Fold; single-APK + multi-split, carried not store) |
-| P6 silent stdin-stream | ⏳ | **this runbook, Part 2** |
-| Cross-device / AC-15 | ⛔ | OPEN — needs 2 devices |
+| P6 silent stdin-stream | ✅ | **hardware-verified 2026-06-21** (rango; ntfy multi-split, silent `exec:` + WD-gate fallback) |
+| Cross-device pair→install | ✅ | hardware-verified 2026-06-21 (comet → rango; ADR-003 §7 closed) |
+| Split target-compat (AC-15) | ⛔ | OPEN — needs differing ABI/density hardware |
 | Phase 5 (perm parity) | ⏳ | gated, separate |
