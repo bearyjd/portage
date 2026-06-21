@@ -98,7 +98,10 @@ benign (`SenderViewModel` ~L186).
   local contacts visible in default Contacts view; camera releases promptly post-scan;
   a multi-split app (e.g. Signal) on the sender stages ALL splits (base + every
   `splitSourceDirs` entry) — confirm `splitSourceDirs` is populated from
-  `getInstalledApplications(0)` on GOS A16 (ADR-006 Phase 1b open item).
+  `getInstalledApplications(0)` on GOS A16 (ADR-006 Phase 1b open item); the Tier-0 APK
+  install tap→commit→STATUS_PENDING_USER_ACTION→`ApkInstallResultReceiver`→system-confirm
+  dialog→install chain fires end-to-end on a Pixel/GOS device (the broadcast→confirm hop is
+  instrumented/hardware-only; only the receiver's status-routing helper is JVM-tested).
 - The QR-encoded PSK String is a non-zeroizable accepted residual (THREAT_MODEL §1
   boundary), documented in `SenderViewModel`.
 

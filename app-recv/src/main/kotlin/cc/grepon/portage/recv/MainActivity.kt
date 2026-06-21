@@ -21,6 +21,9 @@ import androidx.lifecycle.ViewModelProvider
 import cc.grepon.portage.adbbridge.AdbBridge
 import cc.grepon.portage.adbbridge.AdbBridges
 import cc.grepon.portage.providers.ApplyProviderRegistry
+import cc.grepon.portage.providers.apk.ApkApplyProvider
+import cc.grepon.portage.providers.inventory.AppRecord
+import cc.grepon.portage.providers.inventory.InstallAction
 import cc.grepon.portage.providers.bluetooth.BtPairingsApplyProvider
 import cc.grepon.portage.providers.calendar.AndroidCalendarStore
 import cc.grepon.portage.providers.calendar.CalendarApplyProvider
@@ -43,6 +46,11 @@ import cc.grepon.portage.providers.sound.AndroidSoundStore
 import cc.grepon.portage.providers.sound.SoundSelectionApplyProvider
 import cc.grepon.portage.providers.wallpaper.AndroidWallpaperStore
 import cc.grepon.portage.providers.wallpaper.WallpaperApplyProvider
+import cc.grepon.portage.recv.install.PackageInstallerApkInstaller
+import cc.grepon.portage.recv.install.androidApkTargetConfig
+import cc.grepon.portage.recv.install.androidInstalledPackageVersions
+import cc.grepon.portage.recv.install.deferredSilentInstaller
+import cc.grepon.portage.recv.install.hasSilentInstall
 import cc.grepon.portage.recv.privilege.PrivilegeWizardHolder
 import cc.grepon.portage.recv.sms.AndroidSmsRoleCoordinator
 import cc.grepon.portage.recv.sms.SmsRoleCoordinator
@@ -81,6 +89,10 @@ class MainActivity : ComponentActivity() {
         // Sweep staging orphaned by a mid-transfer process death — staged payloads are
         // plaintext PII and must never outlive a single session.
         File(cacheDir, STAGING_DIR).deleteRecursively()
+        // Sweep sealed-but-uncommitted PackageInstaller sessions left by a previous run that was
+        // abandoned before the user tapped to install (fix 5c). mySessions is app-scoped; only
+        // this app's own sessions are touched. Best-effort.
+        PackageInstallerApkInstaller(applicationContext).abandonUncommittedSessions()
         smsRoleCoordinator.requestLauncher = { intent -> smsRoleLauncher.launch(intent) }
         setContent {
             ReceiverApp(
@@ -103,6 +115,9 @@ class MainActivity : ComponentActivity() {
 
 private const val STAGING_DIR = "portage-staging"
 
+/** APK split staging subdir under [STAGING_DIR]; swept with the rest on launch / process-death recovery. */
+private const val APK_STAGING_DIR = "apk"
+
 /** Builds the ViewModel with the compiled Tier-0 apply registry (one provider per kind). */
 private class ReceiverViewModelFactory(
     private val context: Context,
@@ -110,8 +125,16 @@ private class ReceiverViewModelFactory(
 ) : ViewModelProvider.Factory {
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        val registryFactory = ApplyRegistryFactory { onInstallActions, onRepairEntries, onRelayPrompt ->
+        val registryFactory = ApplyRegistryFactory {
+            onInstallActions, onRepairEntries, onRelayPrompt, onApkInstallPrompt ->
             val resolver = context.contentResolver
+            // The Tier-0 PackageInstaller adapter: turns each reconciled APK item into a sealed
+            // multi-split session and surfaces a one-tap install-confirm row on the Done screen.
+            val apkInstaller = PackageInstallerApkInstaller(context)
+            // App-private staging for APK splits: the apply provider streams each split here, the
+            // PackageInstaller adapter copies the bytes into its session, then the provider wipes them
+            // (stage → act → wipe). Plaintext payload, so it lives under the swept cacheDir staging root.
+            val apkStagingDir = File(File(context.cacheDir, STAGING_DIR), APK_STAGING_DIR)
             ApplyProviderRegistry(
                 listOf(
                     ContactsApplyProvider(AndroidContactsStore(resolver)),
@@ -122,6 +145,34 @@ private class ReceiverViewModelFactory(
                     // and the gateway's isSelfDefault gate self-skips outside that window.
                     SmsApplyProvider(AndroidSmsStore(resolver), AndroidSmsRoleGateway(context)),
                     AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), onInstallActions),
+                    // APK keystone (ADR-006): stage each carried app's split set, reconcile against this
+                    // device, then install. The silent (privileged) seam is the DEFERRED P6 path
+                    // (deferredSilentInstaller → always Deferred → Tier-0); every install routes through
+                    // the functional Tier-0 PackageInstaller fallback emitted below. The capability set is
+                    // read at transfer start from the wizard (Ready → caps, else emptySet) — today
+                    // SILENT_INSTALL still degrades to Tier-0, but the wiring is correct and future-proof.
+                    // C1/D2 discipline: this :providers provider holds NO :adb-bridge edge — every Android/
+                    // privilege concern is injected here from :app-recv.
+                    ApkApplyProvider(
+                        stagingDir = apkStagingDir,
+                        targetConfig = androidApkTargetConfig(context),
+                        installedVersions = androidInstalledPackageVersions(context),
+                        silentInstaller = deferredSilentInstaller,
+                        hasSilentInstall = {
+                            hasSilentInstall(PrivilegeWizardHolder.get(context).step.value)
+                        },
+                        onApkInstall = { action ->
+                            // Synchronous: seal the PackageInstaller session over the staged bytes BEFORE
+                            // the provider wipes them, then surface the one-tap confirm row.
+                            apkInstaller.install(action)?.let(onApkInstallPrompt)
+                        },
+                        // An "incompatible on this device" app reuses the inventory store list as a
+                        // get-it-from-the-store deep link (ADR-006 D3 step 2).
+                        onStoreFallback = { packageName, label ->
+                            InstallAction.from(AppRecord(packageName, 0L, null, label))
+                                ?.let { onInstallActions(listOf(it)) }
+                        },
+                    ),
                     // Tier-0 SYSTEM keys write today. Tier-1 SECURE/GLOBAL keys go live once the
                     // one-shot WRITE_SECURE_SETTINGS grant lands — normally installed by the
                     // privilege wizard's probe (ADR-003); this lazy TierOneGrant adapter is the
@@ -164,6 +215,8 @@ private class ReceiverViewModelFactory(
             stagingDir = File(context.cacheDir, STAGING_DIR),
             smsRoleCoordinator = smsRoleCoordinator,
             applyRegistryFactory = registryFactory,
+            // Abandon sealed-but-uncommitted sessions on return-home (fix 5b).
+            abandonSessions = { PackageInstallerApkInstaller(context).abandonUncommittedSessions() },
         ) as T
     }
 }
