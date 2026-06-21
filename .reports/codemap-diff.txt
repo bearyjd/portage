@@ -1,0 +1,33 @@
+portage codemap scan — 2026-06-21
+=================================
+Status: INITIAL GENERATION (no prior codemaps in docs/CODEMAPS/; diff = all new, no approval gate).
+
+Scanned: 8 Gradle modules · 120 main + 51 test Kotlin files (171 total).
+Generated docs/CODEMAPS/: architecture.md · backend.md (engine) · frontend.md (Compose UI) ·
+  data.md (wire model) · dependencies.md.
+(Web-template files reshaped to fit an Android multi-module app: no REST routes / DB tables / page tree.)
+
+Module DAG (by depth):
+  L0  core-model · settings-catalog · adb-bridge          (no module deps)
+  L1  core-transport→core-model · wizard→adb-bridge · providers→{core-model,settings-catalog}
+  L2  app-send→{core-model,core-transport,providers}
+      app-recv→{core-model,core-transport,providers,settings-catalog,wizard,adb-bridge}
+
+Architecture facts captured:
+  - Two-APK privilege-by-packaging; app-send has NO privilege edges (CI no-escalation gate).
+  - AdbBridge = sole privileged entry (ADR-003); providers is adb-bridge-free (seam injection, ADR-006 C1).
+  - 11 ItemKinds: 9 Tier0 + 2 Tier1 (apk, settings).
+  - Transport: Noise PSK_XX (vendored noise-java) over u16-framed TCP, CBOR ProtocolMessages.
+
+New since last scan: n/a (initial).
+Dependencies detected: kotlinx-serialization/coroutines · noise-java (vendored) · libadb-android 3.1.1 ·
+  conscrypt · bouncycastle bcpkix · zxing · compose-bom. External services: NONE.
+
+Largest files (review candidates >400L):
+  app-recv: TransferScreen 581 · WizardScreen 447 · ReceiverViewModel 414 · ReceiverApp 402 · ChecklistScreen 388
+  adb-bridge: LocalAdbBridge 473 · providers: AppBackupRelayProviders 383 · app-send: SenderViewModel 402
+  (All <800-line guideline; flag if they grow.)
+
+Staleness: n/a (initial). Re-run after feature additions, new ItemKinds, new modules, or refactors.
+Recent context: ADR-006 APK keystone P1–P4 + P6 hardware all landed (main tip 3a45df8); AC-15 density
+  reconcile fix (#73) is reflected in backend.md (keep-fallback) and data.md.
