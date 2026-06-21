@@ -70,10 +70,11 @@ interface AdbBridge {
      * written, then a single commit. A base APK plus zero or more configuration splits all land
      * in the same session — that is how the platform installs a split app atomically.
      *
-     * Each [StagedApk.path] is a device file path the caller has already staged; shell uid (2000)
-     * must be able to READ every path at install time (see [StagedApk]). The [StagedApk.name] is
-     * re-validated at this boundary before it reaches `pm install-write` (defence in depth — the
-     * name is wire-derived).
+     * Each [StagedApk] is streamed over the adb `exec:` stream's stdin into
+     * `pm install-write -S <size> .. -`; no shell-readable file path ever exists (ADR-006 P6 — the
+     * receiver's app-private staging is not shell-uid-readable, so the bytes are piped, never a path).
+     * The [StagedApk.name] is re-validated at this boundary before it reaches `pm install-write`
+     * (defence in depth — the name is wire-derived).
      */
     suspend fun installApk(staged: List<StagedApk>): InstallResult
 
@@ -190,20 +191,16 @@ interface AdbBridge {
 
     /**
      * One staged APK file in an install session: its [name] (the literal `"base"` for the base
-     * APK, or a validated split name) and the device [path] it has already been written to.
+     * APK, or a validated split name), its [size] in bytes, and an [open] opener that yields a
+     * FRESH [java.io.InputStream] of exactly [size] bytes.
      *
-     * P6 on-device VERIFY_FIRST: the bridge runs `pm install-write` as shell uid (2000), so the
-     * device must be able to read [path] as that uid AT INSTALL TIME. The receiver app's own
-     * `cacheDir` is app-private (uid mismatch) — staging the file to a shell-readable location
-     * (or switching to stdin streaming) is a P4 concern owned by the caller; the bridge only
-     * documents and validates here, it does not choose the staging location.
-     *
-     * The path-based mechanism, the eventual stdin switch (`pm install-write -S <size> .. -`), and
-     * the staging-location security review are tracked in docs/prp/P6-apk-hardware-runbook.md (the
-     * P4/P6 staging-location PR routes through security-reviewer; the stdin path is a protocol
-     * change needing `-S`, not a drop-in).
+     * P6 design (docs/prp/P6-apk-hardware-runbook.md §Part 2): `pm install-write` runs as shell uid
+     * (2000), which cannot read the receiver's app-private staging (SELinux + 0700 dirs). So the
+     * bytes are streamed over the adb `exec:` stream's stdin into `pm install-write -S <size> .. -`
+     * — no shared on-disk file ever exists. The bridge passes [size] as `-S` and pipes [open]'s
+     * stream; the caller owns where the bytes come from.
      */
-    data class StagedApk(val name: String, val path: String)
+    data class StagedApk(val name: String, val size: Long, val open: () -> java.io.InputStream)
 
     sealed interface InstallResult {
         data object Installed : InstallResult

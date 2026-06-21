@@ -46,10 +46,10 @@ import cc.grepon.portage.providers.sound.AndroidSoundStore
 import cc.grepon.portage.providers.sound.SoundSelectionApplyProvider
 import cc.grepon.portage.providers.wallpaper.AndroidWallpaperStore
 import cc.grepon.portage.providers.wallpaper.WallpaperApplyProvider
+import cc.grepon.portage.recv.install.AdbApkInstaller
 import cc.grepon.portage.recv.install.PackageInstallerApkInstaller
 import cc.grepon.portage.recv.install.androidApkTargetConfig
 import cc.grepon.portage.recv.install.androidInstalledPackageVersions
-import cc.grepon.portage.recv.install.deferredSilentInstaller
 import cc.grepon.portage.recv.install.hasSilentInstall
 import cc.grepon.portage.recv.privilege.PrivilegeWizardHolder
 import cc.grepon.portage.recv.sms.AndroidSmsRoleCoordinator
@@ -128,6 +128,9 @@ private class ReceiverViewModelFactory(
         val registryFactory = ApplyRegistryFactory {
             onInstallActions, onRepairEntries, onRelayPrompt, onApkInstallPrompt ->
             val resolver = context.contentResolver
+            // One process-scoped bridge (AdbBridges.local caches a single instance): the silent APK
+            // installer and the Tier-1 settings grant both go through it.
+            val adbBridge = AdbBridges.local(context)
             // The Tier-0 PackageInstaller adapter: turns each reconciled APK item into a sealed
             // multi-split session and surfaces a one-tap install-confirm row on the Done screen.
             val apkInstaller = PackageInstallerApkInstaller(context)
@@ -146,18 +149,21 @@ private class ReceiverViewModelFactory(
                     SmsApplyProvider(AndroidSmsStore(resolver), AndroidSmsRoleGateway(context)),
                     AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), onInstallActions),
                     // APK keystone (ADR-006): stage each carried app's split set, reconcile against this
-                    // device, then install. The silent (privileged) seam is the DEFERRED P6 path
-                    // (deferredSilentInstaller → always Deferred → Tier-0); every install routes through
-                    // the functional Tier-0 PackageInstaller fallback emitted below. The capability set is
-                    // read at transfer start from the wizard (Ready → caps, else emptySet) — today
-                    // SILENT_INSTALL still degrades to Tier-0, but the wiring is correct and future-proof.
-                    // C1/D2 discipline: this :providers provider holds NO :adb-bridge edge — every Android/
-                    // privilege concern is injected here from :app-recv.
+                    // device, then install. The silent (privileged) seam is the P6 stdin-streaming
+                    // installer (AdbApkInstaller → pm install-write -S .. - over the bridge); when
+                    // SILENT_INSTALL is probed present the install is silent, otherwise hasSilentInstall
+                    // is false and the apply provider takes the Tier-0 PackageInstaller fallback emitted
+                    // below. The capability set is read at transfer start from the wizard (Ready → caps,
+                    // else emptySet). C1/D2 discipline: this :providers provider holds NO :adb-bridge
+                    // edge — every Android/privilege concern is injected here from :app-recv.
                     ApkApplyProvider(
                         stagingDir = apkStagingDir,
                         targetConfig = androidApkTargetConfig(context),
                         installedVersions = androidInstalledPackageVersions(context),
-                        silentInstaller = deferredSilentInstaller,
+                        // AdbApkInstaller self-guards via AdbBridge.connect() (which returns NoEndpoint
+                        // when Wireless Debugging is off, never driving libadb into the uninterruptible
+                        // mDNS-discovery hang — GOS A16) plus an outer attempt-timeout backstop.
+                        silentInstaller = AdbApkInstaller(adbBridge),
                         hasSilentInstall = {
                             hasSilentInstall(PrivilegeWizardHolder.get(context).step.value)
                         },
@@ -181,7 +187,7 @@ private class ReceiverViewModelFactory(
                     SettingsApplyProvider(
                         AndroidSystemSettingsStore(context),
                         AndroidSecureGlobalSettingsStore(context),
-                        tierOneGrant = adbTierOneGrant(AdbBridges.local(context)),
+                        tierOneGrant = adbTierOneGrant(adbBridge),
                     ),
                     // Tier 0: sets home/lock wallpaper via the normal SET_WALLPAPER permission.
                     // The provider's bounds-only decode gate rejects decompression bombs before

@@ -26,6 +26,17 @@ internal interface AdbDeviceGate {
     suspend fun pair(port: Int, pairingCode: String)
 
     /**
+     * Is Wireless Debugging currently enabled on this device (`Settings.Global "adb_wifi_enabled"`)?
+     * Read-only, synchronous, never throws. [LocalAdbBridge.connect] consults this BEFORE [connect]:
+     * with the toggle off there is no `_adb-tls-connect` endpoint, and libadb's NsdManager mDNS
+     * discovery wait IGNORES thread interruption on-device (GOS A16) — so a [connect] into a missing
+     * endpoint hangs INDEFINITELY (the bridge's `withTimeout` fires but the worker never unwinds) and
+     * [closeQuietly] cannot rescue it (it only closes an established connection). Gating up front is
+     * the only safe option (the same guard the wizard's `route()` already uses).
+     */
+    fun isWirelessDebuggingEnabled(): Boolean
+
+    /**
      * Discover the local `_adb-tls-connect` endpoint and connect with our key. Returns true on
      * a (new or already-live) connection; throws on discovery/auth failure.
      */
@@ -47,4 +58,12 @@ internal interface AdbDeviceGate {
      */
     @Throws(Exception::class)
     suspend fun exec(command: String): String
+
+    /** Run one binary-safe `exec:` command, streaming EXACTLY [size] bytes from [input] to the
+     *  command's stdin, then return everything it wrote to stdout until EOF. Uses the adb `exec:`
+     *  service (no pty, no line-ending translation) — the only safe channel for a binary write
+     *  phase like `pm install-write -S <size> ... -`. `exec:` has NO exit code; callers parse the
+     *  command's own output. Throws on transport failure. */
+    @Throws(Exception::class)
+    suspend fun execWithStdin(command: String, input: java.io.InputStream, size: Long): String
 }
