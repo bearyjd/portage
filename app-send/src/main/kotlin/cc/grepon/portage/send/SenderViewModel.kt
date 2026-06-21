@@ -14,9 +14,12 @@ import androidx.lifecycle.viewModelScope
 import cc.grepon.portage.model.ItemStatus
 import cc.grepon.portage.model.PairingPayload
 import cc.grepon.portage.providers.ExportProvider
+import cc.grepon.portage.providers.apk.InstalledApp
+import cc.grepon.portage.providers.apk.InstalledAppSource
 import cc.grepon.portage.providers.inventory.InventorySource
 import cc.grepon.portage.providers.relay.RelayAppDetector
 import cc.grepon.portage.providers.relay.RelayCandidate
+import cc.grepon.portage.send.apk.apkExportProviders
 import cc.grepon.portage.send.pairing.LanAddresses
 import cc.grepon.portage.send.relay.RelayFile
 import cc.grepon.portage.send.relay.relayExportProviders
@@ -75,6 +78,11 @@ class SenderViewModel(
     // additive. Detection only SUGGESTS which apps have a backup the user can relay; the user still
     // exports the file IN the app and picks it via SAF.
     private val inventorySource: InventorySource? = null,
+    // The PackageManager seam used to enumerate installed user apps + their split-APK files so the user
+    // can SELECT which apps to carry (ADR-006 Phase 1b). Null (default) ⇒ no "apps to carry" section,
+    // the flow is unaffected. READ-ONLY: no privilege, no ADB bridge, no escalation. Selection is
+    // sender-side — only selected apps become providers, so only they are staged/hashed/manifested.
+    private val installedAppSource: InstalledAppSource? = null,
     // Where relay picks are resolved. Resolution may stream a whole file to count bytes (SAF omits
     // SIZE), so it MUST stay off the main thread — defaults to IO; tests inject the test dispatcher.
     private val relayResolveDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -100,6 +108,24 @@ class SenderViewModel(
     private val _relayPicks = MutableStateFlow<List<RelayFile>>(emptyList())
     val relayPicks: StateFlow<List<RelayFile>> = _relayPicks.asStateFlow()
 
+    /**
+     * The installed user apps the sender CAN carry (ADR-006 Phase 1b), enumerated once via the
+     * installed-app seam in [init]. Each carries its identity + split-APK file sizes so the Home screen
+     * shows a per-app size and a running selected total. Empty when no seam is wired. This is the
+     * universe the user selects FROM; it is independent of the relay candidates.
+     */
+    private val _availableApps = MutableStateFlow<List<InstalledApp>>(emptyList())
+    val availableApps: StateFlow<List<InstalledApp>> = _availableApps.asStateFlow()
+
+    /**
+     * The package names the user has SELECTED to carry (ADR-006 Phase 1b). Default = NONE selected: an
+     * app is only staged/hashed/manifested when the user opts in, so no surprise multi-GB transfer. Only
+     * these apps become [apkExportProviders] at [onStartTransfer]. Selection is kept as a Set so a toggle
+     * is order-free and idempotent, and survives a re-enumeration of [_availableApps].
+     */
+    private val _selectedAppPackages = MutableStateFlow<Set<String>>(emptySet())
+    val selectedAppPackages: StateFlow<Set<String>> = _selectedAppPackages.asStateFlow()
+
     private var channel: SecureChannel? = null
     private var staged: StagedManifest? = null
     private var transferJob: Job? = null
@@ -108,6 +134,37 @@ class SenderViewModel(
         inventorySource?.let { source ->
             _relayCandidates.value = runCatching { RelayAppDetector.detect(source) }.getOrDefault(emptyList())
         }
+        // Enumerating installed user apps walks PackageManager + reads each app's APK file sizes across
+        // every user app — too heavy for the MAIN thread (ANR/jank). Run it on [relayResolveDispatcher]
+        // (IO in production, the test dispatcher under test); _availableApps populates asynchronously.
+        installedAppSource?.let { source ->
+            viewModelScope.launch(relayResolveDispatcher) {
+                _availableApps.value = runCatching { source.installedUserApps() }.getOrDefault(emptyList())
+            }
+        }
+    }
+
+    /** Toggle one app's membership in the carry selection (ADR-006 Phase 1b). Default starts empty. */
+    fun toggleApp(packageName: String) {
+        val current = _selectedAppPackages.value
+        _selectedAppPackages.value =
+            if (packageName in current) current - packageName else current + packageName
+    }
+
+    /** Select every available app at once (one tap to carry the whole set). */
+    fun selectAllApps() {
+        _selectedAppPackages.value = _availableApps.value.map { it.packageName }.toSet()
+    }
+
+    /** Clear the carry selection (back to the default: nothing selected). */
+    fun clearAppSelection() {
+        _selectedAppPackages.value = emptySet()
+    }
+
+    /** The available apps the user has selected, in [_availableApps] order (the carry set). */
+    private fun selectedApps(): List<InstalledApp> {
+        val selected = _selectedAppPackages.value
+        return _availableApps.value.filter { it.packageName in selected }
     }
 
     /**
@@ -157,7 +214,14 @@ class SenderViewModel(
                 // it as its own item — distinct id + file — alongside the auto-detected Tier-0
                 // providers. A half-finished pick self-omits (the provider's available() gate). This is
                 // the single integration point that gives APP_BACKUP_RELAY a producer.
-                val allProviders = providers + relayExportProviders(livePicks)
+                //
+                // Append the user-SELECTED apps to carry the SAME way (ADR-006 Phase 1b): each selected
+                // installed app becomes an APK export provider so ManifestBuilder stages its split set as
+                // its own item. Selection is sender-side — only selected apps get a provider, so only they
+                // are staged/hashed/manifested (default = none selected, no surprise multi-GB transfer).
+                // READ-ONLY PackageManager + file reads; no privilege, no escalation.
+                val allProviders =
+                    providers + relayExportProviders(livePicks) + apkExportProviders(selectedApps())
                 val built = ManifestBuilder(allProviders, stagingDir, senderName).build()
                     .also { staged = it }
                 if (built.items.isEmpty()) {
@@ -262,6 +326,9 @@ class SenderViewModel(
         // Drop the relay picks too (and release each SAF grant): returning Home is a fresh start; the
         // user re-picks from the live app export each session.
         clearRelayPicks()
+        // Reset the carry selection to the default (nothing selected) — a fresh start re-asks the user
+        // which apps to carry rather than silently re-carrying the last set.
+        clearAppSelection()
         _state.value = SenderState.Home
     }
 

@@ -95,7 +95,10 @@ benign (`SenderViewModel` ~L186).
   role grant→write→relinquish on a Pixel/GOS device; whether `READ_SMS` is actually needed
   for role eligibility (drop it if not — recv only writes).
 - **On-device VERIFY_FIRST**: WRITE_CALL_LOG-only inserts succeed on GOS; null-account
-  local contacts visible in default Contacts view; camera releases promptly post-scan.
+  local contacts visible in default Contacts view; camera releases promptly post-scan;
+  a multi-split app (e.g. Signal) on the sender stages ALL splits (base + every
+  `splitSourceDirs` entry) — confirm `splitSourceDirs` is populated from
+  `getInstalledApplications(0)` on GOS A16 (ADR-006 Phase 1b open item).
 - The QR-encoded PSK String is a non-zeroizable accepted residual (THREAT_MODEL §1
   boundary), documented in `SenderViewModel`.
 

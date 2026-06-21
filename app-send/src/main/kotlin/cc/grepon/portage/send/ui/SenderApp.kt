@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import cc.grepon.portage.providers.apk.InstalledApp
 import cc.grepon.portage.providers.relay.RelayCandidate
 import cc.grepon.portage.send.SenderState
 import cc.grepon.portage.send.SenderViewModel
@@ -37,6 +38,8 @@ fun SenderApp(viewModel: SenderViewModel, summary: DeviceSummary) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val relayCandidates by viewModel.relayCandidates.collectAsStateWithLifecycle()
     val relayPicks by viewModel.relayPicks.collectAsStateWithLifecycle()
+    val availableApps by viewModel.availableApps.collectAsStateWithLifecycle()
+    val selectedAppPackages by viewModel.selectedAppPackages.collectAsStateWithLifecycle()
 
     PortageTheme {
         Scaffold(
@@ -61,6 +64,8 @@ fun SenderApp(viewModel: SenderViewModel, summary: DeviceSummary) {
                     summary = summary,
                     relayCandidates = relayCandidates,
                     relayPicks = relayPicks,
+                    availableApps = availableApps,
+                    selectedAppPackages = selectedAppPackages,
                 )
             }
         }
@@ -75,6 +80,8 @@ private fun StateBody(
     summary: DeviceSummary,
     relayCandidates: List<RelayCandidate>,
     relayPicks: List<RelayFile>,
+    availableApps: List<InstalledApp>,
+    selectedAppPackages: Set<String>,
 ) {
     when (current) {
         is SenderState.Home ->
@@ -86,6 +93,11 @@ private fun StateBody(
                 relayPicks = relayPicks,
                 onResolveRelayPick = viewModel::resolveAndAddRelayPick,
                 onRemoveRelayPick = viewModel::removeRelayPick,
+                availableApps = availableApps,
+                selectedAppPackages = selectedAppPackages,
+                onToggleApp = viewModel::toggleApp,
+                onSelectAllApps = viewModel::selectAllApps,
+                onClearAppSelection = viewModel::clearAppSelection,
             )
 
         is SenderState.Preparing ->

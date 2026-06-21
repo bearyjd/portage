@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.content.ContextCompat
+import cc.grepon.portage.providers.apk.InstalledApp
 import cc.grepon.portage.providers.relay.RelayCandidate
 import cc.grepon.portage.send.relay.RelayFile
 import cc.grepon.portage.send.ui.theme.LocalSpacing
@@ -66,6 +67,11 @@ fun HomeScreen(
     relayPicks: List<RelayFile> = emptyList(),
     onResolveRelayPick: (resolve: () -> RelayFile?) -> Unit = {},
     onRemoveRelayPick: (Long) -> Unit = {},
+    availableApps: List<InstalledApp> = emptyList(),
+    selectedAppPackages: Set<String> = emptySet(),
+    onToggleApp: (String) -> Unit = {},
+    onSelectAllApps: () -> Unit = {},
+    onClearAppSelection: () -> Unit = {},
 ) {
     val s = LocalSpacing.current
     val context = LocalContext.current
@@ -117,6 +123,20 @@ fun HomeScreen(
                 picks = relayPicks,
                 onResolvePick = onResolveRelayPick,
                 onRemovePick = onRemoveRelayPick,
+            )
+        }
+        // Apps to carry (ADR-006 Phase 1b): only renders when the installed-app seam found apps. Lets the
+        // user select which installed apps ride along as their own APK items — default none, clear total.
+        if (availableApps.isNotEmpty()) {
+            Spacer(Modifier.height(s.lg))
+            HairlineDivider()
+            Spacer(Modifier.height(s.lg))
+            AppCarrySection(
+                apps = availableApps,
+                selected = selectedAppPackages,
+                onToggleApp = onToggleApp,
+                onSelectAll = onSelectAllApps,
+                onClear = onClearAppSelection,
             )
         }
         Spacer(Modifier.height(s.xl))
