@@ -15,6 +15,7 @@ package cc.grepon.portage.adbbridge
 
 import android.content.Context
 import android.os.Build
+import android.provider.Settings
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +57,12 @@ internal class LibAdbDeviceGate(
             manager.pair(LOCALHOST, port, pairingCode)
         }
     }
+
+    override fun isWirelessDebuggingEnabled(): Boolean = runCatching {
+        // No SDK constant; the key is stable AOSP ("adb_wifi_enabled"), the same one
+        // AndroidWizardEnvironment and LADB read. Absent ⇒ off. Never throws (read-only Settings).
+        Settings.Global.getInt(appContext.contentResolver, ADB_WIFI_ENABLED, 0) == 1
+    }.getOrDefault(false)
 
     override suspend fun connect(timeoutMs: Long): Boolean = runInterruptible(io) {
         manager.connectTls(appContext, timeoutMs)
@@ -132,6 +139,9 @@ internal class LibAdbDeviceGate(
         const val READ_BUFFER_BYTES = 8192
         const val WRITE_BUFFER_BYTES = 8192
         const val MAX_OUTPUT_BYTES = 4 * 1024 * 1024 // defensive cap; no portage op needs more
+
+        /** AOSP `Settings.Global` key for the Wireless Debugging toggle (no SDK constant exists). */
+        const val ADB_WIFI_ENABLED = "adb_wifi_enabled"
     }
 }
 

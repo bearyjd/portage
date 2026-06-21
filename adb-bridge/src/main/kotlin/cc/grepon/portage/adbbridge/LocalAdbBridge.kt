@@ -69,6 +69,13 @@ class LocalAdbBridge internal constructor(
     override suspend fun connect(): AdbBridge.ConnectionResult = withContext(io) {
         opLock.withLock {
             if (gate.isConnected()) return@withLock AdbBridge.ConnectionResult.Connected
+            // HANG GUARD (every caller, uniformly): with Wireless Debugging off there is no
+            // _adb-tls-connect endpoint, and libadb's NsdManager mDNS discovery wait IGNORES thread
+            // interruption on-device (GOS A16) — so gate.connect() would hang INDEFINITELY (withTimeout
+            // fires but the worker never unwinds, holding opLock) and closeQuietly() cannot rescue an
+            // in-flight discovery. Gate up front and never call connect() into a missing endpoint; the
+            // wizard's route() uses the same guard. NoEndpoint is exactly "Wireless Debugging is off".
+            if (!gate.isWirelessDebuggingEnabled()) return@withLock AdbBridge.ConnectionResult.NoEndpoint
             try {
                 // The outer guard fires TIMEOUT_SLACK_MS after the gate's own timeout so the
                 // gate gets to map its own, more specific failure first.

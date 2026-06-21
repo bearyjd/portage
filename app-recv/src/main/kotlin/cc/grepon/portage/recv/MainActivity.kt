@@ -160,6 +160,9 @@ private class ReceiverViewModelFactory(
                         stagingDir = apkStagingDir,
                         targetConfig = androidApkTargetConfig(context),
                         installedVersions = androidInstalledPackageVersions(context),
+                        // AdbApkInstaller self-guards via AdbBridge.connect() (which returns NoEndpoint
+                        // when Wireless Debugging is off, never driving libadb into the uninterruptible
+                        // mDNS-discovery hang — GOS A16) plus an outer attempt-timeout backstop.
                         silentInstaller = AdbApkInstaller(adbBridge),
                         hasSilentInstall = {
                             hasSilentInstall(PrivilegeWizardHolder.get(context).step.value)

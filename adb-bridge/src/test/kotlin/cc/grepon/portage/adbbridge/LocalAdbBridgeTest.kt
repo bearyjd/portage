@@ -36,6 +36,9 @@ class LocalAdbBridgeTest {
     private class FakeGate : AdbDeviceGate {
         var connected = false
         var closed = false
+        // Wireless Debugging toggle — default ON so the existing connect tests exercise gate.connect().
+        var wirelessDebuggingEnabled = true
+        var connectAttempts = 0
         var pairBehavior: suspend (Int, String) -> Unit = { _, _ -> }
         var connectBehavior: suspend (Long) -> Boolean = { true }
         var execBehavior: suspend (String) -> String = { "" }
@@ -53,7 +56,10 @@ class LocalAdbBridgeTest {
             pairBehavior(port, pairingCode)
         }
 
+        override fun isWirelessDebuggingEnabled(): Boolean = wirelessDebuggingEnabled
+
         override suspend fun connect(timeoutMs: Long): Boolean {
+            connectAttempts++
             val result = connectBehavior(timeoutMs)
             if (result) connected = true
             return result
@@ -189,6 +195,33 @@ class LocalAdbBridgeTest {
     fun `connect times out as Timeout`() = runTest {
         val gate = FakeGate().apply { connectBehavior = { delay(60_000); true } }
         assertThat(bridge(gate).connect()).isEqualTo(AdbBridge.ConnectionResult.Timeout)
+    }
+
+    @Test
+    fun `connect with Wireless Debugging off is NoEndpoint and NEVER calls gate connect`() = runTest {
+        // The hang guard: with WD off, libadb's mDNS discovery ignores thread interruption and
+        // gate.connect() would hang INDEFINITELY. The bridge must short-circuit to NoEndpoint up
+        // front and never reach the gate's connect (which would deadlock on a real device).
+        val gate = FakeGate().apply {
+            connected = false
+            wirelessDebuggingEnabled = false
+            connectBehavior = { error("gate.connect() must not be called when Wireless Debugging is off") }
+        }
+        assertThat(bridge(gate).connect()).isEqualTo(AdbBridge.ConnectionResult.NoEndpoint)
+        assertThat(gate.connectAttempts).isEqualTo(0) // proves the gate was never driven into the hang
+    }
+
+    @Test
+    fun `connect with WD off but an already-live link stays Connected (no reconnect needed)`() = runTest {
+        // The WD gate only guards the RECONNECT path. An already-connected gate is reported Connected
+        // without consulting the toggle or calling connect() — it cannot hit the discovery hang.
+        val gate = FakeGate().apply {
+            connected = true
+            wirelessDebuggingEnabled = false
+            connectBehavior = { error("must not reconnect an already-live link") }
+        }
+        assertThat(bridge(gate).connect()).isEqualTo(AdbBridge.ConnectionResult.Connected)
+        assertThat(gate.connectAttempts).isEqualTo(0)
     }
 
     // ── shell ────────────────────────────────────────────────────────────────────────────────
