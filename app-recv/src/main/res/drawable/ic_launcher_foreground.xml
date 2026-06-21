@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  portage-recv — adaptive icon foreground (v3)
+  Hero: single bold side-on canoe. Aqua #5FD0C6. Drop arc + shore dots + chevron.
+
+  Canoe geometry: identical to portage-send v3 (same outer hull, cavity, thwarts, keel).
+  Arriving (recv): canoe level (0° rotation), sitting on its waterline with two ripple
+  lines beneath — calm arrival. No chevron, no dots, no motion ticks.
+  Inner cavity uses the same background teal; thwarts and keel in aqua family.
+
+  Copyright (C) 2026 Grepon Labs LLC. Licensed under AGPL-3.0.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!--
+      OUTER HULL — bold aqua fill. Same geometry as send, no rotation.
+    -->
+    <path
+        android:pathData="M18,42
+            C20,58 38,74 54,74
+            C70,74 88,58 90,42
+            C86,28 68,30 54,30
+            C40,30 22,28 18,42 Z"
+        android:fillColor="#5FD0C6" />
+
+    <!--
+      INNER CAVITY — same teal cutout.
+    -->
+    <path
+        android:pathData="M25,43
+            C27,57 41,67 54,67
+            C67,67 81,57 83,43
+            C80,32 66,34 54,34
+            C42,34 28,32 25,43 Z"
+        android:fillColor="#0E3A45" />
+
+    <!-- THWART 1 -->
+    <path
+        android:pathData="M37,39 Q38,52 39,64"
+        android:strokeColor="#5FD0C6"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- THWART 2 -->
+    <path
+        android:pathData="M69,39 Q70,52 71,64"
+        android:strokeColor="#5FD0C6"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <!-- KEEL -->
+    <path
+        android:pathData="M22,52 Q54,76 86,52"
+        android:strokeColor="#2A9990"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:strokeAlpha="0.7" />
+
+    <!--
+      WATERLINE — two ripple lines for calm arrival.
+      Slightly more prominent than send's single line.
+    -->
+    <path
+        android:pathData="M14,78 Q54,83 94,78"
+        android:strokeColor="#5FD0C6"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:strokeAlpha="0.60" />
+    <path
+        android:pathData="M20,84 Q54,88 88,84"
+        android:strokeColor="#5FD0C6"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:strokeAlpha="0.28" />
+
+</vector>

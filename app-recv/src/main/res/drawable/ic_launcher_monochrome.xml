@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  portage-recv — adaptive icon monochrome layer (v3)
+  Single bold canoe in #FFFFFF. Level (no rotation). No ticks.
+  Two waterline lines below the hull as thin filled strips.
+
+  Copyright (C) 2026 Grepon Labs LLC. Licensed under AGPL-3.0.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- OUTER HULL — full white, level -->
+    <path
+        android:pathData="M18,42
+            C20,58 38,74 54,74
+            C70,74 88,58 90,42
+            C86,28 68,30 54,30
+            C40,30 22,28 18,42 Z"
+        android:fillColor="#FFFFFF" />
+
+    <!-- INNER CAVITY — lighter fill to distinguish interior -->
+    <path
+        android:pathData="M25,43
+            C27,57 41,67 54,67
+            C67,67 81,57 83,43
+            C80,32 66,34 54,34
+            C42,34 28,32 25,43 Z"
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.25" />
+
+    <!-- THWART 1 -->
+    <path
+        android:pathData="M35.4,39 L38.6,39 L40.6,64 L37.4,64 Z"
+        android:fillColor="#FFFFFF" />
+
+    <!-- THWART 2 -->
+    <path
+        android:pathData="M67.4,39 L70.6,39 L72.6,64 L69.4,64 Z"
+        android:fillColor="#FFFFFF" />
+
+    <!-- WATERLINE 1 — thin filled strip approximating the stroke -->
+    <path
+        android:pathData="M14,77 Q54,82 94,77 L94,80 Q54,85 14,80 Z"
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.55" />
+
+    <!-- WATERLINE 2 — subtler second ripple -->
+    <path
+        android:pathData="M20,83 Q54,87 88,83 L88,85 Q54,89 20,85 Z"
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.25" />
+
+</vector>

@@ -1,3 +1,14 @@
+<p align="center">
+  <img src="docs/brand/banner.png" alt="portage — carry your phone over" width="880">
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0-0E3A45"></a>
+  <img alt="GrapheneOS / Android 12+" src="https://img.shields.io/badge/GrapheneOS-Android%2012%2B-5FD0C6">
+  <img alt="Kotlin 2.4 (JDK 17)" src="https://img.shields.io/badge/Kotlin-2.4%20%C2%B7%20JDK%2017-E9A23B">
+  <img alt="LAN only — no cloud" src="https://img.shields.io/badge/transport-LAN%20only%20%C2%B7%20no%20cloud-0E3A45">
+</p>
+
 # portage
 
 **Device-to-device parity transfer for GrapheneOS.** Make a new phone feel like the old
