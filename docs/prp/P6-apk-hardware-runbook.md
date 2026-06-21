@@ -127,10 +127,14 @@ branch already falls through to Tier-0 (stale-positive tolerance).
 ### Still OPEN after this session (state honestly)
 - ~~**Cross-device** old→new pairing + install (ADR-003 §7)~~ — **CLOSED 2026-06-21** (comet → rango:
   pair→connect→probe→`SILENT_INSTALL` on metal; wizard disconnects after the probe — no held shell uid).
-- **Split target-compatibility** (AC-15) — STILL OPEN: needs a target of a different ABI/density class
-  than the source; both verification devices were arm64 / similar density, so this pair cannot
-  exercise it.
-- No "verified/complete" claim on AC-15 without that differing hardware.
+- **Split target-compatibility — DENSITY leg: BUG FOUND→FIXED 2026-06-21.** A native density/ABI delta is
+  structurally unavailable (husky 360 / rango 390 both bucket to xxhdpi; all GOS Pixels are arm64-only), so the
+  receiver `densityDpi` was forced via `wm density 280` (→ xhdpi) ← rango `xxhdpi`-only Termux. Reconcile dropped the
+  lone density split → `PackageInstaller … destroyed because of [Missing split for com.termux]`, install rejected.
+  Control at native xxhdpi installed cleanly (all 5 splits, Termux launches). Fix: `ApkReconcile` keeps a fallback
+  density split when none matches the bucket (don't drop to zero — a required-split-type base else `Missing split`).
+- **Split target-compatibility — ABI leg: STILL OPEN (structural).** The `Incompatible` (non-arm64 target) branch is
+  JVM-unit-tested but unreachable on the arm64-only Pixel fleet; closable end-to-end only on an x86_64 emulator.
 
 ---
 
@@ -155,5 +159,6 @@ sensor app before trusting it in the default set (VERIFICATION-RUNBOOK V7 TENTAT
 | P6 Tier-0 on-device | ✅ | **hardware-verified 2026-06-21** (rango / Pixel 10 Pro Fold; single-APK + multi-split, carried not store) |
 | P6 silent stdin-stream | ✅ | **hardware-verified 2026-06-21** (rango; ntfy multi-split, silent `exec:` + WD-gate fallback) |
 | Cross-device pair→install | ✅ | hardware-verified 2026-06-21 (comet → rango; ADR-003 §7 closed) |
-| Split target-compat (AC-15) | ⛔ | OPEN — needs differing ABI/density hardware |
+| AC-15 density reconcile | ✅ | **hardware bug found→fixed 2026-06-21** (forced `wm density`; drop-to-zero → `Missing split`; keep-fallback fix + regression test) |
+| AC-15 ABI reconcile | ⛔ | JVM-tested; structurally unreachable on arm64-only Pixels (x86_64 emulator only) |
 | Phase 5 (perm parity) | ⏳ | gated, separate |

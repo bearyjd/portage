@@ -28,9 +28,12 @@ package cc.grepon.portage.providers.apk
  *     dimension is genuinely absent — portage cannot synthesize a split it never had; pretending
  *     otherwise produces a broken app). A base with no abi splits at all is the trivial single-APK case
  *     and stays compatible.
- *  3. Density config splits: keep only the target's [ApkTargetConfig.densityBucket]. A missing density
- *     split is NOT fatal — Android falls back to a present density or to base resources — so an absent
- *     density just means none is kept, never INCOMPATIBLE.
+ *  3. Density config splits: keep the target's [ApkTargetConfig.densityBucket] split + the density-
+ *     independent nodpi/anydpi splits. If NONE match the target bucket, keep the source's density
+ *     split(s) ANYWAY (never drop to zero): an App Bundle may mark density a REQUIRED split type, so a
+ *     commit carrying no density split is REJECTED by PackageInstaller ("Missing split") — Android
+ *     instead accepts a non-exact density split and scales it. Density is never INCOMPATIBLE (only ABI
+ *     is); the worst case is one slightly-mismatched density split that installs and scales.
  *  4. Language splits: keep ALL of them (ADR-006 D3 step 1: "+ all language splits the user kept"). The
  *     user may switch locale on the new phone; carrying every language split keeps that honest.
  *  5. FEATURE splits: keep all (dynamic-feature modules are install-time-optional; carrying them is safe).
@@ -68,13 +71,18 @@ object ApkReconcile {
             )
         }
 
-        // nodpi and anydpi splits are density-INDEPENDENT: they must always be kept regardless of the
-        // target bucket (a device never self-reports "nodpi"/"anydpi" but these splits serve all
-        // densities — dropping them produces a broken install). All other density splits are kept only
-        // when they match the target bucket.
-        val densitySplits = entries
-            .filter { it.role == ApkFileRole.CONFIG && it.density != null }
-            .filter { it.density == target.densityBucket || it.density == "nodpi" || it.density == "anydpi" }
+        // Density config splits. Keep nodpi/anydpi (density-INDEPENDENT — they serve all densities; a
+        // device never self-reports them) plus the split matching the target bucket. CRUCIAL (verified
+        // on hardware 2026-06-21): if NONE match the target bucket and there are no nodpi/anydpi splits,
+        // keep the source's density split(s) ANYWAY rather than dropping to zero. A source device carries
+        // only its OWN bucket's split, and an App Bundle that marks density a REQUIRED split type (the
+        // bundletool default — e.g. Termux) makes PackageInstaller REJECT a commit carrying no density
+        // split ("Missing split for <pkg>"). Android accepts a non-exact density split and scales it, so
+        // the mismatched split installs cleanly where dropping it fails at commit.
+        val densityCandidates = entries.filter { it.role == ApkFileRole.CONFIG && it.density != null }
+        val densityIndependent = densityCandidates.filter { it.density == "nodpi" || it.density == "anydpi" }
+        val bucketMatch = densityCandidates.filter { it.density == target.densityBucket }
+        val densitySplits = (densityIndependent + bucketMatch).ifEmpty { densityCandidates }
 
         val languageSplits = entries.filter { it.role == ApkFileRole.LANGUAGE }
         val featureSplits = entries.filter { it.role == ApkFileRole.FEATURE }

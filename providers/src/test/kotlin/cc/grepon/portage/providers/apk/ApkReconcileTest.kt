@@ -69,13 +69,40 @@ class ApkReconcileTest {
     }
 
     @Test
-    fun `a missing density split is not fatal — base falls back, still compatible`() {
+    fun `a bucket-mismatched density split is KEPT as fallback, never dropped to zero`() {
+        // Hardware-found (2026-06-21): dropping the only density split makes PackageInstaller REJECT the
+        // commit with "Missing split" for App Bundles that mark density a required split type. So a
+        // non-matching density split is kept (Android scales a non-exact density), never dropped — never
+        // INCOMPATIBLE either (only ABI is). Pre-fix this asserted the ldpi split was dropped.
         val entries = listOf(base(), abi("arm64_v8a"), density("ldpi"))
-        val result = ApkReconcile.reconcile(entries, pixelTarget)
-        assertThat(result).isInstanceOf(ApkReconcile.Result.Compatible::class.java)
-        // ldpi != xxhdpi target → no density split kept, but not incompatible.
-        val files = (result as ApkReconcile.Result.Compatible).files
-        assertThat(files.map { it.name }).containsExactly("base", "split_config.arm64_v8a")
+        val result = ApkReconcile.reconcile(entries, pixelTarget) as ApkReconcile.Result.Compatible
+        // ldpi != xxhdpi target, but it is the ONLY density split → kept as fallback (not dropped).
+        assertThat(result.files.map { it.name }).containsExactly(
+            "base", "split_config.arm64_v8a", "split_config.ldpi",
+        )
+    }
+
+    @Test
+    fun `Termux hardware regression — xxhdpi-only source kept for a lower-density xhdpi target`() {
+        // Exact shape of the 2026-06-21 husky(xhdpi) <- rango(xxhdpi) failure: the source carries only its
+        // own xxhdpi density split; the lower-density target has no xxhdpi match. Pre-fix reconcile dropped
+        // it → "Missing split for com.termux" reject. Post-fix the xxhdpi split is kept so a density split
+        // is present and Android scales it.
+        val xhdpiTarget = pixelTarget.copy(densityBucket = "xhdpi")
+        val entries = listOf(base(), abi("arm64_v8a"), lang("en"), lang("es"), density("xxhdpi"))
+        val result = ApkReconcile.reconcile(entries, xhdpiTarget) as ApkReconcile.Result.Compatible
+        assertThat(result.files.map { it.name }).containsExactly(
+            "base", "split_config.arm64_v8a", "split_config.xxhdpi", "split_config.en", "split_config.es",
+        )
+    }
+
+    @Test
+    fun `an exact bucket match still drops the other density splits (fallback only when none match)`() {
+        // The fallback "keep all" path triggers ONLY when nothing matches the bucket. When the target
+        // bucket IS present, the non-matching densities are still dropped (no unnecessary bloat).
+        val entries = listOf(base(), density("xxhdpi"), density("hdpi"), density("xxxhdpi"))
+        val result = ApkReconcile.reconcile(entries, pixelTarget) as ApkReconcile.Result.Compatible
+        assertThat(result.files.map { it.density }).containsExactly(null, "xxhdpi")
     }
 
     @Test
@@ -122,5 +149,15 @@ class ApkReconcileTest {
         val entries = listOf(base(), density("anydpi"))
         val result = ApkReconcile.reconcile(entries, pixelTarget) as ApkReconcile.Result.Compatible
         assertThat(result.files.map { it.density }).contains("anydpi")
+    }
+
+    @Test
+    fun `a present nodpi suppresses the keep-all fallback — a mismatched concrete density is still dropped`() {
+        // The keep-all fallback fires ONLY when nothing density-valid is present. A density-independent
+        // nodpi already satisfies a required-density-split base, so a non-bucket-matching concrete density
+        // (ldpi vs the xxhdpi target) is still dropped — no bloat when the required-split check is already met.
+        val entries = listOf(base(), density("nodpi"), density("ldpi"))
+        val result = ApkReconcile.reconcile(entries, pixelTarget) as ApkReconcile.Result.Compatible
+        assertThat(result.files.map { it.density }).containsExactly(null, "nodpi")
     }
 }
