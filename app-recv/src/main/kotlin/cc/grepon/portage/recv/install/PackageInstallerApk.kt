@@ -48,8 +48,11 @@ object PackageInstallerApk {
      * the session has distinct, well-formed entry names.
      *
      * The session OutputStream is guarded with `use {}` so it is always closed (even on a copy fault),
-     * and each split's copied count is checked against its declared [ApkInstallFile.length] — a short
-     * write (a truncated/under-yielding opener) throws rather than sealing a half-written session entry.
+     * and each split's copied count is checked against its declared [ApkInstallFile.length]. A short
+     * write (a truncated/under-yielding opener) throws — the count check runs AFTER the entry is
+     * written and fsync'd, so the guarantee is at SESSION scope, not per-entry: the caller
+     * (`AndroidApkInstaller.install`) abandons the whole uncommitted session on any throw, so a
+     * half-written entry is never committed.
      */
     fun writeSplits(writer: SessionWriter, files: List<ApkInstallFile>): Long {
         var total = 0L

@@ -212,7 +212,11 @@ class ItemStreamReceiver(
                         // try, so a dead channel still throws and ends the batch as the contract states.
                         try {
                             sink?.write(message.bytes)
-                        } catch (e: IOException) {
+                        } catch (_: IOException) {
+                            // received/nextSeq were already advanced and digest.update is now skipped, so
+                            // the running counters/hash are transiently inconsistent — inert: once failure
+                            // is set the item drains, verifyStaged is bypassed (receipt = failure), and the
+                            // staged file is deleted, so none of them is ever re-read.
                             failure = ItemResult(begin.itemId, ItemStatus.WRITE_ERROR, "staging write failed")
                             continue@chunks
                         }
