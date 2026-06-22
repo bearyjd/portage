@@ -134,7 +134,7 @@ Design artifacts live in [`docs/prp/`](docs/prp/) and [`docs/`](docs/):
 - [`RUNBOOK.md`](docs/RUNBOOK.md) — operational runbook (build, flash, device setup, common failures)
 
 > Note: this project was briefly drafted under the working name `malle`; it has been
-> renamed to `portage` (app IDs `cc.grepon.portage.*`) throughout the design docs.
+> renamed to `portage` (app IDs `com.ventouxlabs.portage.*`) throughout the design docs.
 
 ## License
 

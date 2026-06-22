@@ -23,7 +23,7 @@ cloud, no account.
   Two artifacts:
   - `portage-send` (the old phone — exporter)
   - `portage-recv` (the new phone — importer)
-- **Application IDs:** `cc.grepon.portage.send`, `cc.grepon.portage.recv` (adjust if you prefer
+- **Application IDs:** `com.ventouxlabs.portage.send`, `com.ventouxlabs.portage.recv` (adjust if you prefer
   `com.greponlabs.*`).
 - **Git:** branch-per-feature off `main`; PRP doc committed under `docs/prp/`; each merge
   gated by a devils-advocate review pass (see §9).

@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "cc.grepon.portage.send"
+    namespace = "com.ventouxlabs.portage.send"
     compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "cc.grepon.portage.send"
+        applicationId = "com.ventouxlabs.portage.send"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
         versionCode = 1

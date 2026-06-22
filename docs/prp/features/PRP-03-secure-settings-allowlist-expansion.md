@@ -28,7 +28,7 @@ re-toggles after a device move, specifically in the categories the privacy audie
 about most, with zero new privilege and zero new wire surface.
 
 This PRP **expands the compiled catalog** in
-`settings-catalog/src/main/kotlin/cc/grepon/portage/settings/SettingsAllowlist.kt`. It adds
+`settings-catalog/src/main/kotlin/com/ventouxlabs/portage/settings/SettingsAllowlist.kt`. It adds
 rows; it does not change the data path, the model, or the protocol.
 
 ---
