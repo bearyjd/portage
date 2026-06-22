@@ -11,7 +11,7 @@ from the old phone to the new one, **including the backing audio file** when the
 custom sound rather than a built-in one. Today portage explicitly *declines* this: the catalog
 carries a `ringtone` key tagged `DEVICE_SPECIFIC, NA` with the note
 "TRAP: content URI to on-device media absent on the new phone → silent/crash"
-(`settings-catalog/src/main/kotlin/cc/grepon/portage/settings/SettingsAllowlist.kt:59-60`). That
+(`settings-catalog/src/main/kotlin/com/ventouxlabs/portage/settings/SettingsAllowlist.kt:59-60`). That
 exclusion is correct for a *bare-URI* copy — this PRP is the salvage that makes the selection
 portable by carrying the URI's *meaning* (a built-in identity, or the file itself), not the raw URI.
 

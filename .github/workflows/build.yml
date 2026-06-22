@@ -54,7 +54,7 @@ jobs:
           set -euo pipefail
           manifest=$(find app-send/build/intermediates -path '*merged_manifest*/AndroidManifest.xml' | head -1)
           test -n "$manifest" || { echo "::error::merged sender manifest not found"; exit 1; }
-          if grep -qE 'WRITE_SECURE_SETTINGS|cc\.grepon\.portage\.adbbridge' "$manifest"; then
+          if grep -qE 'WRITE_SECURE_SETTINGS|com\.ventouxlabs\.portage\.adbbridge' "$manifest"; then
             echo "::error::portage-send merged manifest leaks an escalation permission or the ADB bridge"
             exit 1
           fi

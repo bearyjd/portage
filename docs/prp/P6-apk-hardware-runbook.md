@@ -18,7 +18,7 @@ two devices of different ABI/density class. Record `ro.build.fingerprint` with e
 > receiver fp `google/rango/rango:16/BP4A.260205.001/2026061601`, Android 16, patch 2026-06-01).
 > Single-APK (Molly, not on Play Store) AND multi-split (Termux, `base + arm64_v8a + en + es +
 > xxhdpi` all staged) both installed via the carried Tier-0 chain — `CONFIRM_INSTALL` launched from
-> the receiver's uid, session applied, `installerPackageName=cc.grepon.portage.recv` (NOT vending),
+> the receiver's uid, session applied, `installerPackageName=com.ventouxlabs.portage.recv` (NOT vending),
 > apps launch (byte integrity). AC-18 already-installed quiet-skip confirmed (AntennaPod, equal
 > versionCode). Evidence recorded in ADR-006 §Follow-ups. Edge cases (reset hygiene, commit-retry)
 > and the silent stdin path (Part 2) + 2-device legs remain.

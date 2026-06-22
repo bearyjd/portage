@@ -15,7 +15,7 @@ than ride JitPack-off-master or a third-party fork).
 
 `NoisePSK_XX_25519_ChaChaPoly_SHA256` — legacy PSK placement (≈psk0), the only PSK form
 noise-java supports. Security rationale (PSK-gated mutual auth + ephemeral forward
-secrecy) is in ADR-002. Wrapped behind `cc.grepon.portage.transport` Kotlin so the crypto
+secrecy) is in ADR-002. Wrapped behind `com.ventouxlabs.portage.transport` Kotlin so the crypto
 choice stays swappable.
 
 ## To re-verify / update

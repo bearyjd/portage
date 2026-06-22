@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "cc.grepon.portage.providers"
+    namespace = "com.ventouxlabs.portage.providers"
     compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {

@@ -22,7 +22,7 @@ So the correct Tier 1 architecture is two-phase:
 
 - **Phase A (one-shot, Shizuku live):** `portage-recv` declares `WRITE_SECURE_SETTINGS`
   in its manifest. At Tier 1 unlock, it uses Shizuku to run
-  `pm grant cc.grepon.portage.recv android.permission.WRITE_SECURE_SETTINGS` on itself.
+  `pm grant com.ventouxlabs.portage.recv android.permission.WRITE_SECURE_SETTINGS` on itself.
 - **Phase B (forever after, Shizuku NOT required):** the app writes `Settings.Secure`
   and `Settings.Global` directly through the normal `Settings.*.putString/putInt` API.
 

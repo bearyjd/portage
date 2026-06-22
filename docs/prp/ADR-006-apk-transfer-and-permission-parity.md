@@ -85,7 +85,7 @@ data class ApkFileEntry(
 
 ### D2 — Module placement
 
-- The **codec + header data classes** live in `:providers` (package `cc.grepon.portage.providers.apk`), beside
+- The **codec + header data classes** live in `:providers` (package `com.ventouxlabs.portage.providers.apk`), beside
   `RelayCodec`. They need only kotlinx-serialization + the `:providers` `JsonLines` helper + I/O streams — **no
   Android types** — so `:core-model` (Android-free, no `JsonLines`) is the wrong home and `:providers` is correct.
   (`:providers` is already a `com.android.library`, so keeping the codec Android-type-free is a deliberate discipline,
@@ -225,10 +225,10 @@ The probed `Set<PrivilegedCapability>` lives only in the wizard's `StateFlow` (`
   security patch 2026-06-01. Cross-device transfer from a Pixel 9 Pro Fold (`comet`,
   `…/BP4A.260205.002/2026061600`) over LAN. Evidence: (a) single-APK carried install — Molly (`im.molly.app`, not on
   Play Store) installed via the Tier-0 chain: `ActivityTaskManager: START {act=CONFIRM_INSTALL
-  pkg=com.android.packageinstaller} from uid …(cc.grepon.portage.recv)` → `PackageInstallerSession: Marking session
-  … as applied`, `installerPackageName=cc.grepon.portage.recv` (NOT `com.android.vending`). (b) multi-split carried
+  pkg=com.android.packageinstaller} from uid …(com.ventouxlabs.portage.recv)` → `PackageInstallerSession: Marking session
+  … as applied`, `installerPackageName=com.ventouxlabs.portage.recv` (NOT `com.android.vending`). (b) multi-split carried
   install — Termux (`com.termux`) `pm path` shows `base + split_config.{arm64_v8a,en,es,xxhdpi}` (all 5; base-only =
-  the D3 failure case), `installerPackageName=cc.grepon.portage.recv`, session applied, app launches (first-run
+  the D3 failure case), `installerPackageName=com.ventouxlabs.portage.recv`, session applied, app launches (first-run
   permission prompt, no crash → byte integrity). (c) AC-18 already-installed quiet-skip — AntennaPod (equal
   versionCode 3110495) skipped, not install-attempted. (d) the inventory store-reinstall row correctly deep-links
   (`play.google.com` VIEW → `com.android.vending` install) — distinct from the carried path. Closes the CLAUDE.md
@@ -253,7 +253,7 @@ The probed `Set<PrivilegedCapability>` lives only in the wizard's `StateFlow` (`
   exporting `xxhdpi`-only Termux. Reconcile DROPPED the lone density split → `PackageInstaller: Session … destroyed
   because of [Missing split for com.termux]`, install **rejected** (NOT the assumed "installs but renders wrong" — it
   does not install at all). Control run at native xxhdpi → split kept → installs cleanly, all 5 splits,
-  `installerPackageName=cc.grepon.portage.recv`, Termux launches. **Fix:** `ApkReconcile` now keeps the source's
+  `installerPackageName=com.ventouxlabs.portage.recv`, Termux launches. **Fix:** `ApkReconcile` now keeps the source's
   density split(s) as a fallback when none matches the target bucket (Android scales a non-exact density) instead of
   dropping to zero; D3 step 4 corrected; reconcile unit tests flipped + a Termux-shape regression added.
 - **OPEN — AC-15 ABI leg only:** the `Incompatible` (non-arm64 target) branch is JVM-unit-tested but structurally

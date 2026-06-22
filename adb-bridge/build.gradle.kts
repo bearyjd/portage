@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace = "cc.grepon.portage.adbbridge"
+    namespace = "com.ventouxlabs.portage.adbbridge"
     compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {

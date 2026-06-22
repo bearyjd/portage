@@ -103,7 +103,7 @@ V2–V8 were exercised at the real privilege level without Shizuku installed.
 | V1 liveness | N/A | Shizuku not installed; privilege exercised directly via adb shell uid 2000 |
 | V2 baseline | ✅ PASS | `settings put secure ui_night_mode 2` → get `2`; `global animator_duration_scale 0.5` → get `0.5`; no SecurityException; restored |
 | V3 via Shizuku | DEFERRED | Equivalent to V2 (identical shell uid). Confirm once Shizuku is installed; expected pass |
-| V4 self-grant | ✅ PASS | `pm grant cc.grepon.portage.recv WRITE_SECURE_SETTINGS` silent (exit 0); dump `granted=true` (userId 0). `development` flag intact |
+| V4 self-grant | ✅ PASS | `pm grant com.ventouxlabs.portage.recv WRITE_SECURE_SETTINGS` silent (exit 0); dump `granted=true` (userId 0). `development` flag intact |
 | V5 reboot persist | ✅ PASS | After reboot, no re-grant, no Shizuku → `granted=true` persists → **grant architecture** |
 | V6 silent install | ✅ PASS | `pm install-create/-write/-commit` → `Success`, no on-screen prompt → batched reinstall available |
 | V7 INTERNET revoke | ✅ PASS | `pm revoke` → `granted=false`; `pm grant` restore → `granted=true`. GOS Network-toggle parity reachable via `pm` |
