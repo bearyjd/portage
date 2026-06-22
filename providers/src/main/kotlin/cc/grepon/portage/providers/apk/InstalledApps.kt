@@ -28,6 +28,12 @@ data class InstalledApp(
     val label: String,
     val versionCode: Long,
     val files: List<InstalledApkFile>,
+    /**
+     * The source app's GRANTED runtime/special permissions to carry for parity (ADR-006 D5, Phase 5b),
+     * already protection-level-filtered by [cc.grepon.portage.providers.permission.PermissionCapture]
+     * (signature/system dropped) in the app-send adapter. Defaults empty (e.g. tests / inventory path).
+     */
+    val grantedRuntimePermissions: List<String> = emptyList(),
 ) {
     /** The on-disk size of the whole split set — the glance value shown next to the app. */
     val totalBytes: Long get() = files.sumOf { it.length }
@@ -65,9 +71,10 @@ interface InstalledAppSource {
  * injected (defaulting to a real [java.io.FileInputStream]) so this function takes no Android types and
  * tests can supply byte fixtures.
  *
- * [capturedPermissions] stays empty — Phase 5 fills it (ADR-006 D5). A provider whose set lacks a BASE
- * file, or carries an empty file, self-omits at staging time (the provider's `available()` gate), so a
- * partial/unreadable app never ships a broken half-container.
+ * [ApkExportProvider]'s `capturedPermissions` is threaded from [InstalledApp.grantedRuntimePermissions]
+ * (ADR-006 D5, Phase 5b), already protection-level-filtered at capture time. A provider whose set lacks a
+ * BASE file, or carries an empty file, self-omits at staging time (the provider's `available()` gate), so
+ * a partial/unreadable app never ships a broken half-container.
  */
 fun installedAppApkProviders(
     apps: List<InstalledApp>,
@@ -92,6 +99,7 @@ fun installedAppApkProviders(
             versionCode = app.versionCode,
             appLabel = app.label,
             files = sources,
+            capturedPermissions = app.grantedRuntimePermissions,
         )
     }
 
