@@ -107,3 +107,48 @@ fun interface InstalledPackageVersions {
         val None = InstalledPackageVersions { null }
     }
 }
+
+/**
+ * The set of runtime permissions the freshly-installed TARGET app declares (ADR-006 D5). Read in
+ * `:app-recv` from `PackageManager` (`GET_PERMISSIONS` → `requestedPermissions`) AFTER a silent install
+ * completes; a fake in tests. It is the second half of the parity intersection: nothing the target does
+ * not itself declare can ever be planned for grant ([PermissionParityPlanner] skips it), so a
+ * sender-supplied permission name can never cause a `pm grant` of a permission the installed app did
+ * not request.
+ */
+fun interface TargetDeclaredPermissions {
+    fun declaredPermissions(packageName: String): Set<String>
+
+    companion object {
+        /**
+         * The default: the target declares nothing, so the parity planner's `auto` set is empty and NO
+         * grant is ever executed. Used in tests and wherever no privileged granter is wired (Tier-0-only).
+         */
+        val None = TargetDeclaredPermissions { emptySet() }
+    }
+}
+
+/**
+ * The privileged runtime-permission grant seam (ADR-006 D5) — the first production use of
+ * `AdbBridge.grantRuntimePermission`. Implemented in `:app-recv`
+ * ([com.ventouxlabs.portage.recv.install.AdbRuntimePermissionGranter]) over the `AdbBridge`; a fake in
+ * tests. Injected here so `:providers` stays privilege-agnostic (C1/D2 module discipline — no
+ * `:adb-bridge` edge).
+ *
+ * Contract: grant [permissions] to [packageName] over the bridge (`pm grant`), best-effort, and return
+ * the subset that were actually granted — that returned set IS the audit record (the caller folds its
+ * size into the apply outcome detail; no per-name logging happens in this Android-free layer). It MUST
+ * NOT throw and MUST NOT be fatal: a per-permission failure, an unavailable bridge, or a timeout simply
+ * omits that permission from the returned set (ADR-006 D5 — a failed `pm grant` is never fatal to the
+ * transfer). The implementation assumes EXCLUSIVE use of the bridge for the call and tears down the
+ * session it opens (AC-11 — never hold shell uid open). The apply provider only ever passes a set it has
+ * already filtered to [PermissionAllowlist.DEFAULT_SAFE] — the granter is the executor, never the policy.
+ */
+fun interface RuntimePermissionGranter {
+    suspend fun grant(packageName: String, permissions: List<String>): Set<String>
+
+    companion object {
+        /** The default: grants nothing. Used in tests and wherever no privileged granter is wired. */
+        val NoOp = RuntimePermissionGranter { _, _ -> emptySet() }
+    }
+}

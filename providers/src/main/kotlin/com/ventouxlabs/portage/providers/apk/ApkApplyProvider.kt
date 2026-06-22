@@ -13,6 +13,8 @@ import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.providers.ApplyOutcome
 import com.ventouxlabs.portage.providers.ApplyProvider
+import com.ventouxlabs.portage.providers.permission.PermissionAllowlist
+import com.ventouxlabs.portage.providers.permission.PermissionParityPlanner
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -43,6 +45,18 @@ class ApkApplyProvider(
     private val installedVersions: InstalledPackageVersions = InstalledPackageVersions.None,
     private val silentInstaller: ApkSilentInstaller = ApkSilentInstaller.Deferred,
     private val hasSilentInstall: () -> Boolean = { false },
+    /**
+     * Runtime-permission parity (ADR-006 D5), executed ONLY on the silent-install success path: after a
+     * privileged silent install, re-grant the source device's captured runtime permissions on the target
+     * via [permissionGranter], restricted to the planner's `auto` set (which the allowlist constrains to
+     * [PermissionAllowlist.DEFAULT_SAFE]). [targetDeclaredPermissions] supplies what the freshly-installed
+     * target actually declares — the other half of the `captured ∩ targetDeclared ∩ DEFAULT_SAFE`
+     * intersection. Both default to no-op, so the Tier-0 path and any caller that does not wire them grant
+     * nothing. Grants are deliberately absent from the Tier-0 fallback: that path has no live bridge to run
+     * `pm grant`, and the install has not even completed (it is pending the user's system-confirm tap).
+     */
+    private val permissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
+    private val targetDeclaredPermissions: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
     private val onApkInstall: (ApkInstallAction) -> Unit,
     /**
      * Surfaces an "incompatible on this device — install from store" deep link (ADR-006 D3 step 2),
@@ -127,8 +141,12 @@ class ApkApplyProvider(
             // BridgeUnavailable fall through to Tier-0, and an absent capability goes straight to Tier-0.
             if (hasSilentInstall()) {
                 when (val result = silentInstaller.install(header.packageName, keptFiles)) {
-                    is ApkInstallResult.Installed ->
-                        return ApplyOutcome(ItemStatus.OK, "installed ${header.packageName} silently")
+                    is ApkInstallResult.Installed -> {
+                        // Silent install succeeded and the bridge path is live — the ONLY place runtime
+                        // permission parity (ADR-006 D5) runs. Best-effort; never downgrades the OK status.
+                        val parity = grantRuntimePermissionParity(header.packageName, header.capturedPermissions)
+                        return ApplyOutcome(ItemStatus.OK, "installed ${header.packageName} silently$parity")
+                    }
                     is ApkInstallResult.Failed ->
                         return ApplyOutcome(ItemStatus.WRITE_ERROR, "silent install failed: ${result.reason}")
                     is ApkInstallResult.Deferred,
@@ -146,6 +164,32 @@ class ApkApplyProvider(
             // so the staged files are safe to wipe once apply returns.
             appDir.deleteRecursively()
         }
+    }
+
+    /**
+     * Runtime-permission parity (ADR-006 D5), best-effort. Returns a human-readable audit suffix for the
+     * outcome detail (empty when nothing is granted). Decision is the PURE [PermissionParityPlanner]; the
+     * privileged execution is the injected [permissionGranter].
+     *
+     * Two over-grant guards, defence in depth:
+     *  1. Only [PermissionParityPlanner.GrantPlan.auto] is ever executed — `optIn` (dangerous perms) needs
+     *     an explicit confirm (Phase 5d) and `skipped` is never granted.
+     *  2. A belt re-filter to [PermissionAllowlist.DEFAULT_SAFE] AT THE CALL SITE: even if a planner
+     *     regression let a non-default perm into `auto`, this site refuses to hand it to `pm grant`. The
+     *     planner already guarantees `auto ⊆ DEFAULT_SAFE`; this makes the grant site safe in isolation.
+     *
+     * The package name is the header's, already validated against the package grammar
+     * ([ApkContainerValidation.validatedHeaderOrNull]); the permission strings are allowlist constants.
+     * `AdbBridge.grantRuntimePermission` still re-validates both via `ShellArgs` at the wire boundary.
+     */
+    private suspend fun grantRuntimePermissionParity(packageName: String, captured: List<String>): String {
+        if (captured.isEmpty()) return ""
+        val declared = targetDeclaredPermissions.declaredPermissions(packageName)
+        val plan = PermissionParityPlanner.plan(captured, declared)
+        val toGrant = plan.auto.filter { it in PermissionAllowlist.DEFAULT_SAFE }
+        if (toGrant.isEmpty()) return ""
+        val granted = permissionGranter.grant(packageName, toGrant)
+        return " — restored ${granted.size}/${toGrant.size} runtime permissions"
     }
 
     /** One staged split: its validated wire [entry] plus the on-disk file the bytes were streamed to. */

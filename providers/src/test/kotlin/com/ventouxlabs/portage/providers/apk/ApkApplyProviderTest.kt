@@ -10,6 +10,7 @@
 package com.ventouxlabs.portage.providers.apk
 
 import com.ventouxlabs.portage.model.ItemStatus
+import com.ventouxlabs.portage.providers.permission.PermissionAllowlist
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -61,12 +62,38 @@ class ApkApplyProviderTest {
     private fun container(
         packageName: String = "com.example.app",
         versionCode: Long = 7L,
+        capturedPermissions: List<String> = emptyList(),
         files: List<Pair<ApkFileEntry, ByteArray>>,
     ): InputStream {
-        val header = ApkContainerHeader(packageName, versionCode, files.size)
+        val header = ApkContainerHeader(packageName, versionCode, files.size, capturedPermissions)
         val out = ByteArrayOutputStream()
         ApkCodec.writeContainer(out, header, files.map { source(it.first, it.second) })
         return ByteArrayInputStream(out.toByteArray())
+    }
+
+    /** A silent installer that always reports a successful silent install. */
+    private val silentInstalls = ApkSilentInstaller { _, _ -> ApkInstallResult.Installed }
+
+    private val camera = "android.permission.CAMERA"
+    private val writeSecure = "android.permission.WRITE_SECURE_SETTINGS"
+
+    /**
+     * Records the runtime-permission grants the apply provider requests and returns a scripted granted
+     * subset. Defaults to granting everything it is asked (the bridge-says-yes case).
+     */
+    private class RecordingGranter(
+        private val outcome: (List<String>) -> Set<String> = { it.toSet() },
+    ) : RuntimePermissionGranter {
+        var calls = 0
+        var lastPackage: String? = null
+        var lastPermissions: List<String> = emptyList()
+
+        override suspend fun grant(packageName: String, permissions: List<String>): Set<String> {
+            calls++
+            lastPackage = packageName
+            lastPermissions = permissions
+            return outcome(permissions)
+        }
     }
 
     /** Encode one wire line (JSON + '\n') for hand-built malformed fixtures the codec would refuse to emit. */
@@ -82,6 +109,8 @@ class ApkApplyProviderTest {
         installed: InstalledPackageVersions = InstalledPackageVersions.None,
         silent: ApkSilentInstaller = ApkSilentInstaller.Deferred,
         hasSilent: () -> Boolean = { false },
+        granter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
+        targetDeclared: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
         onApkInstall: (ApkInstallAction) -> Unit = {},
         onStoreFallback: ((String, String) -> Unit)? = null,
     ) = ApkApplyProvider(
@@ -90,6 +119,8 @@ class ApkApplyProviderTest {
         installedVersions = installed,
         silentInstaller = silent,
         hasSilentInstall = hasSilent,
+        permissionGranter = granter,
+        targetDeclaredPermissions = targetDeclared,
         onApkInstall = onApkInstall,
         onStoreFallback = onStoreFallback,
     )
@@ -322,5 +353,171 @@ class ApkApplyProviderTest {
             ),
         )
         assertThat(openedLengths).containsExactly(4L, 6L).inOrder()
+    }
+
+    // ── runtime-permission parity (ADR-006 D5, Phase 5b-2) ─────────────────────────────────────────
+
+    @Test
+    fun `silent install grants only captured default-safe perms the target declares`() = runTest {
+        // captured = {INTERNET (default-safe), CAMERA (dangerous→opt-in), WRITE_SECURE_SETTINGS (never)},
+        // OTHER_SENSORS is default-safe but NOT captured. Target declares all of them. Only INTERNET is
+        // in captured ∩ targetDeclared ∩ DEFAULT_SAFE → only INTERNET is granted.
+        val granter = RecordingGranter()
+        val outcome = provider(
+            silent = silentInstalls,
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions {
+                setOf(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS, camera, writeSecure)
+            },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET, camera, writeSecure),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(granter.calls).isEqualTo(1)
+        assertThat(granter.lastPackage).isEqualTo("com.example.app")
+        assertThat(granter.lastPermissions).containsExactly(PermissionAllowlist.INTERNET)
+        assertThat(outcome.detail).contains("restored 1/1 runtime permissions")
+    }
+
+    @Test
+    fun `both default-safe perms are granted when captured and target-declared`() = runTest {
+        val granter = RecordingGranter()
+        val outcome = provider(
+            silent = silentInstalls,
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions {
+                setOf(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS)
+            },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(granter.lastPermissions)
+            .containsExactly(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS)
+        assertThat(outcome.detail).contains("restored 2/2 runtime permissions")
+    }
+
+    @Test
+    fun `a default-safe perm the target does not declare is not granted`() = runTest {
+        // captured INTERNET but the target declares only OTHER_SENSORS → intersection empty → no grant,
+        // and the granter is never invoked (the apply short-circuits before any privileged call).
+        val granter = RecordingGranter()
+        val outcome = provider(
+            silent = silentInstalls,
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.OTHER_SENSORS) },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(granter.calls).isEqualTo(0)
+        assertThat(outcome.detail).isEqualTo("installed com.example.app silently")
+    }
+
+    @Test
+    fun `the Tier-0 fallback never grants runtime permissions`() = runTest {
+        // No silent capability → Tier-0 emit. Grants belong ONLY to the silent-install success path
+        // (no live bridge here, and the install is still pending the user's confirm tap).
+        val granter = RecordingGranter()
+        var emitted: ApkInstallAction? = null
+        val outcome = provider(
+            hasSilent = { false },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
+            onApkInstall = { emitted = it },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(emitted).isNotNull()
+        assertThat(granter.calls).isEqualTo(0)
+    }
+
+    @Test
+    fun `a failed silent install never grants runtime permissions`() = runTest {
+        val granter = RecordingGranter()
+        val silent = ApkSilentInstaller { _, _ -> ApkInstallResult.Failed("rejected by policy") }
+        val outcome = provider(
+            silent = silent,
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(granter.calls).isEqualTo(0)
+    }
+
+    @Test
+    fun `a deferred silent result (Tier-0 fall-through) never grants runtime permissions`() = runTest {
+        val granter = RecordingGranter()
+        val silent = ApkSilentInstaller { _, _ -> ApkInstallResult.Deferred }
+        provider(
+            silent = silent,
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(granter.calls).isEqualTo(0)
+    }
+
+    @Test
+    fun `a best-effort grant failure keeps the install OK`() = runTest {
+        // The bridge granted nothing (every pm grant failed). The install still succeeded, so the
+        // outcome stays OK — a failed parity grant is never fatal (ADR-006 D5).
+        val granter = RecordingGranter(outcome = { emptySet() })
+        val outcome = provider(
+            silent = silentInstalls,
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions {
+                setOf(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS)
+            },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(granter.calls).isEqualTo(1)
+        assertThat(outcome.detail).contains("restored 0/2 runtime permissions")
+    }
+
+    @Test
+    fun `no captured permissions means no grant attempt and an unchanged detail`() = runTest {
+        val granter = RecordingGranter()
+        val outcome = provider(
+            silent = silentInstalls,
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
+        ).apply(container(files = listOf(base() to ByteArray(4))))
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(granter.calls).isEqualTo(0)
+        assertThat(outcome.detail).isEqualTo("installed com.example.app silently")
     }
 }

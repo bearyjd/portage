@@ -47,9 +47,11 @@ import com.ventouxlabs.portage.providers.sound.SoundSelectionApplyProvider
 import com.ventouxlabs.portage.providers.wallpaper.AndroidWallpaperStore
 import com.ventouxlabs.portage.providers.wallpaper.WallpaperApplyProvider
 import com.ventouxlabs.portage.recv.install.AdbApkInstaller
+import com.ventouxlabs.portage.recv.install.AdbRuntimePermissionGranter
 import com.ventouxlabs.portage.recv.install.PackageInstallerApkInstaller
 import com.ventouxlabs.portage.recv.install.androidApkTargetConfig
 import com.ventouxlabs.portage.recv.install.androidInstalledPackageVersions
+import com.ventouxlabs.portage.recv.install.androidTargetDeclaredPermissions
 import com.ventouxlabs.portage.recv.install.hasSilentInstall
 import com.ventouxlabs.portage.recv.privilege.PrivilegeWizardHolder
 import com.ventouxlabs.portage.recv.sms.AndroidSmsRoleCoordinator
@@ -167,6 +169,15 @@ private class ReceiverViewModelFactory(
                         hasSilentInstall = {
                             hasSilentInstall(PrivilegeWizardHolder.get(context).step.value)
                         },
+                        // Runtime-permission parity (ADR-006 D5), silent-install path ONLY: the FIRST
+                        // production AdbBridge.grantRuntimePermission call site. The apply provider runs
+                        // this only after a silent install and only for the planner's allowlist
+                        // default-safe `auto` set; the granter re-establishes its own bridge session
+                        // (the silent installer disconnected) and disconnects in finally (AC-11). The
+                        // target's declared set is read from PackageManager post-install. Both share the
+                        // single process-scoped bridge; on the Tier-0 fallback neither runs.
+                        permissionGranter = AdbRuntimePermissionGranter(adbBridge),
+                        targetDeclaredPermissions = androidTargetDeclaredPermissions(context),
                         onApkInstall = { action ->
                             // Synchronous: seal the PackageInstaller session over the staged bytes BEFORE
                             // the provider wipes them, then surface the one-tap confirm row.
