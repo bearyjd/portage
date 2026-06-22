@@ -29,11 +29,11 @@ class PermissionParityPlannerTest {
     }
 
     @Test
-    fun `OTHER_SENSORS is provisional - never auto-granted, lands in opt-in`() {
-        // Pins ADR-006 D5: OTHER_SENSORS stays OUT of the default-grant set until the Phase 5c re-verify.
+    fun `OTHER_SENSORS is auto-granted (promoted to default after the Phase 5c hardware re-verify)`() {
+        // ADR-006 D5: OTHER_SENSORS is V7-PASS as of 2026-06-21 → in DEFAULT_SAFE → auto-granted.
         val plan = PermissionParityPlanner.plan(listOf(otherSensors), setOf(otherSensors))
-        assertThat(plan.auto).doesNotContain(otherSensors)
-        assertThat(plan.optIn).containsExactly(otherSensors)
+        assertThat(plan.auto).containsExactly(otherSensors)
+        assertThat(plan.optIn).isEmpty()
     }
 
     @Test
@@ -68,8 +68,9 @@ class PermissionParityPlannerTest {
         val plan = PermissionParityPlanner.plan(captured, declared)
         assertThat(PermissionAllowlist.DEFAULT_SAFE).containsAtLeastElementsIn(plan.auto)
         assertThat(declared).containsAtLeastElementsIn(plan.auto)
-        // Of this mixed set, only INTERNET qualifies for an auto-grant.
-        assertThat(plan.auto).containsExactly(internet)
+        // Of this mixed set, INTERNET and OTHER_SENSORS qualify for auto; CAMERA (opt-in) and
+        // WRITE_SECURE_SETTINGS (never) do not.
+        assertThat(plan.auto).containsExactly(internet, otherSensors)
     }
 
     @Test

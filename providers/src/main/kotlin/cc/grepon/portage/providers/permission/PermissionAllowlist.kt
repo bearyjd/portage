@@ -14,10 +14,10 @@ package cc.grepon.portage.providers.permission
  * fully unit-testable, lives beside the other pure decision functions (cf. `apk.ApkReconcile`).
  *
  * Default mode auto-grants ONLY [DEFAULT_SAFE]; everything else a migrated app held is opt-in (an
- * explicit per-item confirm, Phase 5d) or refused. [PROVISIONAL] is modeled but deliberately NOT in
- * [DEFAULT_SAFE]: `OTHER_SENSORS` is V7-TENTATIVE (`pm grant` returned exit 0 against an app that did not
- * declare it) and must be re-verified against a manifest-declared sensor app (Phase 5c) before it is
- * trusted in the default-grant set. [NEVER] is a defense-in-depth denylist — the PRIMARY control is the
+ * explicit per-item confirm, Phase 5d) or refused. [PROVISIONAL] is the verify-first seam (currently
+ * empty): a perm sits there, modeled but NOT in [DEFAULT_SAFE], until it is hardware-verified
+ * `pm grant`-controllable. `OTHER_SENSORS` was promoted out of it into [DEFAULT_SAFE] after the
+ * 2026-06-21 GOS A16 round-trip re-verify (ADR-006 D5 / V7). [NEVER] is a defense-in-depth denylist — the PRIMARY control is the
  * capture-time `protectionLevel` filter (Phase 5b) that keeps signature/system perms out of the captured
  * set entirely; this belt refuses them even if one slips through.
  */
@@ -26,15 +26,19 @@ object PermissionAllowlist {
     const val OTHER_SENSORS = "android.permission.OTHER_SENSORS"
 
     /**
-     * Auto-granted in default mode (best-effort). On GOS, `INTERNET` is a user-controllable network toggle
-     * reachable via `pm grant/revoke` (ADR-001 §2 row 5) — unlike stock Android, where it is a normal /
-     * install-time perm needing no grant. This is why a normal-protection perm legitimately sits in the
-     * runtime-parity default set. `INTERNET` is V7-verified (`OTHER_SENSORS` is not — see [PROVISIONAL]).
+     * Auto-granted in default mode (best-effort). On GOS these are user-controllable network/sensor toggles
+     * modeled AS permissions reachable via `pm grant/revoke` (ADR-001 §2 row 5) — unlike stock Android, where
+     * `INTERNET` is a normal/install-time perm. Both are hardware-verified `pm grant`-controllable on GOS A16:
+     * `INTERNET` (V7 PASS) and `OTHER_SENSORS` (re-verified 2026-06-21 against a manifest-declared app —
+     * `app.grapheneos.camera` granted=true → revoke → grant round-trip honored; closes the V7 TENTATIVE gap).
      */
-    val DEFAULT_SAFE: Set<String> = setOf(INTERNET)
+    val DEFAULT_SAFE: Set<String> = setOf(INTERNET, OTHER_SENSORS)
 
-    /** Modeled but NOT auto-granted yet — joins [DEFAULT_SAFE] only after the Phase 5c hardware re-verify. */
-    val PROVISIONAL: Set<String> = setOf(OTHER_SENSORS)
+    /**
+     * No currently-provisional perms. `OTHER_SENSORS` was promoted into [DEFAULT_SAFE] after the Phase 5c
+     * hardware re-verify (2026-06-21). Retained as the seam for any future verify-first candidate.
+     */
+    val PROVISIONAL: Set<String> = emptySet()
 
     /** Never granted by parity, in any mode (signature/system/special). Defense-in-depth (see class KDoc). */
     val NEVER: Set<String> = setOf(
@@ -48,7 +52,7 @@ object PermissionAllowlist {
 
     /**
      * Classify a permission: a [NEVER] entry → [Bucket.NEVER]; a [DEFAULT_SAFE] entry → [Bucket.DEFAULT];
-     * everything else (incl. [PROVISIONAL]/`OTHER_SENSORS` and any dangerous perm) → [Bucket.OPT_IN].
+     * everything else (any dangerous perm, e.g. `CAMERA`, and any future [PROVISIONAL] perm) → [Bucket.OPT_IN].
      */
     fun bucket(permission: String): Bucket = when (permission) {
         in NEVER -> Bucket.NEVER

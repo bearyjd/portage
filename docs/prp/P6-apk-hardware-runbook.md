@@ -141,9 +141,9 @@ branch already falls through to Tier-0 (stale-positive tolerance).
 ## Part 3 — Phase 5 (runtime-permission parity) — separate go/no-go
 
 Not part of "keystone landed". After P6, decide go/no-go on Phase 5 (ADR-006 D5): default-safe
-`{INTERNET, OTHER_SENSORS-provisional}` only, dangerous perms behind an itemized opt-in, the first
-production `grantRuntimePermission()` call site. Re-test `OTHER_SENSORS` against a manifest-declared
-sensor app before trusting it in the default set (VERIFICATION-RUNBOOK V7 TENTATIVE).
+`{INTERNET, OTHER_SENSORS}` (OTHER_SENSORS re-verified 2026-06-21 → V7 PASS, promoted to the default set),
+dangerous perms behind an itemized opt-in, the first production `grantRuntimePermission()` call site.
+P5a (pure decision core) has landed; P5b+ remains gated on the GO/NO-GO.
 
 ---
 

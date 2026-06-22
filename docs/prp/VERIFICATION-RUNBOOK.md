@@ -107,7 +107,7 @@ V2–V8 were exercised at the real privilege level without Shizuku installed.
 | V5 reboot persist | ✅ PASS | After reboot, no re-grant, no Shizuku → `granted=true` persists → **grant architecture** |
 | V6 silent install | ✅ PASS | `pm install-create/-write/-commit` → `Success`, no on-screen prompt → batched reinstall available |
 | V7 INTERNET revoke | ✅ PASS | `pm revoke` → `granted=false`; `pm grant` restore → `granted=true`. GOS Network-toggle parity reachable via `pm` |
-| V7 OTHER_SENSORS | ⚠️ TENTATIVE | `pm grant` exit 0 but app doesn't declare it — re-test with a manifest-declared sensor app before trusting |
+| V7 OTHER_SENSORS | ✅ PASS | Re-verified 2026-06-21 on GOS A16 (`husky`/Pixel 8 Pro) against a manifest-declared app (`app.grapheneos.camera`): `granted=true` → `pm revoke` → `granted=false` → `pm grant` → `granted=true` round-trip honored. Closes the earlier TENTATIVE (that test app didn't declare it). Promoted into the default-grant set (`PermissionAllowlist.DEFAULT_SAFE`) |
 | V7 nav overlay | ✅ PASS | `cmd overlay enable-exclusive … threebutton` switched; restored to `gestural`. Needs LIVE shell at call time |
 | V7 SMS role | ⚠️ GATED | `cmd role add-role-holder SMS <our app>` failed (RuntimeException) — app is not SMS-role-eligible. Mechanism OK; app must declare SMS components (DEVILS_ADVOCATE Q4) |
 | V8 secondary profile | ✅ CONFIRMED | Grant `granted=true` only for userId 0; `false` for profiles 10/11 → owner-profile-only scoping correct |
@@ -117,6 +117,6 @@ V2–V8 were exercised at the real privilege level without Shizuku installed.
 - [x] **V2 pass + V4/V5 pass → grant architecture.** Shizuku is a one-shot at Tier 1
   unlock; settings writes leave the bridge afterward and survive reboot.
 - [x] V6 silent → batched reinstall in scope (no per-app-confirm degradation).
-- V7 results: INTERNET **reachable** · SENSORS **tentative** · nav **reachable (live shell)** ·
+- V7 results: INTERNET **reachable** · SENSORS **reachable** (re-verified 2026-06-21) · nav **reachable (live shell)** ·
   SMS-role **needs SMS-eligible app**.
 - Valid only for fingerprint `…2026060600` (Android 16). Re-run on GOS version bumps.

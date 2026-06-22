@@ -20,7 +20,7 @@ class PermissionAllowlistTest {
         assertThat(PermissionAllowlist.bucket(PermissionAllowlist.INTERNET))
             .isEqualTo(PermissionAllowlist.Bucket.DEFAULT)
         assertThat(PermissionAllowlist.bucket(PermissionAllowlist.OTHER_SENSORS))
-            .isEqualTo(PermissionAllowlist.Bucket.OPT_IN)
+            .isEqualTo(PermissionAllowlist.Bucket.DEFAULT)
         assertThat(PermissionAllowlist.bucket("android.permission.WRITE_SECURE_SETTINGS"))
             .isEqualTo(PermissionAllowlist.Bucket.NEVER)
         assertThat(PermissionAllowlist.bucket("android.permission.CAMERA"))
@@ -28,14 +28,15 @@ class PermissionAllowlistTest {
     }
 
     @Test
-    fun `OTHER_SENSORS is provisional and not yet in the default-safe set`() {
-        // Locks ADR-006 D5: OTHER_SENSORS is V7-TENTATIVE and must NOT be auto-granted until Phase 5c.
-        assertThat(PermissionAllowlist.DEFAULT_SAFE).doesNotContain(PermissionAllowlist.OTHER_SENSORS)
-        assertThat(PermissionAllowlist.PROVISIONAL).contains(PermissionAllowlist.OTHER_SENSORS)
+    fun `OTHER_SENSORS was promoted into the default-safe set after the Phase 5c re-verify`() {
+        // ADR-006 D5: OTHER_SENSORS is now V7-PASS (2026-06-21 hardware re-verify) → in the default set.
+        assertThat(PermissionAllowlist.DEFAULT_SAFE).contains(PermissionAllowlist.OTHER_SENSORS)
+        assertThat(PermissionAllowlist.PROVISIONAL).isEmpty()
     }
 
     @Test
-    fun `the default-safe set contains only INTERNET today`() {
-        assertThat(PermissionAllowlist.DEFAULT_SAFE).containsExactly(PermissionAllowlist.INTERNET)
+    fun `the default-safe set is exactly INTERNET and OTHER_SENSORS`() {
+        assertThat(PermissionAllowlist.DEFAULT_SAFE)
+            .containsExactly(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS)
     }
 }
