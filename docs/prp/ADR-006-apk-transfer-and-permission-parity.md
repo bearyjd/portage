@@ -162,10 +162,10 @@ the first production call site of `grantRuntimePermission()` and is cuttable wit
 - **Default mode** re-grants ONLY the lower-sensitivity, GOS-user-controllable network/sensor special-permission
   parity set. On GOS these toggles are modeled AS the `INTERNET` / `OTHER_SENSORS` permissions, reachable via
   `pm grant/revoke` (ADR-001 §2 row 5) — unlike stock Android where `INTERNET` is an install-time/normal perm.
-  Seed allowlist `{ INTERNET, OTHER_SENSORS }`, best-effort, failure logged not fatal — but **`INTERNET` only is
-  verified** (V7 PASS, `VERIFICATION-RUNBOOK.md:109`); **`OTHER_SENSORS` is PROVISIONAL** (V7 TENTATIVE, `:110` —
-  `pm grant` returned exit 0 against an app that did not declare it) and MUST be re-tested against a
-  manifest-declared sensor app in Phase 5 before it is trusted in the default-grant set. (Ordinary
+  Seed allowlist `{ INTERNET, OTHER_SENSORS }`, best-effort, failure logged not fatal — **both now verified**
+  on GOS A16: `INTERNET` (V7 PASS, `VERIFICATION-RUNBOOK.md:109`) and `OTHER_SENSORS` (re-verified 2026-06-21
+  against a manifest-declared app — `app.grapheneos.camera` grant/revoke round-trip, `:110`), so `OTHER_SENSORS`
+  is promoted from PROVISIONAL into the default-grant set (`PermissionAllowlist.DEFAULT_SAFE`). (Ordinary
   "normal"-protection perms are auto-granted at install, so they need no action.) **No dangerous runtime permission
   group is ever auto-granted in default mode.**
 - **Opt-in "match app permissions" surface**: only if the user explicitly enables it, an itemized review lists, per

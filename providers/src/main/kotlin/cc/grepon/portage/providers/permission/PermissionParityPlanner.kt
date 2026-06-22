@@ -16,8 +16,8 @@ package cc.grepon.portage.providers.permission
  * call site). Mirrors `apk.ApkReconcile`'s pure-decision shape.
  *
  * Invariants (pinned by tests): nothing is ever planned for grant outside `captured ∩ targetDeclared`;
- * [GrantPlan.auto] is always a subset of [PermissionAllowlist.DEFAULT_SAFE]; dangerous / provisional
- * perms land in [GrantPlan.optIn] (an explicit per-item confirm in Phase 5d), never in `auto`;
+ * [GrantPlan.auto] is always a subset of [PermissionAllowlist.DEFAULT_SAFE]; dangerous perms (and any
+ * future provisional perm) land in [GrantPlan.optIn] (an explicit per-item confirm in Phase 5d), never in `auto`;
  * [PermissionAllowlist.NEVER] and target-undeclared perms are [GrantPlan.skipped] with a reason (every
  * decision is auditable — ADR-006 D5 "every grant logged by name + result").
  */
