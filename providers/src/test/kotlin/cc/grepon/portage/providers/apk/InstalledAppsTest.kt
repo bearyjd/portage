@@ -141,6 +141,34 @@ class InstalledAppsTest {
         assertThat(opened).containsExactly("base.apk", "split_config.de.apk").inOrder()
     }
 
+    @Test
+    fun `granted runtime permissions are threaded into the exported container header`() = runTest {
+        // ADR-006 D5 / Phase 5b: the wire `capturedPermissions` comes from InstalledApp.grantedRuntimePermissions.
+        val app = InstalledApp(
+            packageName = "com.example.app",
+            label = "Example",
+            versionCode = 1L,
+            files = listOf(file("base.apk", 4)),
+            grantedRuntimePermissions = listOf("android.permission.INTERNET", "android.permission.CAMERA"),
+        )
+        val provider = installedAppApkProviders(listOf(app)) { ByteArrayInputStream(ByteArray(4)) }.single()
+        val out = java.io.ByteArrayOutputStream()
+        provider.exportTo(out)
+        val header = ApkCodec.readHeaderFrom(ByteArrayInputStream(out.toByteArray()))
+        assertThat(header?.capturedPermissions)
+            .containsExactly("android.permission.INTERNET", "android.permission.CAMERA")
+    }
+
+    @Test
+    fun `an app with no captured permissions exports an empty capturedPermissions list`() = runTest {
+        val app = InstalledApp("com.solo.app", "Solo", 1L, listOf(file("base.apk", 4)))
+        val provider = installedAppApkProviders(listOf(app)) { ByteArrayInputStream(ByteArray(4)) }.single()
+        val out = java.io.ByteArrayOutputStream()
+        provider.exportTo(out)
+        assertThat(ApkCodec.readHeaderFrom(ByteArrayInputStream(out.toByteArray()))?.capturedPermissions)
+            .isEmpty()
+    }
+
     // --- isUserAppFlags: security-relevant invariant that gates which apps appear in the carry list ---
 
     @Test

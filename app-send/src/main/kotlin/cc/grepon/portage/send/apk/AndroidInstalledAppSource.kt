@@ -10,11 +10,14 @@
 package cc.grepon.portage.send.apk
 
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.PermissionInfo
 import cc.grepon.portage.providers.apk.InstalledApp
 import cc.grepon.portage.providers.apk.InstalledApkFile
 import cc.grepon.portage.providers.apk.InstalledAppSource
 import cc.grepon.portage.providers.apk.isUserAppFlags
+import cc.grepon.portage.providers.permission.PermissionCapture
 import java.io.File
 
 /**
@@ -42,7 +45,7 @@ class AndroidInstalledAppSource(private val packageManager: PackageManager) : In
     private fun isUserApp(app: ApplicationInfo): Boolean = isUserAppFlags(app.flags)
 
     private fun toInstalledApp(app: ApplicationInfo): InstalledApp {
-        val packageInfo = packageManager.getPackageInfo(app.packageName, 0)
+        val packageInfo = packageManager.getPackageInfo(app.packageName, PackageManager.GET_PERMISSIONS)
         val paths = buildList {
             app.sourceDir?.let { add(it) }
             app.splitSourceDirs?.forEach { split -> add(split) }
@@ -53,7 +56,42 @@ class AndroidInstalledAppSource(private val packageManager: PackageManager) : In
             label = app.loadLabel(packageManager).toString(),
             versionCode = packageInfo.longVersionCode,
             files = files,
+            grantedRuntimePermissions = capturedPermissions(packageInfo),
         )
+    }
+
+    /**
+     * The source app's granted, parity-relevant permissions (ADR-006 D5, Phase 5b). Reads the
+     * requested-permission list + per-index GRANTED flags from [PackageInfo], tags each with whether its
+     * `protectionLevel` is `dangerous`, then lets the PURE [PermissionCapture] filter decide what to keep
+     * (granted AND (dangerous OR a GOS special); signature/system/normal dropped). READ-ONLY — a
+     * `PackageManager` query, NO runtime grant, NO privilege, NO ADB bridge.
+     */
+    private fun capturedPermissions(info: PackageInfo): List<String> {
+        val requested = info.requestedPermissions ?: return emptyList()
+        val flags = info.requestedPermissionsFlags ?: return emptyList()
+        val tuples = requested.mapIndexed { i, name ->
+            val granted = i < flags.size &&
+                (flags[i] and PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
+            // A GOS special is captured regardless of protection level → skip its per-perm IPC.
+            val dangerous = name !in PermissionCapture.NETWORK_SENSOR_SPECIALS && isDangerous(name)
+            PermissionCapture.RequestedPermission(name = name, granted = granted, dangerous = dangerous)
+        }
+        return PermissionCapture.capturable(tuples)
+    }
+
+    /** Per-permission `protectionLevel == dangerous` memo (stable values; see [isDangerous]). */
+    private val dangerousCache = HashMap<String, Boolean>()
+
+    /**
+     * True iff [permission]'s declared `protectionLevel` is `dangerous`. Memoized across the inventory
+     * pass — the same platform perms recur across many apps and a protection level is stable — so each
+     * distinct permission costs at most one `getPermissionInfo` IPC. Unknown/unreadable → false (drop).
+     */
+    private fun isDangerous(permission: String): Boolean = dangerousCache.getOrPut(permission) {
+        runCatching {
+            packageManager.getPermissionInfo(permission, 0).protection == PermissionInfo.PROTECTION_DANGEROUS
+        }.getOrDefault(false)
     }
 
     /** Materialize one path into an [InstalledApkFile], or null if it is missing/empty/unreadable. */
