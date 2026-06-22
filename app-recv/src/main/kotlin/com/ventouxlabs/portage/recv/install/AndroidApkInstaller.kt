@@ -13,10 +13,12 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
 import com.ventouxlabs.portage.providers.apk.ApkInstallAction
 import com.ventouxlabs.portage.providers.apk.ApkInstallFile
 import com.ventouxlabs.portage.providers.apk.ApkTargetConfig
 import com.ventouxlabs.portage.providers.apk.InstalledPackageVersions
+import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
 import java.io.OutputStream
 
 /**
@@ -128,6 +130,26 @@ fun androidInstalledPackageVersions(context: Context): InstalledPackageVersions 
             @Suppress("DEPRECATION")
             context.packageManager.getPackageInfo(packageName, 0).longVersionCode
         }.getOrNull()
+    }
+
+/**
+ * Runtime-permission parity seam (ADR-006 D5): the permissions the freshly-installed TARGET app declares,
+ * read from `PackageManager` (`GET_PERMISSIONS` → `requestedPermissions`). Queried AFTER the silent
+ * install completes, so the package exists. This is the `targetDeclared` half of the parity intersection
+ * — the planner grants nothing the target itself does not request, so a sender-supplied permission name
+ * can never trigger a `pm grant` of a permission the installed app did not declare. Best-effort: a lookup
+ * failure (package gone, query refused) yields the empty set, which grants nothing.
+ */
+fun androidTargetDeclaredPermissions(context: Context): TargetDeclaredPermissions =
+    TargetDeclaredPermissions { packageName ->
+        runCatching {
+            @Suppress("DEPRECATION")
+            context.packageManager
+                .getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
+                .requestedPermissions
+                ?.toSet()
+                .orEmpty()
+        }.getOrDefault(emptySet())
     }
 
 /**
