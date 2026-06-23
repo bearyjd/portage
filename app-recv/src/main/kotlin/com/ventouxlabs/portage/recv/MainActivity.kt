@@ -127,9 +127,7 @@ private class ReceiverViewModelFactory(
 ) : ViewModelProvider.Factory {
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        val registryFactory = ApplyRegistryFactory {
-            onInstallActions, onRepairEntries, onRelayPrompt, onApkInstallPrompt, onPermissionsRestored,
-            onOptInPermissions ->
+        val registryFactory = ApplyRegistryFactory { sinks ->
             val resolver = context.contentResolver
             // One process-scoped bridge (AdbBridges.local caches a single instance): the silent APK
             // installer and the Tier-1 settings grant both go through it.
@@ -150,7 +148,7 @@ private class ReceiverViewModelFactory(
                     // acquires it (SmsRoleCoordinator) around the transfer when SMS is selected,
                     // and the gateway's isSelfDefault gate self-skips outside that window.
                     SmsApplyProvider(AndroidSmsStore(resolver), AndroidSmsRoleGateway(context)),
-                    AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), onInstallActions),
+                    AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), sinks.onInstallActions),
                     // APK keystone (ADR-006): stage each carried app's split set, reconcile against this
                     // device, then install. The silent (privileged) seam is the P6 stdin-streaming
                     // installer (AdbApkInstaller → pm install-write -S .. - over the bridge); when
@@ -180,20 +178,20 @@ private class ReceiverViewModelFactory(
                         permissionGranter = AdbRuntimePermissionGranter(adbBridge),
                         targetDeclaredPermissions = androidTargetDeclaredPermissions(context),
                         // Display-only: feed the Done screen's "restored Network, Sensors" summary.
-                        onPermissionsRestored = onPermissionsRestored,
+                        onPermissionsRestored = sinks.onPermissionsRestored,
                         // Data-only: feed the Done screen's opt-in dangerous-perm review (Phase 5d).
                         // Nothing is granted from this callback — the user confirms each on Done.
-                        onOptInPermissions = onOptInPermissions,
+                        onOptInPermissions = sinks.onOptInPermissions,
                         onApkInstall = { action ->
                             // Synchronous: seal the PackageInstaller session over the staged bytes BEFORE
                             // the provider wipes them, then surface the one-tap confirm row.
-                            apkInstaller.install(action)?.let(onApkInstallPrompt)
+                            apkInstaller.install(action)?.let(sinks.onApkInstallPrompt)
                         },
                         // An "incompatible on this device" app reuses the inventory store list as a
                         // get-it-from-the-store deep link (ADR-006 D3 step 2).
                         onStoreFallback = { packageName, label ->
                             InstallAction.from(AppRecord(packageName, 0L, null, label))
-                                ?.let { onInstallActions(listOf(it)) }
+                                ?.let { sinks.onInstallActions(listOf(it)) }
                         },
                     ),
                     // Tier-0 SYSTEM keys write today. Tier-1 SECURE/GLOBAL keys go live once the
@@ -219,7 +217,7 @@ private class ReceiverViewModelFactory(
                     // SURFACES the list as a "re-pair each here" checklist and applies nothing —
                     // it never calls createBond (deferred to Phase 2) and carries no link keys
                     // (non-transferable). No platform dependency, so it cannot bond by construction.
-                    BtPairingsApplyProvider(onRepairEntries),
+                    BtPairingsApplyProvider(sinks.onRepairEntries),
                     // Tier 0: COURIER for a user-exported, app-encrypted backup (Signal/Molly/Aegis;
                     // PRP-06). portage relays the OPAQUE file the user picked — it NEVER decrypts,
                     // parses, or imports it, and never holds the passphrase. The apply path validates
@@ -227,7 +225,7 @@ private class ReceiverViewModelFactory(
                     // opaque bytes to a user-visible location via [AndroidRelayHandoff], and surfaces
                     // a guided "open this in <app>" reminder. No app data is written by portage.
                     AppBackupRelayApplyProvider(
-                        onPrompt = onRelayPrompt,
+                        onPrompt = sinks.onRelayPrompt,
                         handoff = AndroidRelayHandoff(context)::write,
                     ),
                 ),
