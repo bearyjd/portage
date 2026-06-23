@@ -72,6 +72,17 @@ class ApkApplyProvider(
      * is not invoked when nothing was restored. Mirrors the [onApkInstall]/[onStoreFallback] emit seams.
      */
     private val onPermissionsRestored: ((packageName: String, permissions: List<String>) -> Unit)? = null,
+    /**
+     * Opt-in dangerous-permission surface (ADR-006 D5, Phase 5d): invoked after a silent install with the
+     * planner's `optIn` set — the DANGEROUS perms the source app held that the target declares (e.g.
+     * CAMERA, ACCESS_FINE_LOCATION). DATA ONLY — nothing is granted here; the receiver surfaces these for
+     * an EXPLICIT per-item user confirm before any `pm grant` (the grant is the Phase 5d UI slice's job).
+     * Emitted only on the silent-install success path (the only path with a live bridge to grant later)
+     * and only when `optIn` is non-empty. The planner guarantees `optIn` excludes signature/system
+     * ([PermissionAllowlist.NEVER]) and the default-safe set, so this never offers an ungrantable or
+     * auto-grantable permission.
+     */
+    private val onOptInPermissions: ((packageName: String, permissions: List<String>) -> Unit)? = null,
 ) : ApplyProvider {
 
     override val kind = ItemKind.APK
@@ -194,6 +205,10 @@ class ApkApplyProvider(
         if (captured.isEmpty()) return ""
         val declared = targetDeclaredPermissions.declaredPermissions(packageName)
         val plan = PermissionParityPlanner.plan(captured, declared)
+        // Phase 5d: surface the opt-in (dangerous) perms for an explicit user confirm — NEVER granted
+        // here. Emitted before the auto-grant so an app with only dangerous perms (empty auto) still
+        // offers them.
+        if (plan.optIn.isNotEmpty()) onOptInPermissions?.invoke(packageName, plan.optIn)
         val toGrant = plan.auto.filter { it in PermissionAllowlist.DEFAULT_SAFE }
         if (toGrant.isEmpty()) return ""
         val granted = permissionGranter.grant(packageName, toGrant)
