@@ -206,7 +206,7 @@ class ReceiverViewModelTest {
         osFingerprint = "test-fingerprint",
         stagingDir = tmp.root,
         smsRoleCoordinator = coordinator,
-        applyRegistryFactory = ApplyRegistryFactory { _, _, _, _ -> ApplyProviderRegistry(listOf(sms)) },
+        applyRegistryFactory = ApplyRegistryFactory { _, _, _, _, _ -> ApplyProviderRegistry(listOf(sms)) },
     )
 
     @Before
@@ -222,7 +222,7 @@ class ReceiverViewModelTest {
     private fun viewModel(
         channel: SecureChannel = happyChannel(),
         registryFactory: ApplyRegistryFactory =
-            ApplyRegistryFactory { _, _, _, _ -> ApplyProviderRegistry(emptyList()) },
+            ApplyRegistryFactory { _, _, _, _, _ -> ApplyProviderRegistry(emptyList()) },
     ) = ReceiverViewModel(
         pairingCodec = FakeCodec(),
         channelFactory = FakeFactory(channel),
@@ -269,7 +269,7 @@ class ReceiverViewModelTest {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
         val calls = FakeApply(ItemKind.CALL_LOG)
         val channel = happyChannel()
-        val vm = viewModel(channel, registryFactory = ApplyRegistryFactory { _, _, _, _ -> ApplyProviderRegistry(listOf(contacts, calls)) })
+        val vm = viewModel(channel, registryFactory = ApplyRegistryFactory { _, _, _, _, _ -> ApplyProviderRegistry(listOf(contacts, calls)) })
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -301,7 +301,7 @@ class ReceiverViewModelTest {
     @Test
     fun `an item without a registered handler counts as skipped, not moved`() = runTest(dispatcher) {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
-        val vm = viewModel(happyChannel(), registryFactory = ApplyRegistryFactory { _, _, _, _ -> ApplyProviderRegistry(listOf(contacts)) })
+        val vm = viewModel(happyChannel(), registryFactory = ApplyRegistryFactory { _, _, _, _, _ -> ApplyProviderRegistry(listOf(contacts)) })
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -367,7 +367,7 @@ class ReceiverViewModelTest {
     @Test
     fun `applyStaged routes the payload to the provider registered for the kind`() = runTest(dispatcher) {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
-        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, _, _, _ -> ApplyProviderRegistry(listOf(contacts)) })
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, _, _, _, _ -> ApplyProviderRegistry(listOf(contacts)) })
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -492,7 +492,7 @@ class ReceiverViewModelTest {
             override fun currentDefault(): String? = "com.example.messages"
             override fun launchRestore(priorHolderPackage: String?) = true
         }
-        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, _, _, _ ->
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, _, _, _, _ ->
             ApplyProviderRegistry(listOf(SmsApplyProvider(store, noRole)))
         })
         vm.startScanning()
@@ -529,7 +529,7 @@ class ReceiverViewModelTest {
             appVersion = "test",
             osFingerprint = "test",
             stagingDir = tmp.root,
-            applyRegistryFactory = ApplyRegistryFactory { onActions, _, _, _ ->
+            applyRegistryFactory = ApplyRegistryFactory { onActions, _, _, _, _ ->
                 ApplyProviderRegistry(listOf(AppInventoryApplyProvider(source, onActions)))
             },
         )
@@ -548,7 +548,7 @@ class ReceiverViewModelTest {
     @Test
     fun `install actions surfaced by the inventory provider reach the UI flow`() = runTest(dispatcher) {
         var sink: ((List<InstallAction>) -> Unit)? = null
-        val vm = viewModel(registryFactory = ApplyRegistryFactory { onActions, _, _, _ ->
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { onActions, _, _, _, _ ->
             sink = onActions
             ApplyProviderRegistry(emptyList())
         })
@@ -586,7 +586,7 @@ class ReceiverViewModelTest {
             appVersion = "test",
             osFingerprint = "test",
             stagingDir = tmp.root,
-            applyRegistryFactory = ApplyRegistryFactory { _, onRepairEntries, _, _ ->
+            applyRegistryFactory = ApplyRegistryFactory { _, onRepairEntries, _, _, _ ->
                 ApplyProviderRegistry(listOf(BtPairingsApplyProvider(onRepairEntries)))
             },
         )
@@ -606,7 +606,7 @@ class ReceiverViewModelTest {
     @Test
     fun `re-pair entries surfaced by the bluetooth provider reach the UI flow`() = runTest(dispatcher) {
         var sink: ((List<RePairEntry>) -> Unit)? = null
-        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, onRepairEntries, _, _ ->
+        val vm = viewModel(registryFactory = ApplyRegistryFactory { _, onRepairEntries, _, _, _ ->
             sink = onRepairEntries
             ApplyProviderRegistry(emptyList())
         })
@@ -651,7 +651,7 @@ class ReceiverViewModelTest {
             appVersion = "test",
             osFingerprint = "test",
             stagingDir = tmp.root,
-            applyRegistryFactory = ApplyRegistryFactory { _, _, onRelayPrompt, _ ->
+            applyRegistryFactory = ApplyRegistryFactory { _, _, onRelayPrompt, _, _ ->
                 ApplyProviderRegistry(
                     listOf(
                         AppBackupRelayApplyProvider(

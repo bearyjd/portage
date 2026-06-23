@@ -64,6 +64,14 @@ class ApkApplyProvider(
      * shown for an incompatible app (the outcome detail still reports it).
      */
     private val onStoreFallback: ((packageName: String, label: String) -> Unit)? = null,
+    /**
+     * Observability side-channel for runtime-permission parity (ADR-006 D5): invoked after a silent
+     * install with the package and the permissions actually re-granted (the granter's confirmed subset),
+     * so the receiver can surface "restored Network, Sensors" on the Done screen. Display-only — it never
+     * influences WHAT is granted (that is the planner + the [PermissionAllowlist.DEFAULT_SAFE] belt) and
+     * is not invoked when nothing was restored. Mirrors the [onApkInstall]/[onStoreFallback] emit seams.
+     */
+    private val onPermissionsRestored: ((packageName: String, permissions: List<String>) -> Unit)? = null,
 ) : ApplyProvider {
 
     override val kind = ItemKind.APK
@@ -189,7 +197,10 @@ class ApkApplyProvider(
         val toGrant = plan.auto.filter { it in PermissionAllowlist.DEFAULT_SAFE }
         if (toGrant.isEmpty()) return ""
         val granted = permissionGranter.grant(packageName, toGrant)
-        return " — restored ${granted.size}/${toGrant.size} runtime permissions"
+        // Preserve the captured order for display; emit the confirmed subset to the Done-screen sink.
+        val restored = toGrant.filter { it in granted }
+        if (restored.isNotEmpty()) onPermissionsRestored?.invoke(packageName, restored)
+        return " — restored ${restored.size}/${toGrant.size} runtime permissions"
     }
 
     /** One staged split: its validated wire [entry] plus the on-disk file the bytes were streamed to. */

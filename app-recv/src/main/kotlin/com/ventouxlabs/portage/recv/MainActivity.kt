@@ -128,7 +128,7 @@ private class ReceiverViewModelFactory(
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         val registryFactory = ApplyRegistryFactory {
-            onInstallActions, onRepairEntries, onRelayPrompt, onApkInstallPrompt ->
+            onInstallActions, onRepairEntries, onRelayPrompt, onApkInstallPrompt, onPermissionsRestored ->
             val resolver = context.contentResolver
             // One process-scoped bridge (AdbBridges.local caches a single instance): the silent APK
             // installer and the Tier-1 settings grant both go through it.
@@ -178,6 +178,8 @@ private class ReceiverViewModelFactory(
                         // single process-scoped bridge; on the Tier-0 fallback neither runs.
                         permissionGranter = AdbRuntimePermissionGranter(adbBridge),
                         targetDeclaredPermissions = androidTargetDeclaredPermissions(context),
+                        // Display-only: feed the Done screen's "restored Network, Sensors" summary.
+                        onPermissionsRestored = onPermissionsRestored,
                         onApkInstall = { action ->
                             // Synchronous: seal the PackageInstaller session over the staged bytes BEFORE
                             // the provider wipes them, then surface the one-tap confirm row.

@@ -113,6 +113,7 @@ class ApkApplyProviderTest {
         targetDeclared: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
         onApkInstall: (ApkInstallAction) -> Unit = {},
         onStoreFallback: ((String, String) -> Unit)? = null,
+        onPermissionsRestored: ((String, List<String>) -> Unit)? = null,
     ) = ApkApplyProvider(
         stagingDir = stagingDir,
         targetConfig = { pixelTarget },
@@ -123,6 +124,7 @@ class ApkApplyProviderTest {
         targetDeclaredPermissions = targetDeclared,
         onApkInstall = onApkInstall,
         onStoreFallback = onStoreFallback,
+        onPermissionsRestored = onPermissionsRestored,
     )
 
     @Test
@@ -519,5 +521,63 @@ class ApkApplyProviderTest {
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(granter.calls).isEqualTo(0)
         assertThat(outcome.detail).isEqualTo("installed com.example.app silently")
+    }
+
+    @Test
+    fun `onPermissionsRestored reports the package and restored perms after a silent grant`() = runTest {
+        val restored = mutableListOf<Pair<String, List<String>>>()
+        provider(
+            silent = silentInstalls,
+            hasSilent = { true },
+            granter = RecordingGranter(),
+            targetDeclared = TargetDeclaredPermissions {
+                setOf(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS)
+            },
+            onPermissionsRestored = { pkg, perms -> restored += pkg to perms },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(restored).hasSize(1)
+        assertThat(restored.single().first).isEqualTo("com.example.app")
+        assertThat(restored.single().second)
+            .containsExactly(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS).inOrder()
+    }
+
+    @Test
+    fun `onPermissionsRestored is not invoked when the best-effort grant restores nothing`() = runTest {
+        val restored = mutableListOf<Pair<String, List<String>>>()
+        provider(
+            silent = silentInstalls,
+            hasSilent = { true },
+            granter = RecordingGranter(outcome = { emptySet() }), // every pm grant failed
+            targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
+            onPermissionsRestored = { pkg, perms -> restored += pkg to perms },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(restored).isEmpty()
+    }
+
+    @Test
+    fun `onPermissionsRestored is not invoked on the Tier-0 fallback`() = runTest {
+        val restored = mutableListOf<Pair<String, List<String>>>()
+        provider(
+            hasSilent = { false },
+            granter = RecordingGranter(),
+            targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
+            onPermissionsRestored = { pkg, perms -> restored += pkg to perms },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(restored).isEmpty()
     }
 }

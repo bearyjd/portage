@@ -26,7 +26,10 @@ import com.ventouxlabs.portage.providers.apk.ApkSilentInstaller
 import com.ventouxlabs.portage.providers.apk.ApkSourceFile
 import com.ventouxlabs.portage.providers.apk.ApkTargetConfig
 import com.ventouxlabs.portage.providers.apk.InstalledPackageVersions
+import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
+import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
 import com.ventouxlabs.portage.providers.inventory.AppRecord
+import com.ventouxlabs.portage.providers.permission.PermissionAllowlist
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.recv.install.ApkInstallPrompt
 import com.ventouxlabs.portage.transport.PairingCodec
@@ -105,10 +108,11 @@ class ApkDoneSurfacingTest {
         packageName: String = "com.example.app",
         versionCode: Long = 7L,
         splits: List<ApkFileEntry> = emptyList(),
+        capturedPermissions: List<String> = emptyList(),
     ): ByteArray {
         val baseEntry = ApkFileEntry("base", ApkFileRole.BASE, length = 4)
         val entries = listOf(baseEntry) + splits
-        val header = ApkContainerHeader(packageName, versionCode, entries.size)
+        val header = ApkContainerHeader(packageName, versionCode, entries.size, capturedPermissions)
         val files = entries.map { e -> ApkSourceFile(e) { ByteArrayInputStream(ByteArray(e.length.toInt())) } }
         return ByteArrayOutputStream().use { out ->
             ApkCodec.writeContainer(out, header, files)
@@ -142,6 +146,8 @@ class ApkDoneSurfacingTest {
         installed: InstalledPackageVersions = InstalledPackageVersions.None,
         silent: ApkSilentInstaller = ApkSilentInstaller.Deferred,
         hasSilent: () -> Boolean = { false },
+        granter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
+        targetDeclared: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
     ): ReceiverViewModel {
         val apkStaging = tmp.newFolder("apk-splits")
         return ReceiverViewModel(
@@ -151,28 +157,32 @@ class ApkDoneSurfacingTest {
             appVersion = "test",
             osFingerprint = "test",
             stagingDir = tmp.newFolder("staging"),
-            applyRegistryFactory = ApplyRegistryFactory { onInstallActions, _, _, onApkInstallPrompt ->
-                ApplyProviderRegistry(
-                    listOf(
-                        ApkApplyProvider(
-                            stagingDir = apkStaging,
-                            targetConfig = { pixelTarget },
-                            installedVersions = installed,
-                            silentInstaller = silent,
-                            hasSilentInstall = hasSilent,
-                            // Surface a Done-screen install prompt: a fake "session id" stands in for the
-                            // sealed PackageInstaller session the Android adapter would create.
-                            onApkInstall = { action: ApkInstallAction ->
-                                onApkInstallPrompt(ApkInstallPrompt(action.packageName, action.label, 42))
-                            },
-                            onStoreFallback = { pkg, label ->
-                                InstallAction.from(AppRecord(pkg, 0L, null, label))
-                                    ?.let { onInstallActions(listOf(it)) }
-                            },
+            applyRegistryFactory =
+                ApplyRegistryFactory { onInstallActions, _, _, onApkInstallPrompt, onPermissionsRestored ->
+                    ApplyProviderRegistry(
+                        listOf(
+                            ApkApplyProvider(
+                                stagingDir = apkStaging,
+                                targetConfig = { pixelTarget },
+                                installedVersions = installed,
+                                silentInstaller = silent,
+                                hasSilentInstall = hasSilent,
+                                permissionGranter = granter,
+                                targetDeclaredPermissions = targetDeclared,
+                                onPermissionsRestored = onPermissionsRestored,
+                                // Surface a Done-screen install prompt: a fake "session id" stands in for the
+                                // sealed PackageInstaller session the Android adapter would create.
+                                onApkInstall = { action: ApkInstallAction ->
+                                    onApkInstallPrompt(ApkInstallPrompt(action.packageName, action.label, 42))
+                                },
+                                onStoreFallback = { pkg, label ->
+                                    InstallAction.from(AppRecord(pkg, 0L, null, label))
+                                        ?.let { onInstallActions(listOf(it)) }
+                                },
+                            ),
                         ),
-                    ),
-                )
-            },
+                    )
+                },
         )
     }
 
@@ -191,7 +201,7 @@ class ApkDoneSurfacingTest {
             osFingerprint = "test",
             stagingDir = tmp.newFolder("staging-reset"),
             abandonSessions = { abandonCalled = true },
-            applyRegistryFactory = ApplyRegistryFactory { _, _, _, onApkInstallPrompt ->
+            applyRegistryFactory = ApplyRegistryFactory { _, _, _, onApkInstallPrompt, _ ->
                 ApplyProviderRegistry(
                     listOf(
                         ApkApplyProvider(
@@ -262,6 +272,60 @@ class ApkDoneSurfacingTest {
         val done = TestScopeRun(vm) { advanceUntilIdle() }
         assertThat(done.moved).isEqualTo(1)
         assertThat(done.apkInstallPrompts).isEmpty()
+    }
+
+    @Test
+    fun `a silent install surfaces the re-granted runtime permissions on the Done state`() = runTest(dispatcher) {
+        val apk = apkBytes(
+            splits = listOf(abiSplit("arm64_v8a")),
+            capturedPermissions = listOf(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS),
+        )
+        val silent = ApkSilentInstaller { _, _ -> ApkInstallResult.Installed }
+        val granter = RuntimePermissionGranter { _, perms -> perms.toSet() } // the bridge grants all asked
+        val target = TargetDeclaredPermissions {
+            setOf(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS)
+        }
+        val vm = viewModel(
+            channelFor(apk), silent = silent, hasSilent = { true }, granter = granter, targetDeclared = target,
+        )
+        val done = TestScopeRun(vm) { advanceUntilIdle() }
+        assertThat(done.moved).isEqualTo(1)
+        assertThat(done.restoredPermissions.map { it.packageName }).containsExactly("com.example.app")
+        assertThat(done.restoredPermissions.single().permissions)
+            .containsExactly(PermissionAllowlist.INTERNET, PermissionAllowlist.OTHER_SENSORS).inOrder()
+    }
+
+    @Test
+    fun `reset clears restored permissions so they never leak into the next transfer`() = runTest(dispatcher) {
+        val apk = apkBytes(
+            splits = listOf(abiSplit("arm64_v8a")),
+            capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+        )
+        val silent = ApkSilentInstaller { _, _ -> ApkInstallResult.Installed }
+        val granter = RuntimePermissionGranter { _, perms -> perms.toSet() }
+        val target = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) }
+        val vm = viewModel(
+            channelFor(apk), silent = silent, hasSilent = { true }, granter = granter, targetDeclared = target,
+        )
+        val done = TestScopeRun(vm) { advanceUntilIdle() }
+        assertThat(done.restoredPermissions).isNotEmpty() // surfaced this transfer
+        vm.reset()
+        assertThat(vm.restoredPermissions.value).isEmpty() // cleared on return-Home — no leak into transfer #2
+    }
+
+    @Test
+    fun `the Tier-0 fallback surfaces no re-granted permissions`() = runTest(dispatcher) {
+        // No silent capability → Tier-0 emit; the grant call site never runs, so nothing is surfaced.
+        val apk = apkBytes(
+            splits = listOf(abiSplit("arm64_v8a")),
+            capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+        )
+        val granter = RuntimePermissionGranter { _, perms -> perms.toSet() }
+        val target = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) }
+        val vm = viewModel(channelFor(apk), granter = granter, targetDeclared = target)
+        val done = TestScopeRun(vm) { advanceUntilIdle() }
+        assertThat(done.apkInstallPrompts).isNotEmpty() // Tier-0 path taken
+        assertThat(done.restoredPermissions).isEmpty()
     }
 
     private companion object {

@@ -69,7 +69,7 @@ class ReceiverViewModel(
     // actions and bonded-Bluetooth re-pair entries. Both surface their list on the Done screen;
     // neither performs a silent side effect (install/bond) — they produce user-driven checklists.
     applyRegistryFactory: ApplyRegistryFactory =
-        ApplyRegistryFactory { _, _, _, _ -> ApplyProviderRegistry(emptyList()) },
+        ApplyRegistryFactory { _, _, _, _, _ -> ApplyProviderRegistry(emptyList()) },
     // Called on reset to abandon sealed-but-uncommitted PackageInstaller sessions from this run.
     // No-op default; production wires PackageInstallerApkInstaller.abandonUncommittedSessions (fix 5).
     abandonSessions: () -> Unit = {},
@@ -103,6 +103,14 @@ class ReceiverViewModel(
     val apkInstallPrompts: StateFlow<List<ApkInstallPrompt>> = _apkInstallPrompts.asStateFlow()
 
     /**
+     * Per-app runtime permissions re-granted by the APK apply's parity step (ADR-006 D5, silent install
+     * only). Surfaced read-only on the Done screen ("restored Network, Sensors"); empty unless a silent
+     * APK install re-granted at least one default-safe permission.
+     */
+    private val _restoredPermissions = MutableStateFlow<List<RestoredPermissions>>(emptyList())
+    val restoredPermissions: StateFlow<List<RestoredPermissions>> = _restoredPermissions.asStateFlow()
+
+    /**
      * Non-null ⇒ portage is still the default SMS app from an interrupted handoff (process death,
      * dismissed restore prompt). Drives an in-app one-tap restore — the persistent backstop to the
      * `finally` relinquish, which cannot survive a kill (DEVILS_ADVOCATE.md Q4 §3).
@@ -133,6 +141,13 @@ class ReceiverViewModel(
             // APK items arrive one per apply call; append each Tier-0 install prompt so multiple apps
             // in one session all surface their one-tap install row on the Done screen.
             onApkInstallPrompt = { prompt -> _apkInstallPrompts.value = _apkInstallPrompts.value + prompt },
+            // Parity re-grants arrive one per silently-installed app; append each so every app's
+            // restored permissions surface on the Done screen (dedup by package — one row per app).
+            onPermissionsRestored = { packageName, permissions ->
+                _restoredPermissions.value =
+                    (_restoredPermissions.value + RestoredPermissions(packageName, permissions))
+                        .distinctBy { it.packageName }
+            },
         )
 
     /**
@@ -249,6 +264,7 @@ class ReceiverViewModel(
                     repairEntries = _repairEntries.value,
                     relayPrompts = _relayPrompts.value,
                     apkInstallPrompts = _apkInstallPrompts.value,
+                    restoredPermissions = _restoredPermissions.value,
                 )
                 channel?.close()
                 channel = null
@@ -350,6 +366,7 @@ class ReceiverViewModel(
         _repairEntries.value = emptyList()
         _relayPrompts.value = emptyList()
         _apkInstallPrompts.value = emptyList()
+        _restoredPermissions.value = emptyList()
         _state.value = ReceiverState.Idle
         // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
         refreshSmsRoleStrand()
@@ -402,6 +419,7 @@ fun interface ApplyRegistryFactory {
         onRepairEntries: (List<RePairEntry>) -> Unit,
         onRelayPrompt: (RelayRestorePrompt) -> Unit,
         onApkInstallPrompt: (ApkInstallPrompt) -> Unit,
+        onPermissionsRestored: (packageName: String, permissions: List<String>) -> Unit,
     ): ApplyProviderRegistry
 }
 
