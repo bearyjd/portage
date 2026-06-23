@@ -122,7 +122,17 @@ class NoiseSession(
         } catch (e: GeneralSecurityException) {
             throw TransportException("frame authentication failed", e)
         }
-        return codec.decode(out.copyOf(n))
+        // Fail-closed (SecureChannel contract): an authenticated-but-malicious peer can encrypt a
+        // plaintext the codec rejects — empty, an unknown type byte, an over-cap body, or malformed
+        // CBOR (THREAT_MODEL #10). Map any decode failure to TransportException so callers never see a
+        // raw IllegalArgumentException/SerializationException, which they don't treat as fatal.
+        return try {
+            codec.decode(out.copyOf(n))
+        } catch (e: TransportException) {
+            throw e
+        } catch (e: Exception) {
+            throw TransportException("malformed application frame", e)
+        }
     }
 
     override fun close() {

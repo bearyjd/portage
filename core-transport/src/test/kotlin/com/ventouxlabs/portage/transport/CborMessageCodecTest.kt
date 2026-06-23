@@ -9,6 +9,7 @@
  */
 package com.ventouxlabs.portage.transport
 
+import com.ventouxlabs.portage.model.MessageType
 import com.ventouxlabs.portage.model.ProtocolMessage
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
@@ -45,5 +46,36 @@ class CborMessageCodecTest {
         val payload = ByteArray(4096) { (it % 256).toByte() }
         val msg = ProtocolMessage.ItemData(itemId = 1, seq = 0, bytes = payload)
         assertThat(codec.decode(codec.encode(msg))).isEqualTo(msg)
+    }
+
+    // ── decode rejection paths (the trust-boundary validators; NoiseSession maps these to a
+    //    fail-closed TransportException — see NoiseLoopbackTest 'hostile plaintext fails closed') ──
+
+    private fun assertDecodeRejects(bytes: ByteArray) {
+        val thrown: Throwable? = try {
+            codec.decode(bytes); null
+        } catch (e: Exception) {
+            e
+        }
+        assertThat(thrown).isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    @Test
+    fun `decode rejects an empty frame`() = assertDecodeRejects(ByteArray(0))
+
+    @Test
+    fun `decode rejects an unknown message type byte`() = assertDecodeRejects(byteArrayOf(0x7F))
+
+    @Test
+    fun `decode rejects a body over the message cap`() {
+        // The size cap (65519) is checked before the type byte is even parsed; content is irrelevant.
+        assertDecodeRejects(ByteArray(70_000))
+    }
+
+    @Test
+    fun `decode rejects a valid type byte over a malformed CBOR body`() {
+        // MANIFEST discriminator followed by non-CBOR garbage → kotlinx SerializationException,
+        // which is an IllegalArgumentException subtype.
+        assertDecodeRejects(byteArrayOf(MessageType.MANIFEST.t.toByte(), 0xFF.toByte()))
     }
 }
