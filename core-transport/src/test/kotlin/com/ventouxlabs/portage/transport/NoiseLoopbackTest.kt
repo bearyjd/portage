@@ -11,10 +11,12 @@ package com.ventouxlabs.portage.transport
 
 import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.model.ItemMeta
+import com.ventouxlabs.portage.model.MessageType
 import com.ventouxlabs.portage.model.PairingPayload
 import com.ventouxlabs.portage.model.ProtocolMessage
 import com.ventouxlabs.portage.model.TransferManifest
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.southernstorm.noise.protocol.HandshakeState
 import org.junit.Test
 import java.io.EOFException
@@ -60,10 +62,18 @@ class NoiseLoopbackTest {
         val bToA: BlockingQueue<ByteArray>,
     )
 
+    /** A codec that emits a chosen plaintext on encode — lets a test forge a valid AEAD frame whose
+     *  decrypted body the receiver's real codec rejects (hostile authenticated peer, THREAT_MODEL #10). */
+    private class HostileCodec(private val plaintext: ByteArray) : MessageCodec {
+        override fun encode(message: ProtocolMessage): ByteArray = plaintext
+        override fun decode(bytes: ByteArray): ProtocolMessage = error("unused")
+    }
+
     /** Runs both handshake roles on daemon threads; a mismatch leaves one parked, harmless. */
     private fun runHandshake(
         senderPsk: ByteArray = psk,
         senderPrologue: ByteArray = prologue,
+        senderCodec: MessageCodec = CborMessageCodec(),
     ): HsResult {
         val aToB = LinkedBlockingQueue<ByteArray>()
         val bToA = LinkedBlockingQueue<ByteArray>()
@@ -83,7 +93,7 @@ class NoiseLoopbackTest {
         val s = thread(isDaemon = true) {
             try {
                 val k = NoiseChannel.handshake(sendT, HandshakeState.RESPONDER, senderPsk, senderPrologue)
-                sendSession = NoiseSession(sendT, k)
+                sendSession = NoiseSession(sendT, k, senderCodec)
             } catch (t: Throwable) { synchronized(errors) { errors.add(t) } }
         }
         r.join(5_000); s.join(5_000)
@@ -175,6 +185,32 @@ class NoiseLoopbackTest {
         assertThat(thrown).isNotNull()
         // Pin the rejection to the AEAD layer, not some unrelated transport error.
         assertThat(thrown?.cause).isInstanceOf(java.security.GeneralSecurityException::class.java)
+    }
+
+    @Test
+    fun `a valid AEAD frame carrying a hostile plaintext fails closed as TransportException`() {
+        // An AUTHENTICATED-but-malicious peer (it holds the PSK) can encrypt a plaintext the receiver's
+        // codec rejects: empty, an unknown type byte, or a valid type byte over malformed CBOR. The
+        // SecureChannel contract is that receive() surfaces EVERY such anomaly as a fail-closed
+        // TransportException — never a raw IllegalArgumentException/SerializationException that callers
+        // (ItemStreamReceiver / TransferEngine) don't branch on.
+        val hostilePlaintexts = listOf(
+            ByteArray(0),                                            // empty frame
+            byteArrayOf(0x7F),                                       // unknown message type byte
+            byteArrayOf(MessageType.MANIFEST.t.toByte(), 0xFF.toByte()), // valid type, malformed CBOR body
+        )
+        for ((i, plaintext) in hostilePlaintexts.withIndex()) {
+            val h = runHandshake(senderCodec = HostileCodec(plaintext))
+            assertThat(h.errors).isEmpty()
+            h.send!!.send(ProtocolMessage.Ping) // arg ignored — HostileCodec emits the chosen plaintext
+            val thrown: Throwable? = try {
+                h.recv!!.receive(); null
+            } catch (t: Throwable) {
+                t
+            }
+            assertWithMessage("hostile plaintext #%s (%s bytes)", i, plaintext.size)
+                .that(thrown).isInstanceOf(TransportException::class.java)
+        }
     }
 
     @Test
