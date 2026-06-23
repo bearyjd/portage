@@ -193,9 +193,13 @@ private fun StateBody(
                 relayPrompts = current.relayPrompts,
                 apkInstallPrompts = current.apkInstallPrompts,
                 restoredPermissions = current.restoredPermissions,
+                optInPermissions = current.optInPermissions,
                 onInstall = { action -> launchInstall(context, action) },
                 onInstallApk = { prompt ->
                     if (!commitApkInstall(context, prompt)) onApkInstallFailed()
+                },
+                onGrantOptIn = { packageName, permissions ->
+                    viewModel.grantOptIn(packageName, permissions)
                 },
                 onOpenBluetoothSettings = { launchBluetoothSettings(context) },
                 onOpenRelayApp = { prompt -> launchRelayApp(context, prompt) },

@@ -238,6 +238,12 @@ private class ReceiverViewModelFactory(
             applyRegistryFactory = registryFactory,
             // Abandon sealed-but-uncommitted sessions on return-home (fix 5b).
             abandonSessions = { PackageInstallerApkInstaller(context).abandonUncommittedSessions() },
+            // Phase 5d-2: the user-driven opt-in dangerous-perm grant on the Done screen. An
+            // AdbRuntimePermissionGranter over the SAME process-scoped bridge (AdbBridges.local caches one
+            // instance), idle once the transfer is done; it connects→grants→disconnects in finally (AC-11).
+            // Distinct from the apply provider's auto-grant granter (that one is DEFAULT_SAFE-belt-filtered
+            // and runs inside the silent install).
+            optInPermissionGranter = AdbRuntimePermissionGranter(AdbBridges.local(context)),
         ) as T
     }
 }

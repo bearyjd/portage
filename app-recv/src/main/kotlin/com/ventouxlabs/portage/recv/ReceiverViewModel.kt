@@ -19,6 +19,7 @@ import com.ventouxlabs.portage.model.ProtocolMessage
 import com.ventouxlabs.portage.providers.ApplyOutcome
 import com.ventouxlabs.portage.providers.ApplyProviderRegistry
 import com.ventouxlabs.portage.providers.apk.ApkContainerValidation
+import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
 import com.ventouxlabs.portage.providers.bluetooth.RePairEntry
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.relay.AppBackupRelayApplyProvider
@@ -39,6 +40,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.InputStream
@@ -73,6 +76,14 @@ class ReceiverViewModel(
     // Called on reset to abandon sealed-but-uncommitted PackageInstaller sessions from this run.
     // No-op default; production wires PackageInstallerApkInstaller.abandonUncommittedSessions (fix 5).
     abandonSessions: () -> Unit = {},
+    // POST-Done opt-in dangerous-permission grant (ADR-006 D5, Phase 5d-2). DISTINCT from the apply
+    // provider's auto-grant seam: that one runs INSIDE the silent-install apply, belt-filtered to
+    // DEFAULT_SAFE, and has already disconnected by the time Done shows. THIS one is user-driven — it
+    // fires only when the user expands "Advanced permissions" on the Done screen and taps grant, and only
+    // for perms portage itself offered as opt-in (the belt in [grantOptIn]). Best-effort/non-fatal. Default
+    // NoOp; production wires AdbRuntimePermissionGranter(adbBridge) — the same process-scoped bridge, which
+    // is idle once the transfer is done.
+    private val optInPermissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ReceiverState>(ReceiverState.Idle)
@@ -177,6 +188,17 @@ class ReceiverViewModel(
         applyRegistry.forKind(ItemKind.APP_BACKUP_RELAY) as? AppBackupRelayApplyProvider
 
     private var channel: SecureChannel? = null
+
+    /**
+     * Serializes the user-driven opt-in grants on the Done screen. [AdbRuntimePermissionGranter] documents
+     * that it assumes EXCLUSIVE use of the process-scoped bridge for the duration of a call (it
+     * connect→grants→disconnects in `finally`); two overlapping Done-screen taps (e.g. "Grant all" on app A
+     * then app B) would otherwise race that single bridge, one's teardown aborting the other's in-flight
+     * session. The lock makes the grants strictly sequential so each gets exclusive use. (The install-time
+     * granter is temporally disjoint — it runs in the data phase, before Done — so it needs no coordination
+     * with this.)
+     */
+    private val optInGrantMutex = Mutex()
 
     init {
         refreshSmsRoleStrand()
@@ -370,6 +392,74 @@ class ReceiverViewModel(
         _state.value = current.copy(
             items = current.items.map { if (it.itemId == itemId) transform(it) else it },
         )
+    }
+
+    /**
+     * User opted in to re-grant dangerous permissions for one carried app on the Done screen (ADR-006 D5,
+     * Phase 5d-2) — the FIRST user-driven `pm grant` of a dangerous permission. Best-effort and non-fatal.
+     *
+     * THE BELT (security-critical): only perms portage itself OFFERED as opt-in for [packageName] — i.e.
+     * present in the current [ReceiverState.Done.optInPermissions] entry for that package — are ever passed
+     * to the granter. That offered set is planner-derived (`captured ∩ targetDeclared ∩ OPT_IN`, which
+     * already excludes the NEVER/signature-system list and the auto-granted DEFAULT_SAFE set), so this
+     * method can only ever NARROW it, never widen it. A request naming an unknown package, an un-offered
+     * permission, or arriving in any non-Done state grants nothing. The granter re-validates pkg/perm at
+     * the `ShellArgs` wire boundary as the final belt.
+     *
+     * On success the confirmed perms move optIn → restored in the surfaced state so the row updates in
+     * place; a failed/empty grant (e.g. no live bridge) simply leaves them offered.
+     */
+    fun grantOptIn(packageName: String, permissions: List<String>) {
+        val offered = (_state.value as? ReceiverState.Done)
+            ?.optInPermissions
+            ?.firstOrNull { it.packageName == packageName }
+            ?.permissions
+            ?: return
+        // BELT: drop anything not in the offered opt-in set for this package, preserving request order.
+        val requested = permissions.filter { it in offered }
+        if (requested.isEmpty()) return
+        viewModelScope.launch {
+            // Hold the lock across the bridge round-trip so overlapping Done-screen taps never share the
+            // single process-scoped bridge (see [optInGrantMutex]).
+            val granted = optInGrantMutex.withLock { optInPermissionGranter.grant(packageName, requested) }
+            // Only count what we asked for AND the granter confirmed (belt against a granter returning extra).
+            val moved = requested.filter { it in granted }
+            if (moved.isEmpty()) return@launch // best-effort: nothing changed, leave it offered
+            moveOptInToRestored(packageName, moved)
+        }
+    }
+
+    /**
+     * Reflect a confirmed opt-in grant: drop [granted] from [packageName]'s opt-in entry (removing the
+     * entry when emptied) and fold them into its restored entry, then re-emit the Done state so the row
+     * updates in place. Computed from — and gated on — the LIVE Done snapshot (read AFTER the suspend
+     * grant), which is the screen's source of truth. The Done guard is FIRST and deliberate: if the user
+     * left the Done screen during the grant (a [reset] returning Home cancels nothing on viewModelScope),
+     * this is a no-op — it must NOT repopulate the reset-cleared flows with a stale entry that would leak
+     * into the next transfer. Concurrent per-app grants compose because each re-reads the live snapshot.
+     */
+    private fun moveOptInToRestored(packageName: String, granted: List<String>) {
+        val done = _state.value as? ReceiverState.Done ?: return
+        val grantedSet = granted.toSet()
+        val newOptIn = done.optInPermissions.mapNotNull { entry ->
+            if (entry.packageName != packageName) {
+                entry
+            } else {
+                entry.copy(permissions = entry.permissions.filterNot { it in grantedSet })
+                    .takeIf { it.permissions.isNotEmpty() }
+            }
+        }
+        val newRestored = if (done.restoredPermissions.any { it.packageName == packageName }) {
+            done.restoredPermissions.map {
+                if (it.packageName == packageName) it.copy(permissions = (it.permissions + granted).distinct()) else it
+            }
+        } else {
+            done.restoredPermissions + RestoredPermissions(packageName, granted)
+        }
+        // Keep the standalone flows in lockstep with the Done snapshot (both are cleared together on reset).
+        _optInPermissions.value = newOptIn
+        _restoredPermissions.value = newRestored
+        _state.value = done.copy(optInPermissions = newOptIn, restoredPermissions = newRestored)
     }
 
     fun reset() {
