@@ -69,7 +69,7 @@ class ReceiverViewModel(
     // actions and bonded-Bluetooth re-pair entries. Both surface their list on the Done screen;
     // neither performs a silent side effect (install/bond) — they produce user-driven checklists.
     applyRegistryFactory: ApplyRegistryFactory =
-        ApplyRegistryFactory { _, _, _, _, _ -> ApplyProviderRegistry(emptyList()) },
+        ApplyRegistryFactory { _, _, _, _, _, _ -> ApplyProviderRegistry(emptyList()) },
     // Called on reset to abandon sealed-but-uncommitted PackageInstaller sessions from this run.
     // No-op default; production wires PackageInstallerApkInstaller.abandonUncommittedSessions (fix 5).
     abandonSessions: () -> Unit = {},
@@ -111,6 +111,14 @@ class ReceiverViewModel(
     val restoredPermissions: StateFlow<List<RestoredPermissions>> = _restoredPermissions.asStateFlow()
 
     /**
+     * Per-app OPT-IN dangerous permissions offered for an explicit confirm (ADR-006 D5, Phase 5d, silent
+     * install only). Surfaced on the Done screen; NOTHING here is granted until the user acts (the grant
+     * UI is the next Phase-5d slice). Empty unless a silent APK install carried opt-in-eligible perms.
+     */
+    private val _optInPermissions = MutableStateFlow<List<OptInPermissions>>(emptyList())
+    val optInPermissions: StateFlow<List<OptInPermissions>> = _optInPermissions.asStateFlow()
+
+    /**
      * Non-null ⇒ portage is still the default SMS app from an interrupted handoff (process death,
      * dismissed restore prompt). Drives an in-app one-tap restore — the persistent backstop to the
      * `finally` relinquish, which cannot survive a kill (DEVILS_ADVOCATE.md Q4 §3).
@@ -146,6 +154,13 @@ class ReceiverViewModel(
             onPermissionsRestored = { packageName, permissions ->
                 _restoredPermissions.value =
                     (_restoredPermissions.value + RestoredPermissions(packageName, permissions))
+                        .distinctBy { it.packageName }
+            },
+            // Opt-in dangerous perms arrive one per silently-installed app; append (dedup by package).
+            // DATA ONLY — surfaced for an explicit confirm on Done; nothing is granted here (Phase 5d UI).
+            onOptInPermissions = { packageName, permissions ->
+                _optInPermissions.value =
+                    (_optInPermissions.value + OptInPermissions(packageName, permissions))
                         .distinctBy { it.packageName }
             },
         )
@@ -265,6 +280,7 @@ class ReceiverViewModel(
                     relayPrompts = _relayPrompts.value,
                     apkInstallPrompts = _apkInstallPrompts.value,
                     restoredPermissions = _restoredPermissions.value,
+                    optInPermissions = _optInPermissions.value,
                 )
                 channel?.close()
                 channel = null
@@ -367,6 +383,7 @@ class ReceiverViewModel(
         _relayPrompts.value = emptyList()
         _apkInstallPrompts.value = emptyList()
         _restoredPermissions.value = emptyList()
+        _optInPermissions.value = emptyList()
         _state.value = ReceiverState.Idle
         // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
         refreshSmsRoleStrand()
@@ -420,6 +437,7 @@ fun interface ApplyRegistryFactory {
         onRelayPrompt: (RelayRestorePrompt) -> Unit,
         onApkInstallPrompt: (ApkInstallPrompt) -> Unit,
         onPermissionsRestored: (packageName: String, permissions: List<String>) -> Unit,
+        onOptInPermissions: (packageName: String, permissions: List<String>) -> Unit,
     ): ApplyProviderRegistry
 }
 

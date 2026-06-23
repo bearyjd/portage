@@ -39,6 +39,14 @@ data class ItemProgress(
  */
 data class RestoredPermissions(val packageName: String, val permissions: List<String>)
 
+/**
+ * One carried app's OPT-IN dangerous permissions (ADR-006 D5, Phase 5d) — the perms the source app held
+ * and the target declares that are NOT auto-granted (e.g. CAMERA, ACCESS_FINE_LOCATION). Surfaced on the
+ * Done screen for an EXPLICIT per-item user confirm; none are granted until the user acts. [permissions]
+ * are raw names (the UI maps them to friendly labels). Identified by [packageName] (see [RestoredPermissions]).
+ */
+data class OptInPermissions(val packageName: String, val permissions: List<String>)
+
 /** The receiver's single screen state (portage-prp-prompt.md §7). */
 sealed interface ReceiverState {
     /** Landing: explain the flow, offer "Scan". */
@@ -90,6 +98,11 @@ sealed interface ReceiverState {
          * install only; empty otherwise) — a read-only "we switched these back on for you" summary.
          */
         val restoredPermissions: List<RestoredPermissions> = emptyList(),
+        /**
+         * Per-app OPT-IN dangerous permissions offered for an explicit confirm (ADR-006 D5, Phase 5d;
+         * silent install only; empty otherwise). Nothing here is granted until the user acts on it.
+         */
+        val optInPermissions: List<OptInPermissions> = emptyList(),
     ) : ReceiverState
 
     /** Fail-closed terminal state with a user-facing reason. */

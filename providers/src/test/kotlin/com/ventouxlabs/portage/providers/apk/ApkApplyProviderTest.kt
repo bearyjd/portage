@@ -114,6 +114,7 @@ class ApkApplyProviderTest {
         onApkInstall: (ApkInstallAction) -> Unit = {},
         onStoreFallback: ((String, String) -> Unit)? = null,
         onPermissionsRestored: ((String, List<String>) -> Unit)? = null,
+        onOptInPermissions: ((String, List<String>) -> Unit)? = null,
     ) = ApkApplyProvider(
         stagingDir = stagingDir,
         targetConfig = { pixelTarget },
@@ -125,6 +126,7 @@ class ApkApplyProviderTest {
         onApkInstall = onApkInstall,
         onStoreFallback = onStoreFallback,
         onPermissionsRestored = onPermissionsRestored,
+        onOptInPermissions = onOptInPermissions,
     )
 
     @Test
@@ -579,5 +581,66 @@ class ApkApplyProviderTest {
             ),
         )
         assertThat(restored).isEmpty()
+    }
+
+    @Test
+    fun `onOptInPermissions reports dangerous perms the target declares in order, and never grants them`() = runTest {
+        val fineLocation = "android.permission.ACCESS_FINE_LOCATION"
+        val optIn = mutableListOf<Pair<String, List<String>>>()
+        val granter = RecordingGranter()
+        provider(
+            silent = silentInstalls,
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions {
+                setOf(PermissionAllowlist.INTERNET, camera, fineLocation)
+            },
+            onOptInPermissions = { pkg, perms -> optIn += pkg to perms },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET, camera, fineLocation),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(optIn).hasSize(1)
+        assertThat(optIn.single().first).isEqualTo("com.example.app")
+        // Both dangerous perms surfaced, in captured order (INTERNET is default-safe → auto, not opt-in).
+        assertThat(optIn.single().second).containsExactly(camera, fineLocation).inOrder()
+        // The granter only ever saw the default-safe perm; neither dangerous one was granted.
+        assertThat(granter.lastPermissions).containsExactly(PermissionAllowlist.INTERNET)
+    }
+
+    @Test
+    fun `onOptInPermissions is emitted even when the auto-grant set is empty`() = runTest {
+        // An app carrying ONLY a dangerous perm: auto is empty (nothing default-safe), but the opt-in
+        // surface must still be offered — the emission must not be gated behind a non-empty auto set.
+        val optIn = mutableListOf<Pair<String, List<String>>>()
+        val granter = RecordingGranter()
+        val outcome = provider(
+            silent = silentInstalls,
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions { setOf(camera) },
+            onOptInPermissions = { pkg, perms -> optIn += pkg to perms },
+        ).apply(
+            container(capturedPermissions = listOf(camera), files = listOf(base() to ByteArray(4))),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(optIn.single().second).containsExactly(camera)
+        assertThat(granter.calls).isEqualTo(0) // nothing auto-granted
+        assertThat(outcome.detail).isEqualTo("installed com.example.app silently") // no "restored" suffix
+    }
+
+    @Test
+    fun `onOptInPermissions is not invoked on the Tier-0 fallback`() = runTest {
+        val optIn = mutableListOf<Pair<String, List<String>>>()
+        provider(
+            hasSilent = { false },
+            targetDeclared = TargetDeclaredPermissions { setOf(camera) },
+            onOptInPermissions = { pkg, perms -> optIn += pkg to perms },
+        ).apply(
+            container(capturedPermissions = listOf(camera), files = listOf(base() to ByteArray(4))),
+        )
+        assertThat(optIn).isEmpty()
     }
 }

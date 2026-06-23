@@ -158,7 +158,8 @@ class ApkDoneSurfacingTest {
             osFingerprint = "test",
             stagingDir = tmp.newFolder("staging"),
             applyRegistryFactory =
-                ApplyRegistryFactory { onInstallActions, _, _, onApkInstallPrompt, onPermissionsRestored ->
+                ApplyRegistryFactory {
+                    onInstallActions, _, _, onApkInstallPrompt, onPermissionsRestored, onOptInPermissions ->
                     ApplyProviderRegistry(
                         listOf(
                             ApkApplyProvider(
@@ -170,6 +171,7 @@ class ApkDoneSurfacingTest {
                                 permissionGranter = granter,
                                 targetDeclaredPermissions = targetDeclared,
                                 onPermissionsRestored = onPermissionsRestored,
+                                onOptInPermissions = onOptInPermissions,
                                 // Surface a Done-screen install prompt: a fake "session id" stands in for the
                                 // sealed PackageInstaller session the Android adapter would create.
                                 onApkInstall = { action: ApkInstallAction ->
@@ -201,7 +203,7 @@ class ApkDoneSurfacingTest {
             osFingerprint = "test",
             stagingDir = tmp.newFolder("staging-reset"),
             abandonSessions = { abandonCalled = true },
-            applyRegistryFactory = ApplyRegistryFactory { _, _, _, onApkInstallPrompt, _ ->
+            applyRegistryFactory = ApplyRegistryFactory { _, _, _, onApkInstallPrompt, _, _ ->
                 ApplyProviderRegistry(
                     listOf(
                         ApkApplyProvider(
@@ -326,6 +328,53 @@ class ApkDoneSurfacingTest {
         val done = TestScopeRun(vm) { advanceUntilIdle() }
         assertThat(done.apkInstallPrompts).isNotEmpty() // Tier-0 path taken
         assertThat(done.restoredPermissions).isEmpty()
+    }
+
+    @Test
+    fun `a silent install surfaces opt-in dangerous permissions on the Done state, ungranted`() = runTest(dispatcher) {
+        val camera = "android.permission.CAMERA"
+        val apk = apkBytes(
+            splits = listOf(abiSplit("arm64_v8a")),
+            capturedPermissions = listOf(PermissionAllowlist.INTERNET, camera),
+        )
+        val silent = ApkSilentInstaller { _, _ -> ApkInstallResult.Installed }
+        val grantedPerms = mutableListOf<String>()
+        val granter = RuntimePermissionGranter { _, perms -> grantedPerms += perms; perms.toSet() }
+        val target = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET, camera) }
+        val vm = viewModel(
+            channelFor(apk), silent = silent, hasSilent = { true }, granter = granter, targetDeclared = target,
+        )
+        val done = TestScopeRun(vm) { advanceUntilIdle() }
+        // CAMERA is opt-in: surfaced for an explicit confirm, NOT auto-granted.
+        assertThat(done.optInPermissions.map { it.packageName }).containsExactly("com.example.app")
+        assertThat(done.optInPermissions.single().permissions).containsExactly(camera)
+        // Only the default-safe perm was actually granted; the dangerous one was never sent to the granter.
+        assertThat(grantedPerms).containsExactly(PermissionAllowlist.INTERNET)
+        assertThat(done.restoredPermissions.single().permissions).containsExactly(PermissionAllowlist.INTERNET)
+    }
+
+    @Test
+    fun `the Tier-0 fallback surfaces no opt-in permissions`() = runTest(dispatcher) {
+        val camera = "android.permission.CAMERA"
+        val apk = apkBytes(splits = listOf(abiSplit("arm64_v8a")), capturedPermissions = listOf(camera))
+        val target = TargetDeclaredPermissions { setOf(camera) }
+        val vm = viewModel(channelFor(apk), targetDeclared = target) // hasSilent=false → Tier-0
+        val done = TestScopeRun(vm) { advanceUntilIdle() }
+        assertThat(done.apkInstallPrompts).isNotEmpty()
+        assertThat(done.optInPermissions).isEmpty()
+    }
+
+    @Test
+    fun `reset clears opt-in permissions so they never leak into the next transfer`() = runTest(dispatcher) {
+        val camera = "android.permission.CAMERA"
+        val apk = apkBytes(splits = listOf(abiSplit("arm64_v8a")), capturedPermissions = listOf(camera))
+        val silent = ApkSilentInstaller { _, _ -> ApkInstallResult.Installed }
+        val target = TargetDeclaredPermissions { setOf(camera) }
+        val vm = viewModel(channelFor(apk), silent = silent, hasSilent = { true }, targetDeclared = target)
+        val done = TestScopeRun(vm) { advanceUntilIdle() }
+        assertThat(done.optInPermissions).isNotEmpty()
+        vm.reset()
+        assertThat(vm.optInPermissions.value).isEmpty()
     }
 
     private companion object {
