@@ -36,10 +36,12 @@ import androidx.compose.ui.unit.dp
 import com.ventouxlabs.portage.providers.bluetooth.RePairEntry
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.inventory.InstallStore
+import com.ventouxlabs.portage.providers.permission.PermissionAllowlist
 import com.ventouxlabs.portage.providers.relay.RelayApp
 import com.ventouxlabs.portage.providers.relay.RelayRestorePrompt
 import com.ventouxlabs.portage.recv.ItemPhase
 import com.ventouxlabs.portage.recv.ItemProgress
+import com.ventouxlabs.portage.recv.RestoredPermissions
 import com.ventouxlabs.portage.recv.install.ApkInstallPrompt
 import com.ventouxlabs.portage.recv.ui.theme.LocalSpacing
 
@@ -184,6 +186,7 @@ fun DoneScreen(
     repairEntries: List<RePairEntry> = emptyList(),
     relayPrompts: List<RelayRestorePrompt> = emptyList(),
     apkInstallPrompts: List<ApkInstallPrompt> = emptyList(),
+    restoredPermissions: List<RestoredPermissions> = emptyList(),
     onInstall: (InstallAction) -> Unit = {},
     onInstallApk: (ApkInstallPrompt) -> Unit = {},
     onOpenBluetoothSettings: () -> Unit = {},
@@ -193,7 +196,7 @@ fun DoneScreen(
 ) {
     val s = LocalSpacing.current
     if (installActions.isEmpty() && repairEntries.isEmpty() &&
-        relayPrompts.isEmpty() && apkInstallPrompts.isEmpty()
+        relayPrompts.isEmpty() && apkInstallPrompts.isEmpty() && restoredPermissions.isEmpty()
     ) {
         Column(
             modifier = modifier
@@ -248,6 +251,29 @@ fun DoneScreen(
                         // GOS-batching UX open question (ADR-006 follow-ups): A16 may not batch multiple
                         // PackageInstaller confirm intents, so this is one tap per app and the copy says so.
                         text = "These came over with your phone. Tap to install — Android asks you to confirm each one.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (restoredPermissions.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(s.lg))
+                    Text(
+                        text = "RESTORED · ${restoredPermissions.size} ${if (restoredPermissions.size == 1) "APP" else "APPS"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = s.sm),
+                    )
+                    HairlineDivider()
+                }
+                items(restoredPermissions, key = { "perms:${it.packageName}" }) { restored ->
+                    RestoredPermissionsRow(restored = restored)
+                }
+                item {
+                    Spacer(Modifier.height(s.md))
+                    Text(
+                        text = "These came over silently, so portage switched their permissions back on for you — just like on your old phone.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -388,6 +414,39 @@ private fun DoneSummary(
             SwissTextAction(text = backupActionLabel, onClick = it)
         }
     }
+}
+
+/** One restored-permissions row: the carried app over the friendly names of what was switched back on. */
+@Composable
+private fun RestoredPermissionsRow(restored: RestoredPermissions) {
+    val s = LocalSpacing.current
+    Column(Modifier.padding(vertical = s.md)) {
+        Text(
+            text = restored.packageName,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(s.xs))
+        Text(
+            text = restored.permissions.joinToString(", ") { friendlyPermissionName(it) },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * The GrapheneOS-facing toggle name for a default-safe permission (what the user sees in Settings).
+ * Keep this in lockstep with [PermissionAllowlist.DEFAULT_SAFE]: only that set is ever surfaced here, so
+ * any new default-safe permission needs its friendly label added below (the fallback shows the bare
+ * constant suffix — safe, but developer-facing).
+ */
+private fun friendlyPermissionName(permission: String): String = when (permission) {
+    PermissionAllowlist.INTERNET -> "Network"
+    PermissionAllowlist.OTHER_SENSORS -> "Sensors"
+    else -> permission.substringAfterLast('.')
 }
 
 /** One reinstall row: app label over its store, the whole row a tap that opens the store. */

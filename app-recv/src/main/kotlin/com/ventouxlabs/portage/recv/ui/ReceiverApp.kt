@@ -192,6 +192,7 @@ private fun StateBody(
                 repairEntries = current.repairEntries,
                 relayPrompts = current.relayPrompts,
                 apkInstallPrompts = current.apkInstallPrompts,
+                restoredPermissions = current.restoredPermissions,
                 onInstall = { action -> launchInstall(context, action) },
                 onInstallApk = { prompt ->
                     if (!commitApkInstall(context, prompt)) onApkInstallFailed()

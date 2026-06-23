@@ -27,6 +27,18 @@ data class ItemProgress(
     val detail: String? = null,
 )
 
+/**
+ * One carried app whose runtime permissions parity re-granted on this device (ADR-006 D5), surfaced on
+ * the Done screen. [permissions] are the raw permission names actually granted (the default-safe set —
+ * INTERNET / OTHER_SENSORS); the UI maps them to the friendly "Network" / "Sensors" labels.
+ *
+ * Identified by [packageName] (the validated wire header package) — the only identifier the apply
+ * provider has post-install. Known parity gap with the install/reinstall rows: those carry a `label`
+ * field (today also the package name) that will upgrade to a friendly app label once app-send carries
+ * one on the APK wire; this row would need the same `label` seam to upgrade in lockstep.
+ */
+data class RestoredPermissions(val packageName: String, val permissions: List<String>)
+
 /** The receiver's single screen state (portage-prp-prompt.md §7). */
 sealed interface ReceiverState {
     /** Landing: explain the flow, offer "Scan". */
@@ -73,6 +85,11 @@ sealed interface ReceiverState {
         val repairEntries: List<RePairEntry> = emptyList(),
         val relayPrompts: List<RelayRestorePrompt> = emptyList(),
         val apkInstallPrompts: List<ApkInstallPrompt> = emptyList(),
+        /**
+         * Per-app runtime permissions re-granted by the APK apply's parity step (ADR-006 D5, silent
+         * install only; empty otherwise) — a read-only "we switched these back on for you" summary.
+         */
+        val restoredPermissions: List<RestoredPermissions> = emptyList(),
     ) : ReceiverState
 
     /** Fail-closed terminal state with a user-facing reason. */
