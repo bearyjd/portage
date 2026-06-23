@@ -873,6 +873,60 @@ class ItemStreamReceiverTest {
         // The legit requested item is unharmed.
         assertThat(results.first { it.itemId == 1 }.status).isEqualTo(ItemStatus.OK)
     }
+
+    @Test
+    fun `a DATA chunk with a non-monotonic seq is WRITE_ERROR (stream out of order) and the batch continues`() = runTest {
+        // A buggy/hostile sender skips a sequence number mid-item. The receiver must reject it SPECIFICALLY
+        // as a frame-desync (WRITE_ERROR "stream out of order"), not let a wrong byte set slide through to a
+        // downstream HASH_MISMATCH — and must DRAIN to stay frame-synchronized so the next item still
+        // applies. (Pins the seq guard the bug-hunt flagged as the one untested receiver safety arm.)
+        val meta2 = ItemMeta(2, ItemKind.CALL_LOG, 5L, sha256("calls".toByteArray()), "Calls", "History")
+        val frames = listOf(
+            ProtocolMessage.ItemBegin(1, meta.kind, meta.size, 8),
+            ProtocolMessage.ItemData(1, 0, "AAAAAAAA".toByteArray()),
+            ProtocolMessage.ItemData(1, 2, "BBBBBBBB".toByteArray()), // seq jumps 0 -> 2 (skips 1)
+            ProtocolMessage.ItemEnd(1, meta.sha256),
+        ) + itemFrames(meta2, "calls".toByteArray()) + ProtocolMessage.BatchEnd(listOf(1, 2), "done")
+        val channel = ScriptedChannel(*frames.toTypedArray())
+        var appliedItem1 = false
+
+        val results = receiver().run(channel, mapOf(1 to meta, 2 to meta2), { m, _ ->
+            if (m.itemId == 1) appliedItem1 = true
+            ApplyOutcome(ItemStatus.OK, "ok ${m.itemId}")
+        }) { }
+
+        val item1 = results.first { it.itemId == 1 }
+        assertThat(item1.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(item1.detail).contains("out of order")
+        assertThat(appliedItem1).isFalse() // the desynced item never reached apply
+        // Drained, not aborted: the next valid item still applies (frame sync preserved).
+        assertThat(results.first { it.itemId == 2 }.status).isEqualTo(ItemStatus.OK)
+    }
+
+    @Test
+    fun `a DATA chunk whose itemId disagrees mid-item is WRITE_ERROR (stream out of order) and the batch continues`() = runTest {
+        // A DATA frame tagged with a different itemId than the open ItemBegin — the receiver must never
+        // misattribute bytes across items; it rejects the desync as WRITE_ERROR and DRAINS so the next
+        // item still applies. The chunk uses seq=1 (== nextSeq), isolating the itemId arm of the guard.
+        val meta2 = ItemMeta(2, ItemKind.CALL_LOG, 5L, sha256("calls".toByteArray()), "Calls", "History")
+        val frames = listOf(
+            ProtocolMessage.ItemBegin(1, meta.kind, meta.size, 8),
+            ProtocolMessage.ItemData(1, 0, "AAAAAAAA".toByteArray()),
+            ProtocolMessage.ItemData(2, 1, "BBBBBBBB".toByteArray()), // itemId 2 inside item 1's stream
+            ProtocolMessage.ItemEnd(1, meta.sha256),
+        ) + itemFrames(meta2, "calls".toByteArray()) + ProtocolMessage.BatchEnd(listOf(1, 2), "done")
+        val channel = ScriptedChannel(*frames.toTypedArray())
+
+        val results = receiver().run(channel, mapOf(1 to meta, 2 to meta2), { m, _ ->
+            ApplyOutcome(ItemStatus.OK, "ok ${m.itemId}")
+        }) { }
+
+        val item1 = results.first { it.itemId == 1 }
+        assertThat(item1.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(item1.detail).contains("out of order")
+        // Drained, not aborted: the next valid item still applies (frame sync preserved).
+        assertThat(results.first { it.itemId == 2 }.status).isEqualTo(ItemStatus.OK)
+    }
 }
 
 /** A sink whose every write throws [IOException], simulating a mid-stream disk fault (ENOSPC). */
