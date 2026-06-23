@@ -158,8 +158,7 @@ class ApkDoneSurfacingTest {
             osFingerprint = "test",
             stagingDir = tmp.newFolder("staging"),
             applyRegistryFactory =
-                ApplyRegistryFactory {
-                    onInstallActions, _, _, onApkInstallPrompt, onPermissionsRestored, onOptInPermissions ->
+                ApplyRegistryFactory { sinks ->
                     ApplyProviderRegistry(
                         listOf(
                             ApkApplyProvider(
@@ -170,16 +169,16 @@ class ApkDoneSurfacingTest {
                                 hasSilentInstall = hasSilent,
                                 permissionGranter = granter,
                                 targetDeclaredPermissions = targetDeclared,
-                                onPermissionsRestored = onPermissionsRestored,
-                                onOptInPermissions = onOptInPermissions,
+                                onPermissionsRestored = sinks.onPermissionsRestored,
+                                onOptInPermissions = sinks.onOptInPermissions,
                                 // Surface a Done-screen install prompt: a fake "session id" stands in for the
                                 // sealed PackageInstaller session the Android adapter would create.
                                 onApkInstall = { action: ApkInstallAction ->
-                                    onApkInstallPrompt(ApkInstallPrompt(action.packageName, action.label, 42))
+                                    sinks.onApkInstallPrompt(ApkInstallPrompt(action.packageName, action.label, 42))
                                 },
                                 onStoreFallback = { pkg, label ->
                                     InstallAction.from(AppRecord(pkg, 0L, null, label))
-                                        ?.let { onInstallActions(listOf(it)) }
+                                        ?.let { sinks.onInstallActions(listOf(it)) }
                                 },
                             ),
                         ),
@@ -203,14 +202,14 @@ class ApkDoneSurfacingTest {
             osFingerprint = "test",
             stagingDir = tmp.newFolder("staging-reset"),
             abandonSessions = { abandonCalled = true },
-            applyRegistryFactory = ApplyRegistryFactory { _, _, _, onApkInstallPrompt, _, _ ->
+            applyRegistryFactory = ApplyRegistryFactory { sinks ->
                 ApplyProviderRegistry(
                     listOf(
                         ApkApplyProvider(
                             stagingDir = apkStaging,
                             targetConfig = { pixelTarget },
                             onApkInstall = { action: ApkInstallAction ->
-                                onApkInstallPrompt(ApkInstallPrompt(action.packageName, action.label, 42))
+                                sinks.onApkInstallPrompt(ApkInstallPrompt(action.packageName, action.label, 42))
                             },
                         ),
                     ),

@@ -65,11 +65,11 @@ class ReceiverViewModel(
     // Inert by default: without a real coordinator (or its manifest role components) SMS
     // can never be granted, so the apply path always self-skips.
     private val smsRoleCoordinator: SmsRoleCoordinator = SmsRoleCoordinator.Inert,
-    // The factory is handed the providers' two list-producing sinks: app-inventory reinstall
-    // actions and bonded-Bluetooth re-pair entries. Both surface their list on the Done screen;
-    // neither performs a silent side effect (install/bond) — they produce user-driven checklists.
+    // The factory is handed the providers' Done-screen sinks (see [DoneSinks]) — reinstall actions,
+    // re-pair entries, relay prompts, APK install prompts, and the permission summaries. Each surfaces
+    // on the Done screen; none performs a silent side effect — they produce user-driven checklists.
     applyRegistryFactory: ApplyRegistryFactory =
-        ApplyRegistryFactory { _, _, _, _, _, _ -> ApplyProviderRegistry(emptyList()) },
+        ApplyRegistryFactory { _ -> ApplyProviderRegistry(emptyList()) },
     // Called on reset to abandon sealed-but-uncommitted PackageInstaller sessions from this run.
     // No-op default; production wires PackageInstallerApkInstaller.abandonUncommittedSessions (fix 5).
     abandonSessions: () -> Unit = {},
@@ -135,34 +135,36 @@ class ReceiverViewModel(
 
     private val applyRegistry: ApplyProviderRegistry =
         applyRegistryFactory.create(
-            // MERGE, not replace: both the App-Inventory apply (the full reinstall list) and the APK
-            // apply's "incompatible on this device — get it from the store" fallback feed this sink, and
-            // items apply sequentially in arbitrary order. Dedup by package so a reinstall row and an
-            // incompatible-APK row for the same app never key the LazyColumn twice.
-            onInstallActions = { actions ->
-                _installActions.value = (_installActions.value + actions).distinctBy { it.packageName }
-            },
-            onRepairEntries = { entries -> _repairEntries.value = entries },
-            // Relay items arrive one per apply call; append each prompt so multiple relayed backups
-            // (e.g. Signal AND Aegis in one session) all surface on the Done screen.
-            onRelayPrompt = { prompt -> _relayPrompts.value = _relayPrompts.value + prompt },
-            // APK items arrive one per apply call; append each Tier-0 install prompt so multiple apps
-            // in one session all surface their one-tap install row on the Done screen.
-            onApkInstallPrompt = { prompt -> _apkInstallPrompts.value = _apkInstallPrompts.value + prompt },
-            // Parity re-grants arrive one per silently-installed app; append each so every app's
-            // restored permissions surface on the Done screen (dedup by package — one row per app).
-            onPermissionsRestored = { packageName, permissions ->
-                _restoredPermissions.value =
-                    (_restoredPermissions.value + RestoredPermissions(packageName, permissions))
-                        .distinctBy { it.packageName }
-            },
-            // Opt-in dangerous perms arrive one per silently-installed app; append (dedup by package).
-            // DATA ONLY — surfaced for an explicit confirm on Done; nothing is granted here (Phase 5d UI).
-            onOptInPermissions = { packageName, permissions ->
-                _optInPermissions.value =
-                    (_optInPermissions.value + OptInPermissions(packageName, permissions))
-                        .distinctBy { it.packageName }
-            },
+            DoneSinks(
+                // MERGE, not replace: both the App-Inventory apply (the full reinstall list) and the APK
+                // apply's "incompatible on this device — get it from the store" fallback feed this sink, and
+                // items apply sequentially in arbitrary order. Dedup by package so a reinstall row and an
+                // incompatible-APK row for the same app never key the LazyColumn twice.
+                onInstallActions = { actions ->
+                    _installActions.value = (_installActions.value + actions).distinctBy { it.packageName }
+                },
+                onRepairEntries = { entries -> _repairEntries.value = entries },
+                // Relay items arrive one per apply call; append each prompt so multiple relayed backups
+                // (e.g. Signal AND Aegis in one session) all surface on the Done screen.
+                onRelayPrompt = { prompt -> _relayPrompts.value = _relayPrompts.value + prompt },
+                // APK items arrive one per apply call; append each Tier-0 install prompt so multiple apps
+                // in one session all surface their one-tap install row on the Done screen.
+                onApkInstallPrompt = { prompt -> _apkInstallPrompts.value = _apkInstallPrompts.value + prompt },
+                // Parity re-grants arrive one per silently-installed app; append each so every app's
+                // restored permissions surface on the Done screen (dedup by package — one row per app).
+                onPermissionsRestored = { packageName, permissions ->
+                    _restoredPermissions.value =
+                        (_restoredPermissions.value + RestoredPermissions(packageName, permissions))
+                            .distinctBy { it.packageName }
+                },
+                // Opt-in dangerous perms arrive one per silently-installed app; append (dedup by package).
+                // DATA ONLY — surfaced for an explicit confirm on Done; nothing is granted here (Phase 5d UI).
+                onOptInPermissions = { packageName, permissions ->
+                    _optInPermissions.value =
+                        (_optInPermissions.value + OptInPermissions(packageName, permissions))
+                            .distinctBy { it.packageName }
+                },
+            ),
         )
 
     /**
@@ -423,22 +425,30 @@ class ReceiverViewModel(
 }
 
 /**
- * Builds the compiled apply registry, wired to the receiver's list-producing sinks. All are
- * checklists/prompts the user works through, never silent side effects: [onInstallActions] feeds the
- * app-inventory reinstall list, [onRepairEntries] the bonded-Bluetooth re-pair list (PRP-07 Phase 1
- * — display only, never createBond), [onRelayPrompt] the per-app-backup re-link reminder (PRP-06 —
- * portage hands off the OPAQUE file and never imports it). A `fun interface` so production wires real
- * providers while tests pass a trivial lambda.
+ * The Done-screen sinks the apply providers feed (ADR-006). All are checklists/prompts/summaries the
+ * user works through on the Done screen, NEVER silent side effects: [onInstallActions] the app-inventory
+ * reinstall list, [onRepairEntries] the bonded-Bluetooth re-pair list (PRP-07 Phase 1 — display only,
+ * never createBond), [onRelayPrompt] the per-app-backup re-link reminder (PRP-06 — portage hands off the
+ * OPAQUE file and never imports it), [onApkInstallPrompt] the Tier-0 install rows, [onPermissionsRestored]
+ * the auto-granted default-safe perms summary (ADR-006 D5), [onOptInPermissions] the opt-in dangerous-perm
+ * surface (ADR-006 D5, Phase 5d — DATA ONLY, nothing granted from it).
+ *
+ * Bundled into one holder so adding a sink is a one-line change here, not a positional-param churn across
+ * every [ApplyRegistryFactory] call site (production + tests).
  */
+data class DoneSinks(
+    val onInstallActions: (List<InstallAction>) -> Unit,
+    val onRepairEntries: (List<RePairEntry>) -> Unit,
+    val onRelayPrompt: (RelayRestorePrompt) -> Unit,
+    val onApkInstallPrompt: (ApkInstallPrompt) -> Unit,
+    val onPermissionsRestored: (packageName: String, permissions: List<String>) -> Unit,
+    val onOptInPermissions: (packageName: String, permissions: List<String>) -> Unit,
+)
+
+/** Builds the compiled apply registry, wired to the receiver's Done-screen [DoneSinks]. A `fun interface`
+ *  so production wires real providers while tests pass a trivial lambda. */
 fun interface ApplyRegistryFactory {
-    fun create(
-        onInstallActions: (List<InstallAction>) -> Unit,
-        onRepairEntries: (List<RePairEntry>) -> Unit,
-        onRelayPrompt: (RelayRestorePrompt) -> Unit,
-        onApkInstallPrompt: (ApkInstallPrompt) -> Unit,
-        onPermissionsRestored: (packageName: String, permissions: List<String>) -> Unit,
-        onOptInPermissions: (packageName: String, permissions: List<String>) -> Unit,
-    ): ApplyProviderRegistry
+    fun create(sinks: DoneSinks): ApplyProviderRegistry
 }
 
 /**
