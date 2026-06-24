@@ -35,6 +35,7 @@ import com.ventouxlabs.portage.recv.install.ApkInstallPrompt
 import com.ventouxlabs.portage.transport.PairingCodec
 import com.ventouxlabs.portage.transport.SecureChannel
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -148,6 +149,7 @@ class ApkDoneSurfacingTest {
         hasSilent: () -> Boolean = { false },
         granter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
         targetDeclared: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
+        optInGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
     ): ReceiverViewModel {
         val apkStaging = tmp.newFolder("apk-splits")
         return ReceiverViewModel(
@@ -157,6 +159,7 @@ class ApkDoneSurfacingTest {
             appVersion = "test",
             osFingerprint = "test",
             stagingDir = tmp.newFolder("staging"),
+            optInPermissionGranter = optInGranter,
             applyRegistryFactory =
                 ApplyRegistryFactory { sinks ->
                     ApplyProviderRegistry(
@@ -376,7 +379,183 @@ class ApkDoneSurfacingTest {
         assertThat(vm.optInPermissions.value).isEmpty()
     }
 
+    // ---- P5d-2: the user-driven opt-in grant on the Done screen (ADR-006 D5) -------------------------
+
+    /** Records every grant call so a test can assert exactly what reached the bridge. */
+    private class RecordingGranter(
+        private val confirms: (List<String>) -> Set<String> = { it.toSet() },
+    ) : RuntimePermissionGranter {
+        val calls = mutableListOf<Pair<String, List<String>>>()
+        override suspend fun grant(packageName: String, permissions: List<String>): Set<String> {
+            calls += packageName to permissions
+            return confirms(permissions)
+        }
+    }
+
+    /** Build a Done state carrying [captured] dangerous perms as opt-in for com.example.app via silent install. */
+    private fun doneWithOptIn(
+        captured: List<String>,
+        optInGranter: RuntimePermissionGranter,
+    ): ReceiverViewModel {
+        val apk = apkBytes(splits = listOf(abiSplit("arm64_v8a")), capturedPermissions = captured)
+        val vm = viewModel(
+            channelFor(apk),
+            silent = ApkSilentInstaller { _, _ -> ApkInstallResult.Installed },
+            hasSilent = { true },
+            granter = RuntimePermissionGranter { _, perms -> perms.toSet() }, // auto path grants default-safe
+            targetDeclared = TargetDeclaredPermissions { captured.toSet() },
+            optInGranter = optInGranter,
+        )
+        return vm
+    }
+
+    @Test
+    fun `grantOptIn grants an offered perm and moves it from opt-in to restored`() = runTest(dispatcher) {
+        val granter = RecordingGranter()
+        val vm = doneWithOptIn(listOf(PermissionAllowlist.INTERNET, CAMERA), granter)
+        val done = TestScopeRun(vm) { advanceUntilIdle() }
+        assertThat(done.optInPermissions.single().permissions).containsExactly(CAMERA)
+
+        vm.grantOptIn("com.example.app", listOf(CAMERA))
+        advanceUntilIdle()
+
+        assertThat(granter.calls).containsExactly("com.example.app" to listOf(CAMERA))
+        val after = vm.state.value as ReceiverState.Done
+        assertThat(after.optInPermissions).isEmpty() // emptied entry dropped
+        // INTERNET was auto-granted on install; CAMERA folds in after the opt-in confirm.
+        assertThat(after.restoredPermissions.single().permissions)
+            .containsExactly(PermissionAllowlist.INTERNET, CAMERA).inOrder()
+        // The standalone flows stay in lockstep with the Done snapshot (no drift, cleared on reset).
+        assertThat(vm.optInPermissions.value).isEmpty()
+    }
+
+    @Test
+    fun `grantOptIn never passes a permission outside the offered opt-in set to the granter (belt)`() =
+        runTest(dispatcher) {
+            val granter = RecordingGranter()
+            val vm = doneWithOptIn(listOf(CAMERA), granter) // only CAMERA is offered
+            TestScopeRun(vm) { advanceUntilIdle() }
+
+            // Ask for an un-offered dangerous perm alongside the offered one.
+            vm.grantOptIn("com.example.app", listOf(RECORD_AUDIO, CAMERA))
+            advanceUntilIdle()
+
+            // Only CAMERA ever reached the bridge — the un-offered perm was filtered before any pm grant.
+            assertThat(granter.calls).containsExactly("com.example.app" to listOf(CAMERA))
+            val after = vm.state.value as ReceiverState.Done
+            assertThat(after.optInPermissions).isEmpty()
+            assertThat(after.restoredPermissions.flatMap { it.permissions }).doesNotContain(RECORD_AUDIO)
+        }
+
+    @Test
+    fun `grantOptIn for an entirely un-offered request never touches the granter`() = runTest(dispatcher) {
+        val granter = RecordingGranter()
+        val vm = doneWithOptIn(listOf(CAMERA), granter)
+        TestScopeRun(vm) { advanceUntilIdle() }
+
+        vm.grantOptIn("com.example.app", listOf(RECORD_AUDIO)) // never offered
+        advanceUntilIdle()
+
+        assertThat(granter.calls).isEmpty()
+        val after = vm.state.value as ReceiverState.Done
+        assertThat(after.optInPermissions.single().permissions).containsExactly(CAMERA) // unchanged
+    }
+
+    @Test
+    fun `grantOptIn for an unknown package never touches the granter`() = runTest(dispatcher) {
+        val granter = RecordingGranter()
+        val vm = doneWithOptIn(listOf(CAMERA), granter)
+        TestScopeRun(vm) { advanceUntilIdle() }
+
+        vm.grantOptIn("com.other.app", listOf(CAMERA)) // not the package we offered for
+        advanceUntilIdle()
+
+        assertThat(granter.calls).isEmpty()
+        val after = vm.state.value as ReceiverState.Done
+        assertThat(after.optInPermissions.single().permissions).containsExactly(CAMERA)
+    }
+
+    @Test
+    fun `grantOptIn moves only the perms the granter confirms (partial result)`() = runTest(dispatcher) {
+        val granter = RecordingGranter { setOf(CAMERA) } // bridge grants CAMERA, denies LOCATION
+        val vm = doneWithOptIn(listOf(CAMERA, FINE_LOCATION), granter)
+        val done = TestScopeRun(vm) { advanceUntilIdle() }
+        assertThat(done.optInPermissions.single().permissions).containsExactly(CAMERA, FINE_LOCATION).inOrder()
+
+        vm.grantOptIn("com.example.app", listOf(CAMERA, FINE_LOCATION))
+        advanceUntilIdle()
+
+        val after = vm.state.value as ReceiverState.Done
+        assertThat(after.optInPermissions.single().permissions).containsExactly(FINE_LOCATION) // CAMERA moved out
+        assertThat(after.restoredPermissions.single().permissions).containsExactly(CAMERA)
+    }
+
+    @Test
+    fun `grantOptIn with an empty granter result leaves the perm offered (best-effort)`() = runTest(dispatcher) {
+        val granter = RecordingGranter { emptySet() } // e.g. no live bridge
+        val vm = doneWithOptIn(listOf(CAMERA), granter)
+        TestScopeRun(vm) { advanceUntilIdle() }
+
+        vm.grantOptIn("com.example.app", listOf(CAMERA))
+        advanceUntilIdle()
+
+        assertThat(granter.calls).containsExactly("com.example.app" to listOf(CAMERA)) // attempted
+        val after = vm.state.value as ReceiverState.Done
+        assertThat(after.optInPermissions.single().permissions).containsExactly(CAMERA) // still offered
+        assertThat(after.restoredPermissions.flatMap { it.permissions }).doesNotContain(CAMERA)
+    }
+
+    @Test
+    fun `two grants for the same app compose without clobbering each other`() = runTest(dispatcher) {
+        // Both calls are issued before either coroutine runs, so each passes the belt against the SAME
+        // (full) offered set. They must still compose: the second grant re-reads the live snapshot the
+        // first wrote, so neither overwrites the other (the invariant moveOptInToRestored documents).
+        val granter = RecordingGranter()
+        val vm = doneWithOptIn(listOf(CAMERA, FINE_LOCATION), granter)
+        val done = TestScopeRun(vm) { advanceUntilIdle() }
+        assertThat(done.optInPermissions.single().permissions).containsExactly(CAMERA, FINE_LOCATION).inOrder()
+
+        vm.grantOptIn("com.example.app", listOf(CAMERA))
+        vm.grantOptIn("com.example.app", listOf(FINE_LOCATION))
+        advanceUntilIdle()
+
+        val after = vm.state.value as ReceiverState.Done
+        assertThat(after.optInPermissions).isEmpty() // both moved out — neither clobbered the other
+        assertThat(after.restoredPermissions.single().permissions).containsExactly(CAMERA, FINE_LOCATION)
+    }
+
+    @Test
+    fun `a grant that lands after reset never repopulates the cleared state (race)`() = runTest(dispatcher) {
+        // The user taps grant, then returns Home before the bridge call returns. reset() cancels nothing on
+        // viewModelScope, so the late grant must find itself off the Done screen and do nothing.
+        val gate = CompletableDeferred<Unit>()
+        val granter = object : RuntimePermissionGranter {
+            override suspend fun grant(packageName: String, permissions: List<String>): Set<String> {
+                gate.await() // park until the test releases it
+                return permissions.toSet()
+            }
+        }
+        val vm = doneWithOptIn(listOf(CAMERA), granter)
+        TestScopeRun(vm) { advanceUntilIdle() }
+
+        vm.grantOptIn("com.example.app", listOf(CAMERA))
+        advanceUntilIdle() // grant coroutine is now parked inside the granter
+        vm.reset()
+        assertThat(vm.optInPermissions.value).isEmpty()
+        assertThat(vm.restoredPermissions.value).isEmpty()
+
+        gate.complete(Unit) // the bridge call finally returns, post-reset
+        advanceUntilIdle()
+
+        assertThat(vm.optInPermissions.value).isEmpty()
+        assertThat(vm.restoredPermissions.value).isEmpty() // no stale entry leaks into the next transfer
+        assertThat(vm.state.value).isEqualTo(ReceiverState.Idle)
+    }
+
     private companion object {
         const val APK_ITEM_ID = 9
+        const val CAMERA = "android.permission.CAMERA"
+        const val RECORD_AUDIO = "android.permission.RECORD_AUDIO"
+        const val FINE_LOCATION = "android.permission.ACCESS_FINE_LOCATION"
     }
 }
