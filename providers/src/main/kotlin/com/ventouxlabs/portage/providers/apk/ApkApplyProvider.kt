@@ -39,6 +39,13 @@ import java.io.InputStream
  *  - M3: each split [ApkFileEntry.name] is re-validated via [ApkContainerValidation.validatedSplitNameOrNull]
  *    AT THE MOMENT it becomes a staged FILENAME — defence in depth on top of the codec's own validation.
  */
+/**
+ * The single-sourced marker prefixed to a Tier-0 apply outcome when a silent install was ATTEMPTED but
+ * degraded (#86). Its presence vs absence is the (1)-vs-(2) diagnostic signal — keep it one string so the
+ * two degraded arms (Deferred / BridgeUnavailable) and the tests that assert on it can't drift apart.
+ */
+private const val NO_TAP_DEGRADED_NOTE = " — no-tap install unavailable"
+
 class ApkApplyProvider(
     private val stagingDir: File,
     private val targetConfig: () -> ApkTargetConfig,
@@ -156,9 +163,12 @@ class ApkApplyProvider(
                 return ApplyOutcome(ItemStatus.WRITE_ERROR, "staged split set incomplete after reconcile")
             }
 
-            // Capability branch: try the silent (privileged) path only when probed present; Deferred /
-            // BridgeUnavailable fall through to Tier-0, and an absent capability goes straight to Tier-0.
-            if (hasSilentInstall()) {
+            // Capability branch: try the silent (privileged) path only when probed present. A degraded
+            // silent result (Deferred / BridgeUnavailable) falls through to Tier-0 but records WHY in the
+            // outcome detail (#86): a wizard-set-up transfer that nonetheless taps shows the reason. The
+            // presence of the note vs a plain message distinguishes "no SILENT_INSTALL at apply time"
+            // (capability not live — plain message) from "bridge gone at apply time" (note + reason).
+            val silentNote: String = if (hasSilentInstall()) {
                 when (val result = silentInstaller.install(header.packageName, keptFiles)) {
                     is ApkInstallResult.Installed -> {
                         // Silent install succeeded and the bridge path is live — the ONLY place runtime
@@ -168,15 +178,22 @@ class ApkApplyProvider(
                     }
                     is ApkInstallResult.Failed ->
                         return ApplyOutcome(ItemStatus.WRITE_ERROR, "silent install failed: ${result.reason}")
-                    is ApkInstallResult.Deferred,
-                    is ApkInstallResult.BridgeUnavailable -> Unit // fall through to Tier-0
+                    is ApkInstallResult.Deferred ->
+                        "$NO_TAP_DEGRADED_NOTE; used the tap installer"
+                    is ApkInstallResult.BridgeUnavailable ->
+                        "$NO_TAP_DEGRADED_NOTE (${result.reason}); used the tap installer"
                 }
+            } else {
+                "" // no SILENT_INSTALL capability at apply time — the expected Tier-0 path, no note
             }
 
             // Tier-0: emit the install action; the app-recv PackageInstaller adapter fires the system
             // confirm UI. The provider's success here is "install prompt surfaced", not "installed".
             onApkInstall(ApkInstallAction(header.packageName, header.packageName, keptFiles))
-            return ApplyOutcome(ItemStatus.OK, "ready to install ${header.packageName} — confirm on the next screen")
+            return ApplyOutcome(
+                ItemStatus.OK,
+                "ready to install ${header.packageName} — confirm on the next screen$silentNote",
+            )
         } finally {
             // Stage → act → wipe: drop the staged splits on every path. The Tier-0 PackageInstaller
             // adapter copies the bytes it needs into its own session synchronously inside onApkInstall,
