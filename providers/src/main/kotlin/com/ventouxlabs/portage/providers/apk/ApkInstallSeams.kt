@@ -48,8 +48,13 @@ sealed interface ApkInstallResult {
     /** The silent path is unavailable (not wired / app-private staging unreadable) — route to Tier-0. */
     data object Deferred : ApkInstallResult
 
-    /** The bridge was probed present but is gone at apply time (stale positive) — route to Tier-0. */
-    data object BridgeUnavailable : ApkInstallResult
+    /**
+     * The bridge was probed `SILENT_INSTALL`-present but is gone (or failed to connect) at apply time —
+     * route to Tier-0. [reason] is a short, human-readable cause (e.g. "Wireless Debugging is off") so a
+     * wizard-set-up transfer that nonetheless taps surfaces WHY rather than degrading silently (#86): the
+     * apply provider folds it into the install outcome detail instead of swallowing it.
+     */
+    data class BridgeUnavailable(val reason: String) : ApkInstallResult
 }
 
 /**

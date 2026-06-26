@@ -118,7 +118,7 @@ class AdbApkInstallerTest {
             installResult = AdbBridge.InstallResult.BridgeUnavailable,
         )
         val result = installer(bridge).install("com.example.app", files())
-        assertThat(result).isEqualTo(ApkInstallResult.BridgeUnavailable)
+        assertThat(result).isEqualTo(ApkInstallResult.BridgeUnavailable("the bridge dropped during the install stream"))
         assertThat(bridge.disconnectCalls).isEqualTo(1)
     }
 
@@ -139,10 +139,24 @@ class AdbApkInstallerTest {
             connectResult = AdbBridge.ConnectionResult.NoEndpoint,
         )
         val result = installer(bridge).install("com.example.app", files())
-        assertThat(result).isEqualTo(ApkInstallResult.BridgeUnavailable)
+        assertThat(result).isEqualTo(ApkInstallResult.BridgeUnavailable("Wireless Debugging is off"))
         assertThat(bridge.connectCalls).isEqualTo(1)
         assertThat(bridge.installCalls).isEqualTo(0) // never attempted the install
         assertThat(bridge.disconnectCalls).isEqualTo(1) // AC-11: disconnect still runs
+    }
+
+    @Test
+    fun `a rejected connect surfaces the rejection reason (#86 diagnostic)`() = runTest {
+        val bridge = FakeBridge(
+            connected = false,
+            connectResult = AdbBridge.ConnectionResult.Rejected("key not yet authorized"),
+        )
+        val result = installer(bridge).install("com.example.app", files())
+        // The specific bridge cause rides into the result instead of being swallowed.
+        assertThat(result)
+            .isEqualTo(ApkInstallResult.BridgeUnavailable("the bridge connection was rejected (key not yet authorized)"))
+        assertThat(bridge.installCalls).isEqualTo(0)
+        assertThat(bridge.disconnectCalls).isEqualTo(1)
     }
 
     @Test
@@ -171,7 +185,7 @@ class AdbApkInstallerTest {
             connectResult = AdbBridge.ConnectionResult.NoEndpoint,
         )
         val result = installer(bridge).install("com.example.app", files())
-        assertThat(result).isEqualTo(ApkInstallResult.BridgeUnavailable)
+        assertThat(result).isEqualTo(ApkInstallResult.BridgeUnavailable("Wireless Debugging is off"))
         assertThat(bridge.installCalls).isEqualTo(0)
         assertThat(bridge.disconnectCalls).isEqualTo(1) // AC-11 still holds
     }
@@ -183,7 +197,7 @@ class AdbApkInstallerTest {
         // degrade to Tier-0. (runTest virtual time advances past attemptTimeoutMs, no wall-clock wait.)
         val bridge = FakeBridge(connected = false, connectBlocksForever = true)
         val result = installer(bridge, attemptTimeoutMs = 5_000L).install("com.example.app", files())
-        assertThat(result).isEqualTo(ApkInstallResult.BridgeUnavailable)
+        assertThat(result).isEqualTo(ApkInstallResult.BridgeUnavailable("the silent install attempt timed out"))
         assertThat(bridge.connectCalls).isEqualTo(1) // it was attempted…
         assertThat(bridge.installCalls).isEqualTo(0) // …but never got past the blocked connect
         assertThat(bridge.disconnectCalls).isEqualTo(1) // AC-11: teardown ran even on the timeout path

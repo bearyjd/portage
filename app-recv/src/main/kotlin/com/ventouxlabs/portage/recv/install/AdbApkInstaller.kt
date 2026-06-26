@@ -57,22 +57,39 @@ class AdbApkInstaller(
             withTimeoutOrNull(attemptTimeoutMs) {
                 if (!bridge.isConnected()) {
                     // connect() self-guards on Wireless Debugging (NoEndpoint when off) — it never
-                    // drives libadb into the uninterruptible discovery hang. Any non-Connected → Tier-0.
-                    when (bridge.connect()) {
+                    // drives libadb into the uninterruptible discovery hang. Any non-Connected → Tier-0,
+                    // carrying the specific cause so the degradation isn't silent (#86).
+                    when (val connect = bridge.connect()) {
                         is AdbBridge.ConnectionResult.Connected -> Unit // proceed
-                        else -> return@withTimeoutOrNull ApkInstallResult.BridgeUnavailable
+                        else -> return@withTimeoutOrNull ApkInstallResult.BridgeUnavailable(connectReason(connect))
                     }
                 }
                 when (val result = bridge.installApk(staged)) {
                     AdbBridge.InstallResult.Installed -> ApkInstallResult.Installed
                     is AdbBridge.InstallResult.Failed -> ApkInstallResult.Failed(result.reason)
-                    AdbBridge.InstallResult.BridgeUnavailable -> ApkInstallResult.BridgeUnavailable
+                    AdbBridge.InstallResult.BridgeUnavailable ->
+                        ApkInstallResult.BridgeUnavailable("the bridge dropped during the install stream")
                 }
-            } ?: ApkInstallResult.BridgeUnavailable
+            } ?: ApkInstallResult.BridgeUnavailable("the silent install attempt timed out")
         } finally {
             // AC-11: never hold shell uid open; the bridge reconnects with the persisted key next time.
             bridge.disconnect()
         }
+    }
+
+    /**
+     * A short, human-readable cause for a non-[AdbBridge.ConnectionResult.Connected] bridge at apply
+     * time (#86): surfaced (not swallowed) so a wizard-set-up transfer that still degrades to the Tier-0
+     * tap path shows WHY. [AdbBridge.ConnectionResult.Connected] is handled before this is called.
+     */
+    private fun connectReason(connect: AdbBridge.ConnectionResult): String = when (connect) {
+        // Unreachable by construction (the caller handles Connected before calling this). Fail loudly
+        // rather than invent self-contradictory copy if a future refactor ever routes Connected here.
+        AdbBridge.ConnectionResult.Connected -> error("connectReason is only called for a non-Connected result")
+        AdbBridge.ConnectionResult.NoEndpoint -> "Wireless Debugging is off"
+        AdbBridge.ConnectionResult.Timeout -> "the bridge connect timed out"
+        AdbBridge.ConnectionResult.Unsupported -> "the bridge is unsupported on this device"
+        is AdbBridge.ConnectionResult.Rejected -> "the bridge connection was rejected (${connect.reason})"
     }
 
     private companion object {

@@ -241,7 +241,7 @@ class ApkApplyProviderTest {
     }
 
     @Test
-    fun `a Deferred silent result falls through to the Tier-0 emit`() = runTest {
+    fun `a Deferred silent result falls through to the Tier-0 emit, noting the degradation`() = runTest {
         var silentCalled = false
         val silent = ApkSilentInstaller { _, _ -> silentCalled = true; ApkInstallResult.Deferred }
         var emitted: ApkInstallAction? = null
@@ -253,15 +253,20 @@ class ApkApplyProviderTest {
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(silentCalled).isTrue()
         assertThat(emitted).isNotNull()
+        // A silent attempt that degraded must say so (#86) — never silently fall back to a tap.
+        assertThat(outcome.detail).contains("no-tap install unavailable")
     }
 
     @Test
-    fun `a BridgeUnavailable silent result falls through to the Tier-0 emit (stale positive)`() = runTest {
-        val silent = ApkSilentInstaller { _, _ -> ApkInstallResult.BridgeUnavailable }
+    fun `a BridgeUnavailable silent result falls through to Tier-0 and surfaces the bridge reason`() = runTest {
+        val silent = ApkSilentInstaller { _, _ -> ApkInstallResult.BridgeUnavailable("Wireless Debugging is off") }
         var emitted: ApkInstallAction? = null
-        provider(silent = silent, hasSilent = { true }, onApkInstall = { emitted = it })
+        val outcome = provider(silent = silent, hasSilent = { true }, onApkInstall = { emitted = it })
             .apply(container(files = listOf(base() to ByteArray(4))))
         assertThat(emitted).isNotNull()
+        // The #86 diagnostic: the swallowed degradation reason now rides into the outcome detail.
+        assertThat(outcome.detail).contains("no-tap install unavailable")
+        assertThat(outcome.detail).contains("Wireless Debugging is off")
     }
 
     @Test
@@ -280,13 +285,17 @@ class ApkApplyProviderTest {
         var silentCalled = false
         val silent = ApkSilentInstaller { _, _ -> silentCalled = true; ApkInstallResult.Installed }
         var emitted: ApkInstallAction? = null
-        provider(
+        val outcome = provider(
             silent = silent,
             hasSilent = { false },
             onApkInstall = { emitted = it },
         ).apply(container(files = listOf(base() to ByteArray(4))))
         assertThat(silentCalled).isFalse()
         assertThat(emitted).isNotNull()
+        // No SILENT_INSTALL at apply time is the EXPECTED Tier-0 path (capability not live) — a plain
+        // message, no degradation note. This absence is what distinguishes it on a hardware run from a
+        // probed-then-degraded bridge, which DOES carry a note (#86 diagnostic, the (1)-vs-(2) split).
+        assertThat(outcome.detail).doesNotContain("no-tap install unavailable")
     }
 
     @Test
