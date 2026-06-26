@@ -76,6 +76,10 @@ fun ReceiverApp(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
+    // Belt for #85: keep the screen awake across the network window (pairing → item stream) so a
+    // foregrounded transfer doesn't hit a screen timeout. The foreground service is the real fix.
+    KeepScreenOn(enabled = state.keepsScreenAwake())
+
     PortageTheme {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
@@ -405,3 +409,15 @@ private fun ReceiverState.key(): String = when (this) {
     is ReceiverState.Done -> "done"
     is ReceiverState.Failed -> "failed"
 }
+
+/**
+ * The network window — pairing (handshake + manifest read) and the live item stream — where the
+ * screen is kept awake as a belt for #85. Idle/Scanning/Reviewing/Done/Failed let it time out.
+ *
+ * Note the deliberate asymmetry with the foreground-service keep-alive, which scopes to the item
+ * stream only (it starts in onConfirm): Pairing is intentionally belt-only. It is short and
+ * user-attended (the user just scanned and is watching the link come up), so the cheap screen-on
+ * flag is enough; the wakelock is reserved for the long, potentially-background item stream.
+ */
+private fun ReceiverState.keepsScreenAwake(): Boolean =
+    this is ReceiverState.Pairing || this is ReceiverState.Transferring

@@ -84,6 +84,10 @@ class ReceiverViewModel(
     // NoOp; production wires AdbRuntimePermissionGranter(adbBridge) — the same process-scoped bridge, which
     // is idle once the transfer is done.
     private val optInPermissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
+    // Keeps the process at foreground importance + the CPU awake for the item stream so a screen-off
+    // can't reset the streaming socket mid-frame (#85). NoOp default (tests/previews); production
+    // wires a foreground-service-backed implementation. Driven start-before-phase / stop-in-finally.
+    private val transferKeepAlive: TransferKeepAlive = TransferKeepAlive.NoOp,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ReceiverState>(ReceiverState.Idle)
@@ -255,6 +259,9 @@ class ReceiverViewModel(
         viewModelScope.launch {
             try {
                 val ch = channel ?: error("no channel")
+                // Hold the process alive + CPU awake for the whole item stream (#85): released in the
+                // finally below on EVERY exit (done / fail / timeout / reset). Idempotent.
+                transferKeepAlive.start()
                 // Cap the WHOLE data phase, not just each read. withTimeoutOrNull (NOT withTimeout)
                 // returns null on ITS OWN timeout, so a stalled peer becomes a visible Failed rather
                 // than a re-thrown cancellation. null strictly means "this budget elapsed": the block
@@ -315,6 +322,10 @@ class ReceiverViewModel(
                 // resulting IO error must not flip the user's Home back to Failed.
                 ensureActive()
                 fail(t.message ?: "Transfer failed")
+            } finally {
+                // Always release the keep-alive — done, fail, timeout, or a reset() cancellation
+                // unwinding through here. Idempotent.
+                transferKeepAlive.stop()
             }
         }
     }

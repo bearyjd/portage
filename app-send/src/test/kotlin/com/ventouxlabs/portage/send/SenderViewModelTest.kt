@@ -129,6 +129,14 @@ private class FakeFactory(
     }
 }
 
+/** Records start/stop calls so tests can pin the keep-alive lifecycle around the data phase (#85). */
+private class FakeKeepAlive : TransferKeepAlive {
+    var starts = 0
+    var stops = 0
+    override fun start() { starts++ }
+    override fun stop() { stops++ }
+}
+
 class SenderViewModelTest {
 
     private val dispatcher = StandardTestDispatcher()
@@ -159,6 +167,7 @@ class SenderViewModelTest {
         hints: List<String> = listOf("192.168.1.2"),
         inventorySource: InventorySource? = null,
         installedAppSource: InstalledAppSource? = null,
+        keepAlive: TransferKeepAlive = TransferKeepAlive.NoOp,
     ) = SenderViewModel(
         providers = providers,
         stagingDir = tmp.root,
@@ -174,6 +183,7 @@ class SenderViewModelTest {
         // Resolve relay picks on the SAME test dispatcher so advanceUntilIdle() drives the off-main
         // resolution deterministically (in production this is Dispatchers.IO, off the UI thread).
         relayResolveDispatcher = dispatcher,
+        transferKeepAlive = keepAlive,
     )
 
     private fun signalPick(
@@ -336,6 +346,62 @@ class SenderViewModelTest {
 
         assertThat(vm.state.value).isEqualTo(SenderState.Home)
         assertThat(tmp.root.listFiles().orEmpty()).isEmpty()
+    }
+
+    // ---- transfer keep-alive (#85): foreground-service lifecycle around the data phase ----
+
+    @Test
+    fun `keep-alive starts before the data phase and stops once on success`() = runTest(dispatcher) {
+        val keepAlive = FakeKeepAlive()
+        val vm = viewModel(FakeFactory(happyChannel()), keepAlive = keepAlive)
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        assertThat(vm.state.value).isInstanceOf(SenderState.Done::class.java)
+        assertThat(keepAlive.starts).isEqualTo(1)
+        assertThat(keepAlive.stops).isEqualTo(1)
+    }
+
+    @Test
+    fun `keep-alive is released when the data phase times out`() = runTest(dispatcher) {
+        // Same slow-drip setup as the aggregate-cap test: handshake + HELLO, then never SELECT.
+        val keepAlive = FakeKeepAlive()
+        val vm = SenderViewModel(
+            providers = listOf(BytesExport(ItemKind.CONTACTS_VCF, "vcard".toByteArray())),
+            stagingDir = tmp.root,
+            senderName = "old phone",
+            channelFactory = FakeFactory(StallingChannel(ProtocolMessage.Hello("0.1.0", "recv"))),
+            pairingCodec = PairingCodecImpl(),
+            random = SecureRandom(),
+            addressHints = { listOf("192.168.1.2") },
+            portFinder = { 40123 },
+            nowEpochSeconds = { 1_000 },
+            dataPhaseTimeoutMs = 1_000L,
+            relayResolveDispatcher = dispatcher,
+            transferKeepAlive = keepAlive,
+        )
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        assertThat(vm.state.value).isInstanceOf(SenderState.Failed::class.java)
+        // Started for the listen→stream window, then released in the finally despite the timeout.
+        assertThat(keepAlive.starts).isEqualTo(1)
+        assertThat(keepAlive.stops).isEqualTo(1)
+    }
+
+    @Test
+    fun `keep-alive never starts when prepare fails before listening`() = runTest(dispatcher) {
+        // No LAN ⇒ fail() before acceptAsSender ⇒ start() is never reached.
+        val keepAlive = FakeKeepAlive()
+        val vm = viewModel(FakeFactory(happyChannel()), hints = emptyList(), keepAlive = keepAlive)
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        assertThat(vm.state.value).isInstanceOf(SenderState.Failed::class.java)
+        assertThat(keepAlive.starts).isEqualTo(0)
     }
 
     // ---- app-backup relay (PRP-06): detection + user-driven staging into the manifest ----

@@ -244,6 +244,9 @@ private class ReceiverViewModelFactory(
             // Distinct from the apply provider's auto-grant granter (that one is DEFAULT_SAFE-belt-filtered
             // and runs inside the silent install).
             optInPermissionGranter = AdbRuntimePermissionGranter(AdbBridges.local(context)),
+            // Keeps the process alive + CPU awake for the item stream via a short-lived foreground
+            // service so a screen-off can't reset the streaming socket mid-frame (#85).
+            transferKeepAlive = ForegroundServiceKeepAlive(context),
         ) as T
     }
 }

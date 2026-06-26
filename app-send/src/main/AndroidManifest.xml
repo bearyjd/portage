@@ -34,6 +34,20 @@
     -->
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:node="remove" />
 
+    <!--
+      Keep a long transfer alive when the screen sleeps (#85): the data phase runs under a
+      short-lived foreground service holding a PARTIAL_WAKE_LOCK, so GrapheneOS Doze / Wi-Fi
+      power-save can't suspend the app and let the peer read an RST mid-frame. FOREGROUND_SERVICE
+      and the dataSync type are NORMAL install-time permissions — no privilege, no ADB bridge, so
+      the no-escalation CI gate stays untouched. POST_NOTIFICATIONS is denied-by-default on
+      GrapheneOS; the process-priority + wakelock benefit holds even when the ongoing notification
+      doesn't render (the permission is declared, never runtime-requested — no added prompt).
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -50,5 +64,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          Transfer keep-alive foreground service (#85): hosts the data phase's wakelock + foreground
+          importance so a screen-off can't reset the streaming socket mid-frame. Not exported, not
+          bound — started/stopped only in-process by ForegroundServiceKeepAlive around the transfer.
+        -->
+        <service
+            android:name=".TransferForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

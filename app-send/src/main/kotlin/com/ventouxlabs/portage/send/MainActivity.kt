@@ -182,6 +182,9 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
             // SELECT which apps to carry (ADR-006 Phase 1b). READ-ONLY PackageManager + file reads —
             // no privilege, no ADB bridge, reuses the same install-time QUERY_ALL_PACKAGES.
             installedAppSource = AndroidInstalledAppSource(context.packageManager),
+            // Keeps the process alive + CPU awake for the data phase via a short-lived foreground
+            // service so a screen-off can't reset the streaming socket mid-frame (#85).
+            transferKeepAlive = ForegroundServiceKeepAlive(context),
         ) as T
     }
 }

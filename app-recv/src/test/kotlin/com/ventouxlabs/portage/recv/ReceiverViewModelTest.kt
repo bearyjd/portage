@@ -145,6 +145,14 @@ private class FakeSmsRoleCoordinator(
     }
 }
 
+/** Records start/stop calls so tests can pin the keep-alive lifecycle around the data phase (#85). */
+private class FakeKeepAlive : TransferKeepAlive {
+    var starts = 0
+    var stops = 0
+    override fun start() { starts++ }
+    override fun stop() { stops++ }
+}
+
 class ReceiverViewModelTest {
 
     private val dispatcher = StandardTestDispatcher()
@@ -223,6 +231,7 @@ class ReceiverViewModelTest {
         channel: SecureChannel = happyChannel(),
         registryFactory: ApplyRegistryFactory =
             ApplyRegistryFactory { _ -> ApplyProviderRegistry(emptyList()) },
+        keepAlive: TransferKeepAlive = TransferKeepAlive.NoOp,
     ) = ReceiverViewModel(
         pairingCodec = FakeCodec(),
         channelFactory = FakeFactory(channel),
@@ -231,6 +240,7 @@ class ReceiverViewModelTest {
         osFingerprint = "test-fingerprint",
         stagingDir = tmp.root,
         applyRegistryFactory = registryFactory,
+        transferKeepAlive = keepAlive,
     )
 
     @Test
@@ -296,6 +306,64 @@ class ReceiverViewModelTest {
         // A non-inventory transfer must leave installActions empty so the Done screen keeps
         // the original centered layout (code review 2026-06-11, MEDIUM: pin the branch).
         assertThat(done.installActions).isEmpty()
+    }
+
+    // ---- transfer keep-alive (#85): foreground-service lifecycle around the item stream ----
+
+    @Test
+    fun `keep-alive starts before the item stream and stops once on success`() = runTest(dispatcher) {
+        val keepAlive = FakeKeepAlive()
+        val vm = viewModel(happyChannel(), keepAlive = keepAlive)
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Done::class.java)
+        assertThat(keepAlive.starts).isEqualTo(1)
+        assertThat(keepAlive.stops).isEqualTo(1)
+    }
+
+    @Test
+    fun `keep-alive is untouched before the user confirms`() = runTest(dispatcher) {
+        // Pairing + manifest read happen WITHOUT the keep-alive — it scopes to the item stream only.
+        val keepAlive = FakeKeepAlive()
+        val vm = viewModel(happyChannel(), keepAlive = keepAlive)
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Reviewing::class.java)
+        assertThat(keepAlive.starts).isEqualTo(0)
+    }
+
+    @Test
+    fun `keep-alive is released when the data phase times out`() = runTest(dispatcher) {
+        // Manifest arrives (→ Reviewing), then the sender goes quiet during the item stream.
+        val keepAlive = FakeKeepAlive()
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(StallingChannel(ProtocolMessage.Manifest(manifest))),
+            nowEpochSeconds = { 1_000 },
+            appVersion = "test",
+            osFingerprint = "test-fingerprint",
+            stagingDir = tmp.root,
+            dataPhaseTimeoutMs = 1_000L,
+            transferKeepAlive = keepAlive,
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Failed::class.java)
+        // Started for the item stream, then released in the finally despite the timeout.
+        assertThat(keepAlive.starts).isEqualTo(1)
+        assertThat(keepAlive.stops).isEqualTo(1)
     }
 
     @Test

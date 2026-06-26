@@ -86,6 +86,10 @@ class SenderViewModel(
     // Where relay picks are resolved. Resolution may stream a whole file to count bytes (SAF omits
     // SIZE), so it MUST stay off the main thread — defaults to IO; tests inject the test dispatcher.
     private val relayResolveDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    // Keeps the process at foreground importance + the CPU awake for the data phase so a screen-off
+    // can't reset the streaming socket mid-frame (#85). NoOp default (tests/previews); production
+    // wires a foreground-service-backed implementation. Driven start-before-phase / stop-in-finally.
+    private val transferKeepAlive: TransferKeepAlive = TransferKeepAlive.NoOp,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<SenderState>(SenderState.Home)
@@ -247,6 +251,11 @@ class SenderViewModel(
                     totalBytes = built.manifest.totalBytes,
                 )
 
+                // Hold the process alive + CPU awake for the whole listen→stream window (#85): from
+                // here the listener is up and, once a peer connects, the data phase streams. start()
+                // runs exactly once, after the prepare guards above; the stop() in the finally below
+                // is the idempotent half that always runs on EVERY exit (done / fail / timeout / reset).
+                transferKeepAlive.start()
                 val ch = channelFactory.acceptAsSender(payload).also { channel = it }
                 _state.value = SenderState.Linked
 
@@ -282,6 +291,10 @@ class SenderViewModel(
                 // resulting IO error must not flip the user's Home back to Failed.
                 ensureActive()
                 fail(t.message ?: "Transfer failed")
+            } finally {
+                // Always release the keep-alive — done, fail, timeout, or a reset() cancellation
+                // unwinding through here. Idempotent: a no-op if start() was never reached.
+                transferKeepAlive.stop()
             }
         }
     }
