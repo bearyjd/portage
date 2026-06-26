@@ -16,29 +16,34 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 
 /**
- * Keeps the sender process at foreground importance and the CPU awake for the whole transfer data
- * phase, so a screen-off (GrapheneOS Doze / Wi-Fi power-save) can't suspend the app and let the
- * peer read an RST mid-frame (#85). The foreground importance is the primary keep-alive; the
- * PARTIAL_WAKE_LOCK additionally keeps the CPU running the socket I/O. Released in [onDestroy].
+ * Keeps the sender process at foreground importance and the radio/CPU awake for the whole transfer
+ * data phase, so a screen-off (GrapheneOS Doze / Wi-Fi power-save) can't suspend the app and let the
+ * peer read an RST mid-frame, or throttle throughput to a crawl (#85). Three layers: the foreground
+ * importance is the primary keep-alive; a PARTIAL_WAKE_LOCK keeps the CPU running the socket I/O; and
+ * a WifiLock (HIGH_PERF) keeps the Wi-Fi radio out of power-save so a large transfer doesn't slow to
+ * ~0 while the screen is off (hardware-observed on #85 — a 505 MB transfer trickled at ~0.8 MB/s on a
+ * multi-Gbps link without it, risking the data-phase cap). All released in [onDestroy].
  *
  * Not exported, not bound, takes no commands: it is started/stopped ONLY in-process by
  * [ForegroundServiceKeepAlive] around the data phase. POST_NOTIFICATIONS is denied-by-default on
- * GrapheneOS, so the ongoing notification may not render — the process-priority + wakelock benefit
- * is independent of whether the notification is shown.
+ * GrapheneOS, so the ongoing notification may not render — the keep-alive benefit is independent of
+ * whether the notification is shown.
  */
 class TransferForegroundService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Promote within the platform's ~5 s window. If promotion throws (a null NotificationManager,
         // or a future OS restriction), degrade to NO keep-alive — the SAFE direction, exactly the
-        // pre-fix behaviour — instead of crashing the process or holding a wakelock with no FGS.
+        // pre-fix behaviour — instead of crashing the process or holding locks with no FGS.
         val promoted = runCatching {
             startForeground(
                 NOTIFICATION_ID,
@@ -51,9 +56,9 @@ class TransferForegroundService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        // Acquire only AFTER a successful promotion, so the wakelock is bound to the foreground
-        // window — never held by a bare, un-promoted service instance.
-        acquireWakeLock()
+        // Acquire only AFTER a successful promotion, so the locks are bound to the foreground window —
+        // never held by a bare, un-promoted service instance.
+        acquireLocks()
         // Not sticky: if the system kills us mid-transfer the socket is already gone — never relaunch
         // a bare keep-alive service with no transfer behind it.
         return START_NOT_STICKY
@@ -62,25 +67,51 @@ class TransferForegroundService : Service() {
     override fun onDestroy() {
         wakeLock?.let { if (it.isHeld) runCatching { it.release() } }
         wakeLock = null
+        wifiLock?.let { if (it.isHeld) runCatching { it.release() } }
+        wifiLock = null
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun acquireWakeLock() {
-        // Guard against a double-acquire leaking the first lock if onStartCommand is delivered twice.
-        if (wakeLock?.isHeld == true) return
-        wakeLock = getSystemService(PowerManager::class.java)
-            ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG)
-            ?.apply {
-                setReferenceCounted(false)
-                // Belt against a leaked hold; the real release is onDestroy (and a process kill
-                // releases it regardless). Sits above the data-phase effective ceiling (the 60 min
-                // aggregate cap plus one ~10 min per-read soTimeout), so it only fires on a genuinely
-                // leaked hold, never on a slow-but-live transfer.
-                acquire(WAKELOCK_TIMEOUT_MS)
-            }
+    /**
+     * Acquire the keep-alive locks after a successful foreground promotion. The PARTIAL_WAKE_LOCK keeps
+     * the CPU running the socket I/O; the WifiLock keeps the radio at full power so throughput survives a
+     * screen-off (#85). Both guard against a double-acquire (a second onStartCommand) and are released in
+     * [onDestroy]; a process kill releases them regardless.
+     */
+    private fun acquireLocks() {
+        if (wakeLock?.isHeld != true) {
+            wakeLock = getSystemService(PowerManager::class.java)
+                ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG)
+                ?.apply {
+                    setReferenceCounted(false)
+                    // Belt against a leaked hold; the real release is onDestroy (a process kill releases
+                    // it regardless). Above the data-phase effective ceiling (the 60 min aggregate cap
+                    // plus one ~10 min per-read soTimeout), so it only fires on a genuinely leaked hold.
+                    acquire(WAKELOCK_TIMEOUT_MS)
+                }
+        }
+        if (wifiLock?.isHeld != true) {
+            // WIFI_MODE_FULL_HIGH_PERF is deprecated (API 29) but is the mode that keeps the radio at FULL
+            // power with the SCREEN OFF; the replacement FULL_LOW_LATENCY is documented as foreground-
+            // Activity-only, which a screen-off FGS does not satisfy — so HIGH_PERF is the correct fit
+            // here. WifiLock has no acquire-timeout overload; released in onDestroy and on process death.
+            // Needs the manifest ACCESS_WIFI_STATE + WAKE_LOCK perms (both NORMAL, both declared); without
+            // them acquire() is inert, so keep them if this lock stays. Wrapped so any unexpected throw
+            // degrades to "no wifi lock" (the wakelock + FGS still hold) — SAFE — not a service crash.
+            wifiLock = runCatching {
+                @Suppress("DEPRECATION")
+                applicationContext.getSystemService(WifiManager::class.java)
+                    ?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, WIFILOCK_TAG)
+                    ?.apply {
+                        setReferenceCounted(false)
+                        acquire()
+                    }
+            }.onFailure { Log.w(TAG, "wifi lock acquire failed; transfer continues without it", it) }
+                .getOrNull()
+        }
     }
 
     private fun buildNotification(): Notification {
@@ -107,14 +138,15 @@ class TransferForegroundService : Service() {
             "Keeps a device-to-device transfer running while the screen is off."
         const val NOTIFICATION_ID = 0x70 // 'p'
         const val WAKELOCK_TAG = "portage:transfer"
+        const val WIFILOCK_TAG = "portage:transfer-wifi"
         const val WAKELOCK_TIMEOUT_MS = 90L * 60L * 1000L // 90 min leak-belt (> the data-phase ceiling)
     }
 }
 
 /**
  * Android [TransferKeepAlive] backed by [TransferForegroundService]: [start] launches the foreground
- * service (priority + wakelock), [stop] tears it down. Both are idempotent and never throw — a
- * failed start degrades to no keep-alive (today's behaviour) and a stop with no running service is a
+ * service (priority + wakelock + wifilock), [stop] tears it down. Both are idempotent and never throw —
+ * a failed start degrades to no keep-alive (today's behaviour) and a stop with no running service is a
  * no-op. Started from a foreground Activity (the user tapped "send"), so the background-FGS-start
  * restrictions do not apply.
  */

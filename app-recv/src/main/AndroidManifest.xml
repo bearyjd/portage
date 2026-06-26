@@ -66,15 +66,20 @@
 
     <!--
       Keep a long transfer alive when the screen sleeps (#85): the data phase (the live item stream)
-      runs under a short-lived foreground service holding a PARTIAL_WAKE_LOCK, so GrapheneOS Doze /
-      Wi-Fi power-save can't suspend the app and let the peer read an RST mid-frame. FOREGROUND_SERVICE
-      and the dataSync type are NORMAL install-time permissions — no privilege bridge involved.
-      POST_NOTIFICATIONS is denied-by-default on GrapheneOS; the process-priority + wakelock benefit
-      holds even when the ongoing notification doesn't render (declared, never runtime-requested).
+      runs under a short-lived foreground service holding a PARTIAL_WAKE_LOCK + a WifiLock(HIGH_PERF),
+      so GrapheneOS Doze / Wi-Fi power-save can't suspend the app and let the peer read an RST mid-frame,
+      or throttle throughput to a crawl (hardware-observed: a 505 MB transfer trickled at ~0.8 MB/s
+      backgrounded without the WifiLock). FOREGROUND_SERVICE and the dataSync type are NORMAL
+      install-time permissions — no privilege bridge involved. ACCESS_WIFI_STATE (also NORMAL/
+      auto-granted) is what WifiManager.WifiLock.acquire() requires — declared so the lock actually
+      engages on hardware (WAKE_LOCK below covers its power semantics). POST_NOTIFICATIONS is
+      denied-by-default on GrapheneOS; the process-priority + wakelock benefit holds even when the
+      ongoing notification doesn't render (declared, never runtime-requested).
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
