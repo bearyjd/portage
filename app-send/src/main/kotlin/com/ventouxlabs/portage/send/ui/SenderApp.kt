@@ -41,6 +41,10 @@ fun SenderApp(viewModel: SenderViewModel, summary: DeviceSummary) {
     val availableApps by viewModel.availableApps.collectAsStateWithLifecycle()
     val selectedAppPackages by viewModel.selectedAppPackages.collectAsStateWithLifecycle()
 
+    // Belt for #85: keep the screen awake across the active network window (pairing → streaming) so
+    // a foregrounded transfer doesn't hit a screen timeout. The foreground service is the real fix.
+    KeepScreenOn(enabled = state.keepsScreenAwake())
+
     PortageTheme {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
@@ -142,6 +146,13 @@ private fun StateBody(
             )
     }
 }
+
+/**
+ * The active network window — showing the QR (listening), linked, and streaming — where the screen
+ * is kept awake as a belt for #85. Home/Preparing/Done/Failed let the screen time out normally.
+ */
+private fun SenderState.keepsScreenAwake(): Boolean =
+    this is SenderState.ShowingQr || this is SenderState.Linked || this is SenderState.Sending
 
 /** Stable transition key per state kind so data ticks don't retrigger the crossfade. */
 private fun SenderState.key(): String = when (this) {
