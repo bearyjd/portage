@@ -53,6 +53,14 @@ interface PrivilegeIntegration {
     fun wiring(context: Context): PrivilegeWiring
 
     /**
+     * Called exactly when the user taps the "Advanced transfer setup" affordance — not on composition
+     * entry or config changes. `degoogle` starts (or resumes) the privilege wizard on this tap; `play`
+     * is a no-op. Taking [context] (not a Composable receiver) keeps `main` free of
+     * `:wizard` / `:adb-bridge` types.
+     */
+    fun onAdvancedSetupRequested(context: Context)
+
+    /**
      * Re-evaluate flavor state when the Activity resumes (e.g. returning from Settings mid-wizard).
      * `degoogle` rechecks the privilege wizard; `play` is a no-op.
      */

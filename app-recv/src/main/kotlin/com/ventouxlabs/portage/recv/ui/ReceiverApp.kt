@@ -78,6 +78,7 @@ fun ReceiverApp(
     var wizardOpen by rememberSaveable { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     // Belt for #85: keep the screen awake across the network window (pairing → item stream) so a
     // foregrounded transfer doesn't hit a screen timeout. The foreground service is the real fix.
@@ -132,7 +133,10 @@ fun ReceiverApp(
                             current = current,
                             viewModel = viewModel,
                             offersAdvancedSetup = integration.offersAdvancedSetup,
-                            onSetup = { wizardOpen = true },
+                            onSetup = {
+                                integration.onAdvancedSetupRequested(context)
+                                wizardOpen = true
+                            },
                             onApkInstallFailed = {
                                 scope.launch {
                                     snackbarHostState.showSnackbar(

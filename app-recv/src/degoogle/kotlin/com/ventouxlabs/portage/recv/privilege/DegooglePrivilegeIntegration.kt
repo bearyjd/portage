@@ -11,7 +11,6 @@ package com.ventouxlabs.portage.recv.privilege
 
 import android.content.Context
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -38,7 +37,7 @@ import com.ventouxlabs.portage.wizard.PrivilegeWizard
  * runtime-permission granters, and the Tier-1 settings grant; the capability read comes from the
  * process-scoped privilege wizard (PrivilegeWizardHolder).
  */
-class DegooglePrivilegeIntegration : PrivilegeIntegration {
+object DegooglePrivilegeIntegration : PrivilegeIntegration {
 
     override val offersAdvancedSetup: Boolean = true
 
@@ -64,6 +63,13 @@ class DegooglePrivilegeIntegration : PrivilegeIntegration {
         )
     }
 
+    override fun onAdvancedSetupRequested(context: Context) {
+        // Called exactly on the user tap — not on recomposition or config changes. Starting here
+        // (not inside AdvancedSetup's composition) means a rotation while the wizard is in
+        // Ready/Skipped state never silently restarts it via a re-fired LaunchedEffect.
+        PrivilegeWizardHolder.get(context).start()
+    }
+
     override fun onResume(context: Context) {
         // Returning from Settings mid-wizard: Developer options / Wireless debugging may have just been
         // toggled — let the privilege wizard advance (ADR-003).
@@ -74,12 +80,11 @@ class DegooglePrivilegeIntegration : PrivilegeIntegration {
     override fun AdvancedSetup(onClose: () -> Unit, modifier: Modifier) {
         val context = LocalContext.current
         // Process-scoped: a config change mid-wizard recreates the Activity but must not lose
-        // pairing/probe progress (PrivilegeWizardHolder).
+        // pairing/probe progress (PrivilegeWizardHolder). start() is NOT called here — the caller
+        // already invoked onAdvancedSetupRequested() on the user tap; calling start() again on
+        // recomposition (e.g. rotation while Ready/Skipped) would silently restart the wizard.
         val wizard = remember(context) { PrivilegeWizardHolder.get(context) }
         val step by wizard.step.collectAsStateWithLifecycle()
-        // Start (or re-run) the wizard on entry — moved here from ReceiverApp's onSetup so `main`
-        // never references PrivilegeWizard.
-        LaunchedEffect(wizard) { wizard.start() }
         WizardScreen(
             wizard = wizard,
             onClose = {
@@ -96,7 +101,7 @@ class DegooglePrivilegeIntegration : PrivilegeIntegration {
 }
 
 /** `degoogle`: the real integration with the self-contained ADB bridge wired in (ADR-003). */
-fun providePrivilegeIntegration(context: Context): PrivilegeIntegration = DegooglePrivilegeIntegration()
+fun providePrivilegeIntegration(context: Context): PrivilegeIntegration = DegooglePrivilegeIntegration
 
 /** Adapt the AdbBridge self-grant (ADR-003) to the providers' narrow [TierOneGrant] seam. */
 private fun adbTierOneGrant(bridge: AdbBridge) = TierOneGrant {

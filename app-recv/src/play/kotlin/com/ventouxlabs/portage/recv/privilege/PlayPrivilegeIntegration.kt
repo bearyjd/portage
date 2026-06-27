@@ -33,6 +33,8 @@ object PlayPrivilegeIntegration : PrivilegeIntegration {
 
     override fun wiring(context: Context): PrivilegeWiring = playWiring()
 
+    override fun onAdvancedSetupRequested(context: Context) = Unit
+
     override fun onResume(context: Context) = Unit
 
     @Composable

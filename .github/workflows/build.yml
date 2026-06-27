@@ -122,7 +122,7 @@ jobs:
         # may touch the raw shell. Typed operations are the public surface everywhere else.
         run: |
           set -euo pipefail
-          if grep -rn '\.shell(' --include='*.kt' app-recv app-send providers core-model core-transport settings-catalog wizard | grep -v '/test/'; then
+          if grep -rn '\.shell(' --include='*.kt' app-recv app-send providers core-model core-transport settings-catalog wizard | grep -vE '/(test|androidTest)[A-Za-z]*/'; then
             echo "::error::raw AdbBridge.shell() call outside :adb-bridge — use a typed operation"
             exit 1
           fi
