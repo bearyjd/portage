@@ -1,6 +1,8 @@
 # ADR-003 — Self-Contained Privilege: portage Owns the ADB Bridge
 
-Status: **ACCEPTED — pending on-device verification** (see §7). Supersedes the Shizuku
+Status: **ACCEPTED — core chain on-device-verified, release sign-off pending.** The
+pair→connect→probe→self-grant chain succeeded end-to-end in a dev run (GOS A16, 2026-06-12;
+§7.1–7.4, recorded in §8); §7.5–7.7 and the formal E2E runbook §F sign-off remain (see §7). Supersedes the Shizuku
 delivery mechanism of ADR-001; the ADR-001 **grant architecture itself is unchanged and
 remains verified** (V2–V8, Pixel 9 Pro XL, GOS Android 16, 2026-06-10).
 Decision owner: JD. Drafted 2026-06-12 on `refactor/self-contained-privilege`.
@@ -101,10 +103,14 @@ supply-chain surface than one auditable Java library.
   EKM export (RFC 5705) uses the bundled public-API Conscrypt. Without it, libadb-android
   reflects the HIDDEN platform class `com.android.org.conscrypt.Conscrypt` — a non-SDK
   surface we refuse to depend on.
-- **Open follow-up (tracked in CLAUDE.md):** libadb-android has **never had a security
-  audit** (its own README says so). Before release: a dedicated review of the library
-  source at the pinned tag (same treatment as the vendored noise-java tree), plus the CI
-  dependency-audit gate (OSV-Scanner) that is already an open follow-up.
+- **CLOSED — see ADR-004 §2 (2026-06-12; independently re-verified 2026-06-15):**
+  libadb-android has **never had an *upstream* security audit** (its own README says so), so
+  portage performed its own dedicated source review of the library at the pinned tag (same
+  treatment as the vendored noise-java tree) → **CLEAR-FOR-RELEASE**: loopback-only, no
+  egress, no backdoor, no dynamic load; one accepted LOW residual (SPAKE2 ephemeral scalar
+  uses unseeded libc `rand()` at `spake2.c:939`, benign for the loopback + PAKE + one-shot
+  model). The CI dependency-audit gate (OSV-Scanner, `dependency-audit.yml`) is also live.
+  Both ADR-003 §5 pre-release supply-chain blockers are cleared.
 - **Accepted-residual hardening ideas from the 2026-06-12 review** (tracked, not blocking):
   a per-invocation nonce on the shell exit sentinel (output of trusted, fixed commands can
   theoretically forge `__PORTAGE_EXIT__`); an explicit truncation marker when the 4 MiB
@@ -124,6 +130,14 @@ wizard collapses to its `Checking → Ready` path; nothing else in the codebase 
 This is the property GrapheneOS reviewers should evaluate.
 
 ## 7. HARDWARE VERIFY-FIRST (before any release; record GOS fingerprint per run)
+
+> Status: **1–4 succeeded on-device in a dev run** (GOS A16, 2026-06-12; see §8) — pair (port
+> 40431) → TLS self-connect → probe → self-grant `WRITE_SECURE_SETTINGS` (user 0), the one
+> blocker being the operational stale-pairing-port issue, now mitigated by split-screen copy.
+> **Still open:** 5 (full reboot-recovery walk), 6 (silent-install session verdict on GOS —
+> tied to issue #86, silent install degrading to Tier-0), 7 (16 KB native-lib alignment). A
+> formal release sign-off run is still tracked in the E2E runbook §F (these are dev-run results,
+> not a recorded release sign-off).
 
 1. mDNS discovery of `_adb-tls-pairing._tcp` fires while the pairing dialog is open
    (known-flaky NsdManager — the wizard's manual-port fallback is the mitigation). The dialog

@@ -47,7 +47,10 @@ See `.github/workflows/build.yml`.
   MUST disconnect right after the capability probe — never hold shell uid open.
   LADB (tytydraco/LADB) is acknowledged prior art for the *architecture* (it bundles the
   adb binary; no code was derived from it — see ADR-003 §3 for the license facts).
-  On-device verification of the full pair→connect→grant chain is STILL OPEN (ADR-003 §7).
+  On-device verification: the pair→connect→probe→self-grant chain SUCCEEDED in a dev run
+  (GOS A16, 2026-06-12; ADR-003 §7.1–7.4 / §8). Remaining release gates: full reboot-recovery
+  walk (§7.5), silent-install session verdict on GOS (§7.6, tied to #86), 16 KB native-lib
+  alignment (§7.7), and the formal E2E runbook §F sign-off.
 - **Transport crypto = `NoisePSK_XX`** via vendored noise-java (ADR-002). No audited JVM
   lib does modern `pskN`; legacy PSK placement is security-sufficient (PSK-gated mutual
   auth + ephemeral FS). Crypto stays behind `SecureChannel` so it's swappable.
