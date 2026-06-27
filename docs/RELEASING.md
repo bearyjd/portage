@@ -16,15 +16,20 @@ and restrict deployment to tags matching `v*`. Add these environment secrets:
 | `PORTAGE_KEY_ALIAS` | Signing-key alias |
 | `PORTAGE_KEY_PASSWORD` | Key password |
 
+Add an environment variable named `PORTAGE_SIGNING_CERT_SHA256` containing the release
+certificate's SHA-256 digest. Obtain it from a locally signed APK with:
+
+```sh
+apksigner verify --print-certs portage-release.apk
+```
+
 Keep an offline, access-controlled backup of the keystore and credentials. Losing the key
 prevents publishing trusted updates; disclosure permits malicious updates. Do not store
 the key or passwords in the repository, build logs, or release artifacts.
 
-Once the keystore exists, record the SHA-256 of its signing certificate and pin it so a
-swapped or misconfigured key cannot publish a green release under a different identity:
-`apksigner verify --print-certs` prints the digest; the release workflow currently prints
-certs at `release.yml` but does not yet compare them to a known-good value. Add an
-expected-fingerprint check (e.g. a repo *variable*, not a secret) when the key is created.
+The release workflow rejects missing or malformed fingerprints and verifies all four APKs
+against this value before publication. Treat fingerprint changes as signing-key rotations
+that require explicit review and documented migration.
 
 ## Release gates
 
@@ -52,7 +57,8 @@ Before creating a tag:
 
 ## Publish
 
-Create an annotated semantic-version tag after all gates pass:
+Create an annotated semantic-version tag from a commit already merged into `main` after all
+gates pass:
 
 ```sh
 git tag -s v0.1.0 -m "portage 0.1.0"
