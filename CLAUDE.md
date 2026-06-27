@@ -30,9 +30,11 @@ CI gates on every push/PR: `:settings-catalog:test` (safety-critical allowlist i
 `:adb-bridge:testDebugUnitTest` + `:wizard:testDebugUnitTest` (privilege bridge + bootstrap
 state machine), `:app-recv:testDegoogleDebugUnitTest` + `:app-send:testDegoogleDebugUnitTest`
 + `:app-recv:testPlayDebugUnitTest` + `:app-send:testPlayDebugUnitTest` (app logic, both
-flavors), `assembleDebug` (all variants: degoogle + play for both apps), the app-send
-no-escalation assert, and the play-recv no-bridge assert (no `WRITE_SECURE_SETTINGS` /
-adbbridge / conscrypt / spake2 in the play flavor APK).
+flavors), `assembleDebug` + `assembleRelease` (all variants: degoogle + play for both apps;
+release exercises R8/resource-shrinking), the app-send no-escalation assert, and the play-recv
+no-bridge assert (no `WRITE_SECURE_SETTINGS` / adbbridge / conscrypt / spake2 in the play flavor
+APK) — both asserts run across the debug AND release variants. The tag-triggered `release.yml`
+re-asserts the same boundary on the signed APKs before publishing.
 See `.github/workflows/build.yml`.
 
 ## Established facts (don't re-litigate; verified on real hardware / in CI)
@@ -115,5 +117,5 @@ benign (`SenderViewModel` ~L186).
 ## Build
 
 JDK 17, Android SDK (compileSdk from `gradle/libs.versions.toml`, currently 36 = GOS
-Android 16). The `gradle-wrapper.jar` is intentionally not committed; bootstrap once:
-`gradle wrapper --gradle-version 9.5.1`. minSdk 31 (Pixel 6+).
+Android 16). The Gradle wrapper is committed and its 9.5.1 distribution checksum is
+pinned; always build with `./gradlew`. minSdk 31 (Pixel 6+).

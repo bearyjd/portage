@@ -11,17 +11,14 @@ hardware) see the detailed runbooks under [`docs/prp/`](prp/) — linked at the 
 ## Build & install ("deploy")
 
 ```sh
-# 1. One-time wrapper bootstrap (see CONTRIBUTING.md).
-gradle wrapper --gradle-version 9.5.1
-
-# 2. Build both debug APKs.
+# 1. Build both debug APKs with the committed, checksum-pinned wrapper.
 ./gradlew assembleDebug --no-daemon
 #    Builds all debug variants (degoogle + play) for both apps.
 #    Degoogle debug APKs (full Tier-1, use these for development/testing):
 #    → app-send/build/outputs/apk/degoogle/debug/app-send-degoogle-debug.apk
 #    → app-recv/build/outputs/apk/degoogle/debug/app-recv-degoogle-debug.apk
 
-# 3. Install onto devices (use -s <serial> when more than one is attached).
+# 2. Install onto devices (use -s <serial> when more than one is attached).
 adb -s <OLD_PHONE> install -r app-send/build/outputs/apk/degoogle/debug/app-send-degoogle-debug.apk
 adb -s <NEW_PHONE> install -r app-recv/build/outputs/apk/degoogle/debug/app-recv-degoogle-debug.apk
 ```
@@ -35,8 +32,8 @@ hand-off (sender shows, receiver scans with its camera) is a manual step.
 |-------|-------------|
 | `jvm-tests` (`:settings-catalog:test`) | Settings SAFE-allowlist invariant holds |
 | `android-build` unit tests | core-model/transport/adb-bridge/wizard/providers/app-* logic passes (degoogle + play variants for app modules) |
-| `android-build` `assembleDebug` | all debug variants build (degoogle + play for both apps) |
-| no-escalation assert | `app-send` manifest+APK carry no `WRITE_SECURE_SETTINGS` / ADB-bridge native libs |
+| `android-build` assemble | all debug and minified release variants build (degoogle + play for both apps) |
+| no-escalation assert | debug and release `app-send` / Play receiver artifacts stay bridge-free; degoogle receiver retains it |
 | raw-shell assert | no `AdbBridge.shell(` outside `:adb-bridge` |
 | `osv-scan` | no known advisory in the shipped dependency graph |
 <!-- END AUTO-GENERATED -->
@@ -50,7 +47,7 @@ Run the same gate locally before pushing (full command in [`CONTRIBUTING.md`](CO
 | `UnsupportedClassVersionError` (class v65) | a JDK-21 `java` compiled some module | set `JAVA_HOME` to a JDK 17; `./gradlew :core-model:clean :settings-catalog:clean` |
 | `INSTALL_FAILED_UPDATE_INCOMPATIBLE` on install | existing install signed with a different debug keystore | `adb uninstall <pkg>` then install fresh |
 | Gradle daemon hangs/flakes | env-specific daemon issue | run with `--no-daemon` |
-| `gradlew: not found` | wrapper not bootstrapped (jar is uncommitted by design) | `gradle wrapper --gradle-version 9.5.1` |
+| `gradlew: not found` | incomplete source checkout | restore the committed wrapper files or clone the repository again |
 | Tier-1 apply "hangs on APPLYING" with Wireless Debugging off | libadb `connect()` mDNS path ignores interruption | already gated: `connect()` checks `adb_wifi_enabled` → falls back to Tier-0 (PR #70). If reproduced, confirm WD state |
 | Foldable screencap is black | device auto-locked / wrong display | wake first; `screencap -d <physical-display-id>` (outer display) |
 | APK install rejected `Missing split for <pkg>` | a required density/abi split absent | reconcile keeps a fallback density split (PR #73); a missing *required ABI* is an honest per-app skip → "install from store" |

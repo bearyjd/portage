@@ -3,6 +3,18 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val releaseSigningValues = listOf(
+    "PORTAGE_KEYSTORE_PATH",
+    "PORTAGE_KEYSTORE_PASSWORD",
+    "PORTAGE_KEY_ALIAS",
+    "PORTAGE_KEY_PASSWORD",
+).associateWith { providers.environmentVariable(it).orNull }
+val hasReleaseSigning = releaseSigningValues.values.all { !it.isNullOrBlank() }
+val hasPartialReleaseSigning = releaseSigningValues.values.any { !it.isNullOrBlank() } && !hasReleaseSigning
+require(!hasPartialReleaseSigning) {
+    "Release signing is partially configured; set all PORTAGE_KEYSTORE_* variables or none."
+}
+
 android {
     namespace = "com.ventouxlabs.portage.send"
     compileSdk = libs.versions.compileSdk.get().toInt()
@@ -11,14 +23,30 @@ android {
         applicationId = "com.ventouxlabs.portage.send"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = providers.gradleProperty("portageVersionCode").orElse("1").get().toInt()
+        versionName = providers.gradleProperty("portageVersionName").orElse("0.1.0-dev").get()
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseSigningValues.getValue("PORTAGE_KEYSTORE_PATH")!!)
+                storePassword = releaseSigningValues.getValue("PORTAGE_KEYSTORE_PASSWORD")
+                keyAlias = releaseSigningValues.getValue("PORTAGE_KEY_ALIAS")
+                keyPassword = releaseSigningValues.getValue("PORTAGE_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
-            // TODO: enable R8 + serialization keep rules before any release build.
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

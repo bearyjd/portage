@@ -32,8 +32,6 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v4
       - uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: '9.5.1'
 
       - name: Generate dependency lockfiles (CI-only, not committed)
         # The init script enables locking + a resolve task ONLY for the two APK modules; their
@@ -44,7 +42,7 @@ jobs:
         # the play configs). Writes app-recv/gradle.lockfile and app-send/gradle.lockfile.
         # --no-configuration-cache is required by --write-locks.
         run: |
-          gradle --init-script .github/osv/locking.init.gradle.kts \
+          ./gradlew --init-script .github/osv/locking.init.gradle.kts \
             :app-recv:osvResolveForLocks :app-send:osvResolveForLocks \
             --write-locks --no-configuration-cache --no-daemon --stacktrace
 

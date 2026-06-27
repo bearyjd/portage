@@ -8,6 +8,9 @@ android {
 
     defaultConfig {
         minSdk = libs.versions.minSdk.get().toInt()
+        // Ship Conscrypt's missing-class suppressions to any app that links the bridge (degoogle
+        // receiver only); the bridge-free play / sender variants never see them. See consumer-rules.pro.
+        consumerProguardFiles("consumer-rules.pro")
     }
 
     compileOptions {
