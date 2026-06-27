@@ -37,9 +37,12 @@ jobs:
 
       - name: Generate dependency lockfiles (CI-only, not committed)
         # The init script enables locking + a resolve task ONLY for the two APK modules; their
-        # runtime classpaths transitively cover every shipped dependency. Writes
-        # app-recv/gradle.lockfile and app-send/gradle.lockfile. --no-configuration-cache is
-        # required by --write-locks.
+        # runtime classpaths transitively cover every shipped dependency. Flavor-aware (ADR-003):
+        # both apps carry degoogle + play flavors, so this resolves every per-flavor runtime
+        # classpath — the PLAY recv graph is locked alongside degoogle, and the lockfile pins the
+        # libadb/spake2/conscrypt chain to the degoogle configurations only (provably absent from
+        # the play configs). Writes app-recv/gradle.lockfile and app-send/gradle.lockfile.
+        # --no-configuration-cache is required by --write-locks.
         run: |
           gradle --init-script .github/osv/locking.init.gradle.kts \
             :app-recv:osvResolveForLocks :app-send:osvResolveForLocks \

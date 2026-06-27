@@ -37,6 +37,7 @@ import com.ventouxlabs.portage.recv.ui.theme.LocalSpacing
 fun IdleScreen(
     onScan: () -> Unit,
     onSetup: () -> Unit,
+    offersAdvancedSetup: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val s = LocalSpacing.current
@@ -101,13 +102,16 @@ fun IdleScreen(
             fullWidth = true,
         )
 
-        Spacer(Modifier.height(s.lg))
-
-        // The privilege bootstrap (ADR-003): optional, re-runnable, never required for Tier 0.
-        SwissTextAction(
-            text = "Advanced transfer setup",
-            onClick = onSetup,
-        )
+        // The privilege bootstrap (ADR-003): optional, re-runnable, never required for Tier 0. Shown
+        // only on the degoogle (full-Tier-1) flavor; the play (Tier-0-only) flavor carries no
+        // :adb-bridge/:wizard and offers no advanced-setup affordance.
+        if (offersAdvancedSetup) {
+            Spacer(Modifier.height(s.lg))
+            SwissTextAction(
+                text = "Advanced transfer setup",
+                onClick = onSetup,
+            )
+        }
 
         Spacer(Modifier.height(s.xl))
     }

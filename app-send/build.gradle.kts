@@ -22,6 +22,21 @@ android {
         }
     }
 
+    // Distribution flavors mirror app-recv (ADR-003 flavor split) so send + recv version together and
+    // the play store listing has a matching pair. app-send carries NO privilege deps (no :adb-bridge,
+    // no :wizard), so both flavors compile the same src/main — there is no source-set split here.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("degoogle") {
+            dimension = "distribution"
+            isDefault = true
+        }
+        create("play") {
+            dimension = "distribution"
+            applicationIdSuffix = ".play"
+        }
+    }
+
     buildFeatures { compose = true }
 
     compileOptions {

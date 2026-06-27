@@ -22,6 +22,24 @@ android {
         }
     }
 
+    // Distribution flavors (ADR-003 flavor split): degoogle ships full Tier-1 (the self-contained ADB
+    // bridge); play ships Tier-0-only with NEITHER :adb-bridge NOR :wizard compiled in (a Google Play
+    // policy surface — those modules bundle libadb / spake2 / conscrypt). The exclusion is a
+    // compile-time source-set split, not a runtime no-op: see degoogleImplementation below.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("degoogle") {
+            dimension = "distribution"
+            isDefault = true
+            // Keeps the base applicationId (com.ventouxlabs.portage.recv).
+        }
+        create("play") {
+            dimension = "distribution"
+            // Distinct id so degoogle + play can coexist (com.ventouxlabs.portage.recv.play).
+            applicationIdSuffix = ".play"
+        }
+    }
+
     buildFeatures { compose = true }
 
     compileOptions {
@@ -36,8 +54,12 @@ dependencies {
     implementation(project(":core-model"))
     implementation(project(":core-transport"))
     implementation(project(":providers"))
-    implementation(project(":adb-bridge"))        // self-contained Tier-1 privilege (ADR-003)
-    implementation(project(":wizard"))            // privilege bootstrap state machine
+    // degoogle ONLY (Tier-1): the self-contained ADB bridge (ADR-003) + the privilege bootstrap state
+    // machine. degoogleImplementation keeps both — and their transitive libadb/spake2/conscrypt native
+    // libs — OUT of the play binary at COMPILE time. src/main holds no :adb-bridge/:wizard type, so it
+    // compiles for play; src/degoogle supplies the real privilege integration.
+    "degoogleImplementation"(project(":adb-bridge"))
+    "degoogleImplementation"(project(":wizard"))
     implementation(project(":settings-catalog"))  // safety-critical allowlist
 
     implementation(platform(libs.androidx.compose.bom))

@@ -41,33 +41,80 @@ jobs:
         with:
           gradle-version: '9.5.1'
       - name: Unit tests (core-model + core-transport + adb-bridge + wizard + providers + app-recv + app-send)
-        run: gradle :core-model:test :core-transport:testDebugUnitTest :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest :app-recv:testDebugUnitTest :app-send:testDebugUnitTest --no-daemon --stacktrace
-      - name: Assemble debug APKs
-        run: gradle assembleDebug --no-daemon --stacktrace
-      - name: Assert portage-send carries no escalation surface
-        # Least-privilege gate: the sender must never declare secure-settings write or carry the
-        # self-contained ADB bridge (ADR-003) — :adb-bridge links only into portage-recv, so any
-        # hit here means a dependency edge regressed. The native-lib check runs as a
-        # positive+negative pair: the receiver MUST match the pattern (proves the pattern is
-        # still meaningful) and the sender MUST NOT (review 2026-06-12).
+        # app-recv and app-send are flavored (distribution: degoogle/play, ADR-003) so their unit-test
+        # tasks are per-flavor; both flavors run. The play variant exercises the Tier-0 no-bridge wiring
+        # (PlayPrivilegeIntegrationTest), the degoogle variant the real ADB-bridge install adapters.
+        run: gradle :core-model:test :core-transport:testDebugUnitTest :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest :app-recv:testDegoogleDebugUnitTest :app-recv:testPlayDebugUnitTest :app-send:testDegoogleDebugUnitTest :app-send:testPlayDebugUnitTest --no-daemon --stacktrace
+      - name: Assemble debug APKs (both distribution flavors, both apps)
+        run: gradle :app-recv:assembleDegoogleDebug :app-recv:assemblePlayDebug :app-send:assembleDegoogleDebug :app-send:assemblePlayDebug --no-daemon --stacktrace
+      - name: Assert least-privilege boundaries across distribution flavors
+        # Least-privilege gate, now flavor-aware (ADR-003 flavor split). Three invariants:
+        #   1. portage-send (BOTH flavors) never declares secure-settings write, never carries the
+        #      self-contained ADB bridge, and ships no bridge native libs — :adb-bridge has no edge into
+        #      the sender at all.
+        #   2. portage-recv PLAY (Tier-0-only) is provably bridge-FREE: no WRITE_SECURE_SETTINGS, no
+        #      com.ventouxlabs.portage.adbbridge in the merged manifest, and no conscrypt/spake2 native
+        #      libs in the APK. This is the load-bearing Google-Play-policy invariant — the play binary
+        #      must exclude :adb-bridge at compile time, not merely no-op it.
+        #   3. portage-recv DEGOOGLE STILL carries the bridge (manifest WRITE_SECURE_SETTINGS + APK
+        #      conscrypt/spake2) — the positive half that proves the patterns above are still meaningful
+        #      AND that the source-set split works both ways (full on degoogle, none on play).
         run: |
           set -euo pipefail
-          manifest=$(find app-send/build/intermediates -path '*merged_manifest*/AndroidManifest.xml' | head -1)
-          test -n "$manifest" || { echo "::error::merged sender manifest not found"; exit 1; }
-          if grep -qE 'WRITE_SECURE_SETTINGS|com\.ventouxlabs\.portage\.adbbridge' "$manifest"; then
-            echo "::error::portage-send merged manifest leaks an escalation permission or the ADB bridge"
+
+          find_manifest() { find "$1/build/intermediates" -path "*merged_manifest*$2*AndroidManifest.xml" | head -1; }
+          find_apk() { find "$1/build/outputs/apk/$2" -name '*.apk' | head -1; }
+          # Strip XML comments before grepping: the recv main manifest's prose mentions
+          # "WRITE_SECURE_SETTINGS" / "ADB bridge" and the merged manifest preserves comments, so a
+          # naive grep would false-positive on documentation rather than a real declaration.
+          manifest_body() { perl -0777 -pe 's/<!--.*?-->//gs' "$1"; }
+
+          escalation_re='WRITE_SECURE_SETTINGS|com\.ventouxlabs\.portage\.adbbridge'
+          bridge_lib_re='conscrypt|spake2'
+
+          # --- 1. portage-send: both flavors clean (manifest + APK). ---
+          for variant in degoogleDebug playDebug; do
+            m=$(find_manifest app-send "$variant")
+            test -n "$m" || { echo "::error::send $variant merged manifest not found"; exit 1; }
+            if manifest_body "$m" | grep -qE "$escalation_re"; then
+              echo "::error::portage-send ($variant) merged manifest leaks an escalation permission or the ADB bridge"
+              exit 1
+            fi
+          done
+          for path in degoogle/debug play/debug; do
+            apk=$(find_apk app-send "$path")
+            test -f "$apk" || { echo "::error::sender APK not found at $path"; exit 1; }
+            if unzip -l "$apk" | grep -qiE "$bridge_lib_re"; then
+              echo "::error::portage-send APK ($path) contains ADB-bridge native libraries — a privilege dependency leaked into the sender"
+              exit 1
+            fi
+          done
+
+          # --- 2. portage-recv PLAY: must be bridge-FREE (manifest + APK). ---
+          recv_play_manifest=$(find_manifest app-recv playDebug)
+          test -n "$recv_play_manifest" || { echo "::error::recv playDebug merged manifest not found"; exit 1; }
+          if manifest_body "$recv_play_manifest" | grep -qE "$escalation_re"; then
+            echo "::error::portage-recv PLAY merged manifest carries WRITE_SECURE_SETTINGS or the ADB bridge — the play flavor must exclude :adb-bridge"
             exit 1
           fi
-          send_apk=$(find app-send/build/outputs/apk/debug -name '*.apk' | head -1)
-          recv_apk=$(find app-recv/build/outputs/apk/debug -name '*.apk' | head -1)
-          test -f "$send_apk" || { echo "::error::sender debug APK not found"; exit 1; }
-          test -f "$recv_apk" || { echo "::error::receiver debug APK not found"; exit 1; }
-          if ! unzip -l "$recv_apk" | grep -qiE 'conscrypt|spake2'; then
-            echo "::error::receiver APK lacks the expected ADB-bridge native libs — the sender leak check pattern is stale"
+          recv_play_apk=$(find_apk app-recv play/debug)
+          test -f "$recv_play_apk" || { echo "::error::recv play APK not found"; exit 1; }
+          if unzip -l "$recv_play_apk" | grep -qiE "$bridge_lib_re"; then
+            echo "::error::portage-recv PLAY APK contains ADB-bridge native libs (conscrypt/spake2) — :adb-bridge leaked into the play flavor"
             exit 1
           fi
-          if unzip -l "$send_apk" | grep -qiE 'conscrypt|spake2'; then
-            echo "::error::portage-send APK contains ADB-bridge native libraries — a privilege dependency leaked into the sender"
+
+          # --- 3. portage-recv DEGOOGLE: bridge present (proves the patterns + the split are meaningful). ---
+          recv_degoogle_manifest=$(find_manifest app-recv degoogleDebug)
+          test -n "$recv_degoogle_manifest" || { echo "::error::recv degoogleDebug merged manifest not found"; exit 1; }
+          if ! manifest_body "$recv_degoogle_manifest" | grep -qE 'WRITE_SECURE_SETTINGS'; then
+            echo "::error::recv DEGOOGLE merged manifest lacks WRITE_SECURE_SETTINGS — the play negative check is stale"
+            exit 1
+          fi
+          recv_degoogle_apk=$(find_apk app-recv degoogle/debug)
+          test -f "$recv_degoogle_apk" || { echo "::error::recv degoogle APK not found"; exit 1; }
+          if ! unzip -l "$recv_degoogle_apk" | grep -qiE "$bridge_lib_re"; then
+            echo "::error::recv DEGOOGLE APK lacks the expected ADB-bridge native libs — the bridge-free pattern is stale"
             exit 1
           fi
       - name: Assert raw AdbBridge.shell() stays inside the privilege modules
@@ -84,5 +131,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: portage-debug-apks
-          path: '**/build/outputs/apk/debug/*.apk'
+          # Flavored output dirs: app-*/build/outputs/apk/<flavor>/debug/*.apk
+          path: '**/build/outputs/apk/*/debug/*.apk'
           if-no-files-found: error

@@ -18,8 +18,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import com.ventouxlabs.portage.adbbridge.AdbBridge
-import com.ventouxlabs.portage.adbbridge.AdbBridges
 import com.ventouxlabs.portage.providers.ApplyProviderRegistry
 import com.ventouxlabs.portage.providers.apk.ApkApplyProvider
 import com.ventouxlabs.portage.providers.inventory.AppRecord
@@ -38,7 +36,6 @@ import com.ventouxlabs.portage.recv.relay.AndroidRelayHandoff
 import com.ventouxlabs.portage.providers.settings.AndroidSecureGlobalSettingsStore
 import com.ventouxlabs.portage.providers.settings.AndroidSystemSettingsStore
 import com.ventouxlabs.portage.providers.settings.SettingsApplyProvider
-import com.ventouxlabs.portage.providers.settings.TierOneGrant
 import com.ventouxlabs.portage.providers.sms.AndroidSmsRoleGateway
 import com.ventouxlabs.portage.providers.sms.AndroidSmsStore
 import com.ventouxlabs.portage.providers.sms.SmsApplyProvider
@@ -46,14 +43,10 @@ import com.ventouxlabs.portage.providers.sound.AndroidSoundStore
 import com.ventouxlabs.portage.providers.sound.SoundSelectionApplyProvider
 import com.ventouxlabs.portage.providers.wallpaper.AndroidWallpaperStore
 import com.ventouxlabs.portage.providers.wallpaper.WallpaperApplyProvider
-import com.ventouxlabs.portage.recv.install.AdbApkInstaller
-import com.ventouxlabs.portage.recv.install.AdbRuntimePermissionGranter
 import com.ventouxlabs.portage.recv.install.PackageInstallerApkInstaller
 import com.ventouxlabs.portage.recv.install.androidApkTargetConfig
 import com.ventouxlabs.portage.recv.install.androidInstalledPackageVersions
-import com.ventouxlabs.portage.recv.install.androidTargetDeclaredPermissions
-import com.ventouxlabs.portage.recv.install.hasSilentInstall
-import com.ventouxlabs.portage.recv.privilege.PrivilegeWizardHolder
+import com.ventouxlabs.portage.recv.privilege.providePrivilegeIntegration
 import com.ventouxlabs.portage.recv.sms.AndroidSmsRoleCoordinator
 import com.ventouxlabs.portage.recv.sms.SmsRoleCoordinator
 import com.ventouxlabs.portage.recv.sms.SmsRoleCoordinatorHolder
@@ -99,7 +92,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             ReceiverApp(
                 viewModel = viewModel,
-                wizard = PrivilegeWizardHolder.get(applicationContext),
+                integration = providePrivilegeIntegration(applicationContext),
             )
         }
     }
@@ -109,9 +102,10 @@ class MainActivity : ComponentActivity() {
         // Returning from the system change-default prompt: re-check whether portage is still the
         // default SMS app so the in-app "restore" affordance clears once the role is handed back.
         viewModel.refreshSmsRoleStrand()
-        // Returning from Settings mid-wizard: Developer options / Wireless debugging may have
-        // just been toggled — let the privilege wizard advance (ADR-003).
-        PrivilegeWizardHolder.get(applicationContext).recheck()
+        // Returning from Settings mid-wizard: Developer options / Wireless debugging may have just been
+        // toggled — let the active flavor's privilege integration advance (degoogle: wizard recheck;
+        // play: no-op).
+        providePrivilegeIntegration(applicationContext).onResume(applicationContext)
     }
 }
 
@@ -127,11 +121,13 @@ private class ReceiverViewModelFactory(
 ) : ViewModelProvider.Factory {
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        // The active distribution flavor supplies every apply-time privilege seam (ADR-003 flavor
+        // split): degoogle wires the self-contained ADB bridge + wizard; play returns no-op Tier-0
+        // defaults with neither :adb-bridge nor :wizard compiled in. :app-recv/src/main holds no
+        // :adb-bridge/:wizard type — that boundary is what keeps the play binary bridge-free.
+        val wiring = providePrivilegeIntegration(context).wiring(context)
         val registryFactory = ApplyRegistryFactory { sinks ->
             val resolver = context.contentResolver
-            // One process-scoped bridge (AdbBridges.local caches a single instance): the silent APK
-            // installer and the Tier-1 settings grant both go through it.
-            val adbBridge = AdbBridges.local(context)
             // The Tier-0 PackageInstaller adapter: turns each reconciled APK item into a sealed
             // multi-split session and surfaces a one-tap install-confirm row on the Done screen.
             val apkInstaller = PackageInstallerApkInstaller(context)
@@ -161,22 +157,20 @@ private class ReceiverViewModelFactory(
                         stagingDir = apkStagingDir,
                         targetConfig = androidApkTargetConfig(context),
                         installedVersions = androidInstalledPackageVersions(context),
-                        // AdbApkInstaller self-guards via AdbBridge.connect() (which returns NoEndpoint
-                        // when Wireless Debugging is off, never driving libadb into the uninterruptible
-                        // mDNS-discovery hang — GOS A16) plus an outer attempt-timeout backstop.
-                        silentInstaller = AdbApkInstaller(adbBridge),
-                        hasSilentInstall = {
-                            hasSilentInstall(PrivilegeWizardHolder.get(context).step.value)
-                        },
-                        // Runtime-permission parity (ADR-006 D5), silent-install path ONLY: the FIRST
-                        // production AdbBridge.grantRuntimePermission call site. The apply provider runs
-                        // this only after a silent install and only for the planner's allowlist
-                        // default-safe `auto` set; the granter re-establishes its own bridge session
-                        // (the silent installer disconnected) and disconnects in finally (AC-11). The
-                        // target's declared set is read from PackageManager post-install. Both share the
-                        // single process-scoped bridge; on the Tier-0 fallback neither runs.
-                        permissionGranter = AdbRuntimePermissionGranter(adbBridge),
-                        targetDeclaredPermissions = androidTargetDeclaredPermissions(context),
+                        // Flavor-supplied silent (privileged) install seam. degoogle: AdbApkInstaller,
+                        // which self-guards via AdbBridge.connect() (NoEndpoint when Wireless Debugging is
+                        // off, never driving libadb into the uninterruptible mDNS-discovery hang — GOS A16)
+                        // plus an outer attempt-timeout backstop. play: ApkSilentInstaller.Deferred → Tier-0.
+                        silentInstaller = wiring.silentInstaller,
+                        // degoogle reads SILENT_INSTALL from the wizard's probed set; play is always false.
+                        hasSilentInstall = wiring.hasSilentInstall,
+                        // Runtime-permission parity (ADR-006 D5), silent-install path ONLY. degoogle: the
+                        // AdbBridge.grantRuntimePermission call site (allowlist default-safe `auto` set,
+                        // run only after a silent install, connect→grant→disconnect in finally, AC-11);
+                        // its declared set read from PackageManager post-install. play: NoOp / None — no
+                        // grant ever runs. On the Tier-0 fallback neither runs in either flavor.
+                        permissionGranter = wiring.permissionGranter,
+                        targetDeclaredPermissions = wiring.targetDeclaredPermissions,
                         // Display-only: feed the Done screen's "restored Network, Sensors" summary.
                         onPermissionsRestored = sinks.onPermissionsRestored,
                         // Data-only: feed the Done screen's opt-in dangerous-perm review (Phase 5d).
@@ -202,7 +196,9 @@ private class ReceiverViewModelFactory(
                     SettingsApplyProvider(
                         AndroidSystemSettingsStore(context),
                         AndroidSecureGlobalSettingsStore(context),
-                        tierOneGrant = adbTierOneGrant(adbBridge),
+                        // degoogle: the AdbBridge WRITE_SECURE_SETTINGS self-grant fallback; play:
+                        // TierOneGrant.Unavailable, so Tier-1 keys self-skip.
+                        tierOneGrant = wiring.tierOneGrant,
                     ),
                     // Tier 0: sets home/lock wallpaper via the normal SET_WALLPAPER permission.
                     // The provider's bounds-only decode gate rejects decompression bombs before
@@ -238,26 +234,15 @@ private class ReceiverViewModelFactory(
             applyRegistryFactory = registryFactory,
             // Abandon sealed-but-uncommitted sessions on return-home (fix 5b).
             abandonSessions = { PackageInstallerApkInstaller(context).abandonUncommittedSessions() },
-            // Phase 5d-2: the user-driven opt-in dangerous-perm grant on the Done screen. An
-            // AdbRuntimePermissionGranter over the SAME process-scoped bridge (AdbBridges.local caches one
-            // instance), idle once the transfer is done; it connects→grants→disconnects in finally (AC-11).
-            // Distinct from the apply provider's auto-grant granter (that one is DEFAULT_SAFE-belt-filtered
-            // and runs inside the silent install).
-            optInPermissionGranter = AdbRuntimePermissionGranter(AdbBridges.local(context)),
+            // Phase 5d-2: the user-driven opt-in dangerous-perm grant on the Done screen. degoogle: an
+            // AdbRuntimePermissionGranter over the SAME process-scoped bridge, idle once the transfer is
+            // done (connect→grant→disconnect in finally, AC-11); distinct from the apply provider's
+            // auto-grant granter (that one is DEFAULT_SAFE-belt-filtered and runs inside the silent
+            // install). play: RuntimePermissionGranter.NoOp — the Done-screen opt-in grants nothing.
+            optInPermissionGranter = wiring.optInPermissionGranter,
             // Keeps the process alive + CPU awake for the item stream via a short-lived foreground
             // service so a screen-off can't reset the streaming socket mid-frame (#85).
             transferKeepAlive = ForegroundServiceKeepAlive(context),
         ) as T
     }
 }
-
-/** Adapt the AdbBridge self-grant (ADR-003) to the providers' narrow [TierOneGrant] seam. */
-private fun adbTierOneGrant(bridge: AdbBridge) = TierOneGrant {
-    when (bridge.selfGrant(WRITE_SECURE_SETTINGS_PERMISSION)) {
-        AdbBridge.GrantResult.GRANTED -> TierOneGrant.Outcome.GRANTED
-        AdbBridge.GrantResult.REJECTED -> TierOneGrant.Outcome.REJECTED
-        AdbBridge.GrantResult.BRIDGE_UNAVAILABLE -> TierOneGrant.Outcome.UNAVAILABLE
-    }
-}
-
-private const val WRITE_SECURE_SETTINGS_PERMISSION = "android.permission.WRITE_SECURE_SETTINGS"

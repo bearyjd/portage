@@ -7,6 +7,14 @@
  * dep: libadb-android, spake2, conscrypt, bouncycastle, AndroidX, …) and are what OSV-Scanner
  * reads to fail the build on a known advisory.
  *
+ * Flavor-aware (ADR-003 distribution flavors): both apps now carry degoogle + play flavors, so each
+ * APK module has per-flavor runtime classpaths (degoogle{Debug,Release}RuntimeClasspath,
+ * play{Debug,Release}RuntimeClasspath). The `endsWith("RuntimeClasspath")` filter resolves ALL of
+ * them, so the PLAY recv graph is locked alongside degoogle — and because the lockfile records each
+ * dependency against the configurations that pull it, the libadb/spake2/conscrypt chain is pinned to
+ * the degoogle configs only and is PROVABLY absent from the play configurations. OSV still audits the
+ * union (every shipped dep across both flavors).
+ *
  * This is applied ONLY via `--init-script` in CI. It never touches the committed build scripts,
  * the lockfiles are generated transiently and never committed, and the normal build never sees
  * locking — so a regression here cannot affect a real build. See ADR-003 §5 / CLAUDE.md.
@@ -21,7 +29,7 @@ gradle.allprojects {
             // --write-locks is incompatible with the configuration cache, and we resolve at
             // execution time; opt this task out explicitly (the workflow also passes
             // --no-configuration-cache). Mirrors the Gradle-docs `resolveAndLockAll` pattern,
-            // scoped to the runtime classpaths (everything that ships).
+            // scoped to the runtime classpaths (everything that ships, every flavor).
             notCompatibleWithConfigurationCache("Resolves configurations at execution time")
             doLast {
                 proj.configurations
