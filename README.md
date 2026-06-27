@@ -67,7 +67,7 @@ Then the usual:
 
 ```sh
 ./gradlew :settings-catalog:test        # pure-JVM safety-critical allowlist guardrails
-./gradlew assembleDebug                  # build both APKs (needs the Android SDK)
+./gradlew assembleDebug                  # build all debug variants (degoogle + play) for both apps
 ```
 
 Requirements: JDK 17, Android SDK with the `compileSdk` from `gradle/libs.versions.toml`.

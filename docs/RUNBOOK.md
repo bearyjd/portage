@@ -16,12 +16,14 @@ gradle wrapper --gradle-version 9.5.1
 
 # 2. Build both debug APKs.
 ./gradlew assembleDebug --no-daemon
-#    → app-send/build/outputs/apk/debug/app-send-debug.apk
-#    → app-recv/build/outputs/apk/debug/app-recv-debug.apk
+#    Builds all debug variants (degoogle + play) for both apps.
+#    Degoogle debug APKs (full Tier-1, use these for development/testing):
+#    → app-send/build/outputs/apk/degoogle/debug/app-send-degoogle-debug.apk
+#    → app-recv/build/outputs/apk/degoogle/debug/app-recv-degoogle-debug.apk
 
 # 3. Install onto devices (use -s <serial> when more than one is attached).
-adb -s <OLD_PHONE> install -r app-send/build/outputs/apk/debug/app-send-debug.apk
-adb -s <NEW_PHONE> install -r app-recv/build/outputs/apk/debug/app-recv-debug.apk
+adb -s <OLD_PHONE> install -r app-send/build/outputs/apk/degoogle/debug/app-send-degoogle-debug.apk
+adb -s <NEW_PHONE> install -r app-recv/build/outputs/apk/degoogle/debug/app-recv-degoogle-debug.apk
 ```
 Both devices must be on the **same LAN/Wi-Fi** (the transfer is peer TCP, not USB). The QR
 hand-off (sender shows, receiver scans with its camera) is a manual step.
@@ -32,8 +34,8 @@ hand-off (sender shows, receiver scans with its camera) is a manual step.
 | Check | Green means |
 |-------|-------------|
 | `jvm-tests` (`:settings-catalog:test`) | Settings SAFE-allowlist invariant holds |
-| `android-build` unit tests | core-model/transport/adb-bridge/wizard/providers/app-* logic passes |
-| `android-build` `assembleDebug` | both APKs build |
+| `android-build` unit tests | core-model/transport/adb-bridge/wizard/providers/app-* logic passes (degoogle + play variants for app modules) |
+| `android-build` `assembleDebug` | all debug variants build (degoogle + play for both apps) |
 | no-escalation assert | `app-send` manifest+APK carry no `WRITE_SECURE_SETTINGS` / ADB-bridge native libs |
 | raw-shell assert | no `AdbBridge.shell(` outside `:adb-bridge` |
 | `osv-scan` | no known advisory in the shipped dependency graph |

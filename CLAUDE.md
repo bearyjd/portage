@@ -28,7 +28,11 @@ branch-per-feature  →  author  →  independent review  →  fix findings  →
 CI gates on every push/PR: `:settings-catalog:test` (safety-critical allowlist invariant),
 `:core-model:test` + `:core-transport:testDebugUnitTest` (Noise loopback + adversarial),
 `:adb-bridge:testDebugUnitTest` + `:wizard:testDebugUnitTest` (privilege bridge + bootstrap
-state machine), `assembleDebug` (both APKs), and the app-send no-escalation assert.
+state machine), `:app-recv:testDegoogleDebugUnitTest` + `:app-send:testDegoogleDebugUnitTest`
++ `:app-recv:testPlayDebugUnitTest` + `:app-send:testPlayDebugUnitTest` (app logic, both
+flavors), `assembleDebug` (all variants: degoogle + play for both apps), the app-send
+no-escalation assert, and the play-recv no-bridge assert (no `WRITE_SECURE_SETTINGS` /
+adbbridge / conscrypt / spake2 in the play flavor APK).
 See `.github/workflows/build.yml`.
 
 ## Established facts (don't re-litigate; verified on real hardware / in CI)

@@ -41,7 +41,7 @@ untracked — **never commit them.** Point the SDK via `ANDROID_HOME` or a `loca
 | `./gradlew :adb-bridge:testDebugUnitTest` | Privilege-bridge unit tests |
 | `./gradlew :wizard:testDebugUnitTest` | Bootstrap state-machine tests |
 | `./gradlew :providers:testDebugUnitTest` | Export/apply providers (incl. APK reconcile) |
-| `./gradlew :app-recv:testDebugUnitTest` / `:app-send:testDebugUnitTest` | App logic (ViewModels) |
+| `./gradlew :app-recv:testDegoogleDebugUnitTest` / `:app-send:testDegoogleDebugUnitTest` | App logic (ViewModels) — degoogle flavor (full Tier-1); CI also runs the play flavor variants |
 | `./gradlew assembleDebug` | Build both debug APKs (needs the Android SDK) |
 | `gradle wrapper --gradle-version 9.5.1` | One-time wrapper bootstrap |
 
@@ -49,7 +49,7 @@ untracked — **never commit them.** Point the SDK via `ANDROID_HOME` or a `loca
 ```sh
 ./gradlew :settings-catalog:test :core-model:test :core-transport:testDebugUnitTest \
   :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest \
-  :app-recv:testDebugUnitTest :app-send:testDebugUnitTest assembleDebug --no-daemon
+  :app-recv:testDegoogleDebugUnitTest :app-send:testDegoogleDebugUnitTest assembleDebug --no-daemon
 ```
 <!-- END AUTO-GENERATED -->
 
@@ -57,7 +57,7 @@ untracked — **never commit them.** Point the SDK via `ANDROID_HOME` or a `loca
 
 - Frameworks: JUnit 4 + Truth (`com.google.truth`); coroutines-test for async.
 - Pure-JVM modules (`core-model`, `settings-catalog`) use `test`; Android modules use
-  `testDebugUnitTest`.
+  `testDebugUnitTest` (library modules) or `testDegoogleDebugUnitTest` / `testPlayDebugUnitTest` (app modules).
 - Safety-critical invariants are guardrail tests — a green test must pass for the *right*
   reason (e.g. the settings-allowlist "no non-DEVICE_SPECIFIC key is unvalidated" test, the
   `SPLIT_NAME`/`adb_wifi_enabled` lockstep pins). Don't weaken them to get green.
@@ -93,14 +93,14 @@ branch-per-feature → author → independent review → fix findings → merge 
 | Workflow / job | Asserts |
 |----------------|---------|
 | `build.yml` → **jvm-tests** | `:settings-catalog:test` (safety-critical allowlist, runs in seconds) |
-| `build.yml` → **android-build** | 7-module unit tests + `assembleDebug`; **no-escalation** assert (sender manifest + APK carry no secure-settings/ADB-bridge); **raw-shell** assert (`.shell(` only in `:adb-bridge`); uploads debug APKs |
+| `build.yml` → **android-build** | library-module unit tests + app-module `testDegoogleDebugUnitTest` / `testPlayDebugUnitTest` (both flavors) + `assembleDebug` (degoogle + play variants); **no-escalation** assert (sender manifest + APK carry no secure-settings/ADB-bridge); **play-recv no-bridge** assert (no `WRITE_SECURE_SETTINGS` / adbbridge / conscrypt / spake2 in play recv APK); **raw-shell** assert (`.shell(` only in `:adb-bridge`); uploads debug APKs |
 | `dependency-audit.yml` → **osv-scan** | OSV-Scanner over the real shipped transitive graph; fails on a known advisory; weekly schedule. Triaged items in `osv-scanner.toml` |
 <!-- END AUTO-GENERATED -->
 
 ## PR checklist
 
 - [ ] Branched off `main`; not committing to `main` directly (code).
-- [ ] Full local gate green (`assembleDebug` + all module tests).
+- [ ] Full local gate green (`assembleDebug` + all module tests; use `testDegoogleDebugUnitTest` for app modules).
 - [ ] `code-reviewer` ran; `security-reviewer` ran if crypto/privilege/permissions/wire touched.
 - [ ] Findings addressed or tracked in an ADR.
 - [ ] No new raw `.shell(` outside `:adb-bridge`; no escalation surface added to `app-send`.
