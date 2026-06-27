@@ -27,7 +27,8 @@ The Tier-0 `PackageInstaller` confirm path runs entirely as the receiver app (no
 should work on-device now. Verify it end-to-end.
 
 ### Setup
-1. `./gradlew :app-send:assembleDebug :app-recv:assembleDebug` (JDK 17 + Android SDK 36).
+1. `./gradlew :app-send:assembleDegoogleDebug :app-recv:assembleDegoogleDebug` (JDK 17 + Android SDK 36).
+   APKs: `app-send/build/outputs/apk/degoogle/debug/app-send-degoogle-debug.apk` and `app-recv/build/outputs/apk/degoogle/debug/app-recv-degoogle-debug.apk`.
 2. Install `portage-send` on the OLD phone, `portage-recv` on the NEW phone (or both on the one
    device for a self-transfer smoke).
 3. Record the GOS build: `adb shell getprop ro.build.fingerprint` (and `ro.build.version.security_patch`).

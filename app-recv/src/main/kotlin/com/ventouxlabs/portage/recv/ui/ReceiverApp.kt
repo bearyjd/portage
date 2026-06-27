@@ -53,28 +53,32 @@ import com.ventouxlabs.portage.recv.checklist.ReceiverChecklist
 import com.ventouxlabs.portage.recv.install.ApkInstallPrompt
 import com.ventouxlabs.portage.recv.install.InstallLaunch
 import com.ventouxlabs.portage.recv.install.PackageInstallerApkInstaller
+import com.ventouxlabs.portage.recv.privilege.PrivilegeIntegration
 import com.ventouxlabs.portage.recv.ui.theme.LocalSpacing
 import com.ventouxlabs.portage.recv.ui.theme.PortageTheme
-import com.ventouxlabs.portage.wizard.PrivilegeWizard
 
 /**
  * Root of the receiver UI. Collects the single [ReceiverState] flow and crossfades the matching
  * screen beneath a fixed Swiss masthead. The masthead is the shared structural anchor (not a
  * Material TopAppBar); each state renders into the body below it.
+ *
+ * The optional advanced-setup surface is supplied by the active distribution flavor via
+ * [PrivilegeIntegration] (ADR-003 flavor split): degoogle renders the privilege wizard; play offers
+ * none, so `main` references no `:wizard` type here.
  */
 @Composable
 fun ReceiverApp(
     viewModel: ReceiverViewModel,
-    wizard: PrivilegeWizard,
+    integration: PrivilegeIntegration,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val smsRoleStrand by viewModel.smsRoleStrand.collectAsStateWithLifecycle()
-    val wizardStep by wizard.step.collectAsStateWithLifecycle()
-    // Wizard visibility is UI chrome; the wizard's own progress lives in the process-scoped
-    // state machine and survives recreation (PrivilegeWizardHolder).
+    // Advanced-setup visibility is UI chrome; the integration owns the underlying progress (degoogle's
+    // process-scoped wizard survives recreation). play never opens this surface.
     var wizardOpen by rememberSaveable { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     // Belt for #85: keep the screen awake across the network window (pairing → item stream) so a
     // foregrounded transfer doesn't hit a screen timeout. The foreground service is the real fix.
@@ -102,19 +106,12 @@ fun ReceiverApp(
                 if (smsRoleStrand != null && state !is ReceiverState.Transferring) {
                     SmsRoleRestoreBanner(onRestore = viewModel::restoreSmsRole)
                 }
-                if (wizardOpen) {
-                    WizardScreen(
-                        wizard = wizard,
-                        onClose = {
-                            // A finished run (Ready/Skipped) keeps its recorded outcome; an
-                            // abandoned run resets so the next entry starts clean.
-                            if (wizardStep !is PrivilegeWizard.Step.Ready &&
-                                wizardStep !is PrivilegeWizard.Step.Skipped
-                            ) {
-                                wizard.dismiss()
-                            }
-                            wizardOpen = false
-                        },
+                if (wizardOpen && integration.offersAdvancedSetup) {
+                    // degoogle's privilege wizard: it starts itself on entry and records/resets its own
+                    // outcome on close (logic moved into the flavor's AdvancedSetup so main stays
+                    // :wizard-free). play never reaches here (offersAdvancedSetup is false).
+                    integration.AdvancedSetup(
+                        onClose = { wizardOpen = false },
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
@@ -135,8 +132,9 @@ fun ReceiverApp(
                         StateBody(
                             current = current,
                             viewModel = viewModel,
+                            offersAdvancedSetup = integration.offersAdvancedSetup,
                             onSetup = {
-                                wizard.start()
+                                integration.onAdvancedSetupRequested(context)
                                 wizardOpen = true
                             },
                             onApkInstallFailed = {
@@ -159,6 +157,7 @@ fun ReceiverApp(
 private fun StateBody(
     current: ReceiverState,
     viewModel: ReceiverViewModel,
+    offersAdvancedSetup: Boolean,
     onSetup: () -> Unit,
     onApkInstallFailed: () -> Unit = {},
 ) {
@@ -168,6 +167,7 @@ private fun StateBody(
             IdleScreen(
                 onScan = viewModel::startScanning,
                 onSetup = onSetup,
+                offersAdvancedSetup = offersAdvancedSetup,
                 modifier = Modifier.fillMaxSize(),
             )
 

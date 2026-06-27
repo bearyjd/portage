@@ -18,9 +18,9 @@ Pixels** (minSdk 31 = Pixel 6+) on the **same Wi-Fi**. Capture exact results in 
         --json databaseId --jq '.[0].databaseId')
   gh run download "$RID" -n portage-debug-apks -D /tmp/portage-apks
   # old phone (exporter):
-  adb -s <OLD> install -r /tmp/portage-apks/app-send/build/outputs/apk/debug/app-send-debug.apk
+  adb -s <OLD> install -r /tmp/portage-apks/app-send/build/outputs/apk/degoogle/debug/app-send-degoogle-debug.apk
   # new phone (importer):
-  adb -s <NEW> install -r /tmp/portage-apks/app-recv/build/outputs/apk/debug/app-recv-debug.apk
+  adb -s <NEW> install -r /tmp/portage-apks/app-recv/build/outputs/apk/degoogle/debug/app-recv-degoogle-debug.apk
   ```
 - Record each device: `adb -s <id> shell getprop ro.build.fingerprint`.
 
