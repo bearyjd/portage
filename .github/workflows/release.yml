@@ -70,12 +70,14 @@ jobs:
           PORTAGE_KEY_ALIAS: ${{ secrets.PORTAGE_KEY_ALIAS }}
           PORTAGE_KEY_PASSWORD: ${{ secrets.PORTAGE_KEY_PASSWORD }}
         run: |
+          # --no-configuration-cache: signing inputs are read at configuration time, so the
+          # config cache would serialize keystore passwords under .gradle/ on the runner.
           ./gradlew \
             :app-recv:assembleDegoogleRelease :app-recv:assemblePlayRelease \
             :app-send:assembleDegoogleRelease :app-send:assemblePlayRelease \
             -PportageVersionName="$PORTAGE_VERSION_NAME" \
             -PportageVersionCode="$PORTAGE_VERSION_CODE" \
-            --no-daemon --stacktrace
+            --no-configuration-cache --no-daemon --stacktrace
 
       - name: Verify signatures and create checksums
         shell: bash
@@ -104,17 +106,31 @@ jobs:
         run: |
           set -euo pipefail
           bridge_lib_re='conscrypt|spake2'
+          # aapt decodes the binary (AXML) manifest packaged in the APK, so we assert the
+          # actual shipped permissions — not just native-lib presence. build.yml checks the
+          # plaintext merged-manifest intermediate; here only the APK exists.
+          aapt=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
+          test -x "$aapt" || { echo "::error::aapt not found"; exit 1; }
           for apk in dist/*.apk; do
             name=$(basename "$apk")
+            perms=$("$aapt" dump permissions "$apk")
             case "$name" in
               *send*|*recv-play*)
                 if unzip -l "$apk" | grep -qiE "$bridge_lib_re"; then
                   echo "::error::$name must be bridge-free but contains ADB-bridge native libs"
                   exit 1
+                fi
+                if echo "$perms" | grep -qE 'WRITE_SECURE_SETTINGS'; then
+                  echo "::error::$name must be bridge-free but declares WRITE_SECURE_SETTINGS"
+                  exit 1
                 fi ;;
               *recv-degoogle*)
                 if ! unzip -l "$apk" | grep -qiE "$bridge_lib_re"; then
                   echo "::error::$name (degoogle receiver) lacks expected ADB-bridge native libs"
+                  exit 1
+                fi
+                if ! echo "$perms" | grep -qE 'WRITE_SECURE_SETTINGS'; then
+                  echo "::error::$name (degoogle receiver) lacks expected WRITE_SECURE_SETTINGS"
                   exit 1
                 fi ;;
               *)
@@ -122,6 +138,25 @@ jobs:
                 exit 1 ;;
             esac
           done
+
+      - name: Retain R8 deobfuscation mappings
+        # Minified releases need mapping.txt to deobfuscate field crash reports after the runner
+        # is destroyed. Kept in dist/mapping/ → captured by the workflow artifact upload below, but
+        # NOT attached to the public GitHub release (which lists only dist/*.apk + SHA256SUMS).
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/mapping
+          while IFS= read -r -d '' m; do
+            module=$(echo "$m" | cut -d/ -f1)          # app-recv / app-send
+            variant=$(basename "$(dirname "$m")")       # degoogleRelease / playRelease
+            cp "$m" "dist/mapping/$module-$variant-mapping.txt"
+          done < <(find app-recv/build/outputs/mapping app-send/build/outputs/mapping \
+            -name mapping.txt -path '*Release*' -type f -print0)
+          test "$(find dist/mapping -name '*-mapping.txt' | wc -l)" -eq 4 || {
+            echo "::error::expected four R8 mapping files"
+            exit 1
+          }
 
       - name: Publish GitHub release
         env:
