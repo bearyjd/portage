@@ -9,6 +9,9 @@ local.properties
 captures/
 .cxx/
 
+# The Gradle wrapper is intentionally committed. It pins the build bootstrap and lets
+# CI validate the wrapper JAR; do not add gradlew or gradle/wrapper/ to this file.
+
 # Kotlin / IntelliJ / Android Studio
 *.iml
 .idea/

@@ -69,3 +69,15 @@ gate).
   dependabot.yml is resolved (update its comment once landed).
 - Kotlin stays 2.4.0; behavior unchanged beyond the build mechanism.
 - If compileSdk moves to 37, that is recorded as part of this migration, not a separate GOS bump.
+
+## Update (2026-06-27) — wrapper committed; CI `gradle-version` pins removed
+
+The release-readiness work reverses two premises of §Context #1. The Gradle wrapper
+(`gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar`) is **now committed**, and
+`gradle-wrapper.properties` pins `distributionSha256Sum` for the 9.5.1 distribution. With the
+wrapper in-tree, the three CI workflows drop their `setup-gradle` `gradle-version: '9.5.1'`
+inputs and invoke `./gradlew`, so the build bootstrap is pinned in one place (the wrapper +
+distribution checksum) instead of duplicated across workflow inputs. Wrapper-JAR integrity is
+covered by `gradle/actions/setup-gradle`'s default wrapper validation. This supersedes the
+"wrapper jar is intentionally uncommitted" / "all three workflow pins must move" statements
+above; everything else in this ADR stands.

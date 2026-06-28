@@ -15,20 +15,15 @@ See also: [`README.md`](../README.md) (overview), [`docs/CODEMAPS/`](CODEMAPS/) 
 |------|---------|-------|
 | JDK | **17** (Temurin) | every module pins `jvmToolchain(17)`; set `JAVA_HOME` if your default `java` is newer (a JDK-21 compile → `UnsupportedClassVersionError`) |
 | Android SDK | compileSdk/targetSdk **36** (GOS Android 16) | minSdk 31 (Pixel 6); set `ANDROID_HOME` / `local.properties` `sdk.dir` |
-| Gradle | **9.5.1** | only to bootstrap the wrapper; thereafter use `./gradlew` |
+| Gradle | **9.5.1** | pinned by the committed wrapper and distribution checksum |
 | AGP / Kotlin | 9.2.1 / 2.4.0 (K2) | built-in Kotlin; Compose via the kotlin-compose plugin |
 <!-- END AUTO-GENERATED -->
 
 ## Setup
 
-```sh
-# One-time: the gradle-wrapper.jar is intentionally NOT committed — generate it once.
-gradle wrapper --gradle-version 9.5.1     # writes gradlew, gradlew.bat, gradle-wrapper.jar
-```
-
-The wrapper files (`gradlew`, `gradlew.bat`, `gradle/wrapper/gradle-wrapper.jar`) stay
-untracked — **never commit them.** Point the SDK via `ANDROID_HOME` or a `local.properties`
-`sdk.dir=` line (git-ignored).
+The wrapper files are committed and the Gradle distribution checksum is pinned. Point the
+SDK via `ANDROID_HOME` or a `local.properties` `sdk.dir=` line (git-ignored), then use
+`./gradlew` for every build.
 
 ## Commands
 
@@ -43,13 +38,15 @@ untracked — **never commit them.** Point the SDK via `ANDROID_HOME` or a `loca
 | `./gradlew :providers:testDebugUnitTest` | Export/apply providers (incl. APK reconcile) |
 | `./gradlew :app-recv:testDegoogleDebugUnitTest` / `:app-send:testDegoogleDebugUnitTest` | App logic (ViewModels) — degoogle flavor (full Tier-1); CI also runs the play flavor variants |
 | `./gradlew assembleDebug` | Build both debug APKs (needs the Android SDK) |
-| `gradle wrapper --gradle-version 9.5.1` | One-time wrapper bootstrap |
+| `./gradlew assembleRelease` | Build all minified release variants (unsigned unless signing is configured) |
 
 **Full local gate** (mirrors CI; run with `--no-daemon` — the gradle daemon is flaky in some envs):
 ```sh
 ./gradlew :settings-catalog:test :core-model:test :core-transport:testDebugUnitTest \
   :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest \
-  :app-recv:testDegoogleDebugUnitTest :app-send:testDegoogleDebugUnitTest assembleDebug --no-daemon
+  :app-recv:testDegoogleDebugUnitTest :app-recv:testPlayDebugUnitTest \
+  :app-send:testDegoogleDebugUnitTest :app-send:testPlayDebugUnitTest \
+  assembleDebug assembleRelease --no-daemon
 ```
 <!-- END AUTO-GENERATED -->
 
@@ -93,7 +90,7 @@ branch-per-feature → author → independent review → fix findings → merge 
 | Workflow / job | Asserts |
 |----------------|---------|
 | `build.yml` → **jvm-tests** | `:settings-catalog:test` (safety-critical allowlist, runs in seconds) |
-| `build.yml` → **android-build** | library-module unit tests + app-module `testDegoogleDebugUnitTest` / `testPlayDebugUnitTest` (both flavors) + `assembleDebug` (degoogle + play variants); **no-escalation** assert (sender manifest + APK carry no secure-settings/ADB-bridge); **play-recv no-bridge** assert (no `WRITE_SECURE_SETTINGS` / adbbridge / conscrypt / spake2 in play recv APK); **raw-shell** assert (`.shell(` only in `:adb-bridge`); uploads debug APKs |
+| `build.yml` → **android-build** | library/app unit tests; debug builds; minified release builds; debug + release **no-escalation** assertions (sender and Play receiver remain bridge-free, degoogle receiver retains the bridge); **raw-shell** assert (`.shell(` only in `:adb-bridge`); uploads debug APKs |
 | `dependency-audit.yml` → **osv-scan** | OSV-Scanner over the real shipped transitive graph; fails on a known advisory; weekly schedule. Triaged items in `osv-scanner.toml` |
 <!-- END AUTO-GENERATED -->
 

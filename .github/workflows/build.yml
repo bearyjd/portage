@@ -10,11 +10,15 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   jvm-tests:
     # Fast lane: the safety-critical settings allowlist guardrails are pure-JVM and need
     # no Android SDK, so they gate every push in seconds (see docs/prp/DEVILS_ADVOCATE.md Q2).
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v5
@@ -22,14 +26,13 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: '9.5.1'
       - name: Settings-allowlist guardrails
-        run: gradle :settings-catalog:test --no-daemon --stacktrace
+        run: ./gradlew :settings-catalog:test --no-daemon --stacktrace
 
   android-build:
     # Full build: assembles both debug APKs. ubuntu-latest ships the Android SDK.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v5
@@ -38,15 +41,15 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v4
       - uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: '9.5.1'
       - name: Unit tests (core-model + core-transport + adb-bridge + wizard + providers + app-recv + app-send)
         # app-recv and app-send are flavored (distribution: degoogle/play, ADR-003) so their unit-test
         # tasks are per-flavor; both flavors run. The play variant exercises the Tier-0 no-bridge wiring
         # (PlayPrivilegeIntegrationTest), the degoogle variant the real ADB-bridge install adapters.
-        run: gradle :core-model:test :core-transport:testDebugUnitTest :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest :app-recv:testDegoogleDebugUnitTest :app-recv:testPlayDebugUnitTest :app-send:testDegoogleDebugUnitTest :app-send:testPlayDebugUnitTest --no-daemon --stacktrace
-      - name: Assemble debug APKs (both distribution flavors, both apps)
-        run: gradle :app-recv:assembleDegoogleDebug :app-recv:assemblePlayDebug :app-send:assembleDegoogleDebug :app-send:assemblePlayDebug --no-daemon --stacktrace
+        run: ./gradlew :core-model:test :core-transport:testDebugUnitTest :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest :app-recv:testDegoogleDebugUnitTest :app-recv:testPlayDebugUnitTest :app-send:testDegoogleDebugUnitTest :app-send:testPlayDebugUnitTest --no-daemon --stacktrace
+      - name: Assemble debug and release APKs (both distribution flavors, both apps)
+        # Release variants exercise R8/resource shrinking. They are unsigned CI artifacts and are
+        # built as a release-readiness gate, not published.
+        run: ./gradlew :app-recv:assembleDegoogleDebug :app-recv:assemblePlayDebug :app-send:assembleDegoogleDebug :app-send:assemblePlayDebug :app-recv:assembleDegoogleRelease :app-recv:assemblePlayRelease :app-send:assembleDegoogleRelease :app-send:assemblePlayRelease --no-daemon --stacktrace
       - name: Assert least-privilege boundaries across distribution flavors
         # Least-privilege gate, now flavor-aware (ADR-003 flavor split). Three invariants:
         #   1. portage-send (BOTH flavors) never declares secure-settings write, never carries the
@@ -73,7 +76,7 @@ jobs:
           bridge_lib_re='conscrypt|spake2'
 
           # --- 1. portage-send: both flavors clean (manifest + APK). ---
-          for variant in degoogleDebug playDebug; do
+          for variant in degoogleDebug playDebug degoogleRelease playRelease; do
             m=$(find_manifest app-send "$variant")
             test -n "$m" || { echo "::error::send $variant merged manifest not found"; exit 1; }
             if manifest_body "$m" | grep -qE "$escalation_re"; then
@@ -81,7 +84,7 @@ jobs:
               exit 1
             fi
           done
-          for path in degoogle/debug play/debug; do
+          for path in degoogle/debug play/debug degoogle/release play/release; do
             apk=$(find_apk app-send "$path")
             test -f "$apk" || { echo "::error::sender APK not found at $path"; exit 1; }
             if unzip -l "$apk" | grep -qiE "$bridge_lib_re"; then
@@ -91,32 +94,40 @@ jobs:
           done
 
           # --- 2. portage-recv PLAY: must be bridge-FREE (manifest + APK). ---
-          recv_play_manifest=$(find_manifest app-recv playDebug)
-          test -n "$recv_play_manifest" || { echo "::error::recv playDebug merged manifest not found"; exit 1; }
-          if manifest_body "$recv_play_manifest" | grep -qE "$escalation_re"; then
-            echo "::error::portage-recv PLAY merged manifest carries WRITE_SECURE_SETTINGS or the ADB bridge — the play flavor must exclude :adb-bridge"
-            exit 1
-          fi
-          recv_play_apk=$(find_apk app-recv play/debug)
-          test -f "$recv_play_apk" || { echo "::error::recv play APK not found"; exit 1; }
-          if unzip -l "$recv_play_apk" | grep -qiE "$bridge_lib_re"; then
-            echo "::error::portage-recv PLAY APK contains ADB-bridge native libs (conscrypt/spake2) — :adb-bridge leaked into the play flavor"
-            exit 1
-          fi
+          for variant in playDebug playRelease; do
+            recv_play_manifest=$(find_manifest app-recv "$variant")
+            test -n "$recv_play_manifest" || { echo "::error::recv $variant merged manifest not found"; exit 1; }
+            if manifest_body "$recv_play_manifest" | grep -qE "$escalation_re"; then
+              echo "::error::portage-recv $variant merged manifest carries WRITE_SECURE_SETTINGS or the ADB bridge"
+              exit 1
+            fi
+          done
+          for path in play/debug play/release; do
+            recv_play_apk=$(find_apk app-recv "$path")
+            test -f "$recv_play_apk" || { echo "::error::recv play APK not found at $path"; exit 1; }
+            if unzip -l "$recv_play_apk" | grep -qiE "$bridge_lib_re"; then
+              echo "::error::portage-recv PLAY APK ($path) contains ADB-bridge native libs"
+              exit 1
+            fi
+          done
 
           # --- 3. portage-recv DEGOOGLE: bridge present (proves the patterns + the split are meaningful). ---
-          recv_degoogle_manifest=$(find_manifest app-recv degoogleDebug)
-          test -n "$recv_degoogle_manifest" || { echo "::error::recv degoogleDebug merged manifest not found"; exit 1; }
-          if ! manifest_body "$recv_degoogle_manifest" | grep -qE 'WRITE_SECURE_SETTINGS'; then
-            echo "::error::recv DEGOOGLE merged manifest lacks WRITE_SECURE_SETTINGS — the play negative check is stale"
-            exit 1
-          fi
-          recv_degoogle_apk=$(find_apk app-recv degoogle/debug)
-          test -f "$recv_degoogle_apk" || { echo "::error::recv degoogle APK not found"; exit 1; }
-          if ! unzip -l "$recv_degoogle_apk" | grep -qiE "$bridge_lib_re"; then
-            echo "::error::recv DEGOOGLE APK lacks the expected ADB-bridge native libs — the bridge-free pattern is stale"
-            exit 1
-          fi
+          for variant in degoogleDebug degoogleRelease; do
+            recv_degoogle_manifest=$(find_manifest app-recv "$variant")
+            test -n "$recv_degoogle_manifest" || { echo "::error::recv $variant merged manifest not found"; exit 1; }
+            if ! manifest_body "$recv_degoogle_manifest" | grep -qE 'WRITE_SECURE_SETTINGS'; then
+              echo "::error::recv $variant merged manifest lacks WRITE_SECURE_SETTINGS"
+              exit 1
+            fi
+          done
+          for path in degoogle/debug degoogle/release; do
+            recv_degoogle_apk=$(find_apk app-recv "$path")
+            test -f "$recv_degoogle_apk" || { echo "::error::recv degoogle APK not found at $path"; exit 1; }
+            if ! unzip -l "$recv_degoogle_apk" | grep -qiE "$bridge_lib_re"; then
+              echo "::error::recv DEGOOGLE APK ($path) lacks expected ADB-bridge native libs"
+              exit 1
+            fi
+          done
       - name: Assert raw AdbBridge.shell() stays inside the privilege modules
         # ADR-003 §1 call-site rule, made durable: only :adb-bridge (and :wizard via typed ops)
         # may touch the raw shell. Typed operations are the public surface everywhere else.

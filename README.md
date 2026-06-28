@@ -56,18 +56,13 @@ misses, directly phone-to-phone.** They are complementary, not competitors:
 
 This is a Gradle + Kotlin multi-module Android project (module layout in the brief, §4).
 
-**One-time wrapper bootstrap.** The `gradle-wrapper.jar` is intentionally not committed;
-generate the wrapper once on a machine with Gradle 9.5.1+ installed:
-
-```sh
-gradle wrapper --gradle-version 9.5.1   # writes gradlew, gradlew.bat, and the wrapper jar
-```
-
-Then the usual:
+The repository commits the Gradle wrapper and pins the distribution checksum. Use it for
+all builds; no system Gradle installation is required:
 
 ```sh
 ./gradlew :settings-catalog:test        # pure-JVM safety-critical allowlist guardrails
 ./gradlew assembleDebug                  # build all debug variants (degoogle + play) for both apps
+./gradlew assembleRelease                # exercise R8/resource shrinking for all release variants
 ```
 
 Requirements: JDK 17, Android SDK with the `compileSdk` from `gradle/libs.versions.toml`.
@@ -132,6 +127,10 @@ Design artifacts live in [`docs/prp/`](docs/prp/) and [`docs/`](docs/):
 - [`CODEMAPS/`](docs/CODEMAPS/) — architecture maps (module graph, data-flow, privilege boundary)
 - [`CONTRIBUTING.md`](docs/CONTRIBUTING.md) — contribution guide (branching, review gates, CI)
 - [`RUNBOOK.md`](docs/RUNBOOK.md) — operational runbook (build, flash, device setup, common failures)
+- [`RELEASING.md`](docs/RELEASING.md) — signed release process and human verification gates
+
+Privacy and security reporting are documented in [`PRIVACY.md`](PRIVACY.md) and
+[`SECURITY.md`](SECURITY.md).
 
 > Note: this project was briefly drafted under the working name `malle`; it has been
 > renamed to `portage` (app IDs `com.ventouxlabs.portage.*`) throughout the design docs.
