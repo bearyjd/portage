@@ -19,6 +19,10 @@ sign-off table at the end.
 > Scope note: portage moves **settings / inventory / parity**, never app *data* (Seedvault owns
 > that). The app-backup relay (§C9) is a **courier** for a user-exported, app-encrypted blob —
 > portage never opens it. Keep that boundary in mind while verifying.
+>
+> For the end-user migration sequence and the full Portage / Seedvault / app-native / manual
+> capability matrix, see [`../MIGRATION-GUIDE.md`](../MIGRATION-GUIDE.md). In particular, do not
+> restore calendar, call-history, or SMS data through two tools and assume cross-tool deduplication.
 
 ---
 
@@ -140,6 +144,8 @@ Run a transfer (§B) with the relevant items selected, then check each on the re
   relinquishes**, then surfaces a banner / system dialog to **return the role to your real texting
   app**.
 - **Notes:**
+  - This provider carries **SMS text rows**. MMS attachments/content and RCS state are outside the
+    current payload and must not be counted as restored.
   - `SmsApplyProvider` independently hard-gates on `isSelfDefault()` — it writes **nothing** unless
     portage actually holds the role. Decline the role and SMS self-skips; the rest continues.
   - Process-death safety net: if portage is killed while holding the role, on next

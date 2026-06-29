@@ -23,15 +23,20 @@ Two artifacts:
 - **`portage-send`** — the old phone (exporter)
 - **`portage-recv`** — the new phone (importer)
 
+For the practical old-phone → new-GrapheneOS workflow, including what needs Seedvault,
+app-native export, file copy, or manual setup, see the
+**[two-phone migration guide](docs/MIGRATION-GUIDE.md)**.
+
 ## Division of labor with Seedvault
 
-**Seedvault moves your app data; `portage` moves the settings-and-parity layer Seedvault
-misses, directly phone-to-phone.** They are complementary, not competitors:
+**Seedvault can move participating apps' private backup data; `portage` moves the
+settings-and-parity layer directly phone-to-phone.** They are complementary, and neither
+is a complete device image:
 
 | | Seedvault | portage |
 |---|---|---|
-| App internal data, databases, login sessions | ✅ (privileged system app) | ❌ (deferred to Seedvault) |
-| Contacts / calendar / call log / SMS | partial | ✅ |
+| App internal data, databases, login sessions | best effort (app-controlled) | ❌ (use Seedvault or app-native export) |
+| Contacts / calendar / call log / SMS texts | partial | ✅ |
 | Curated, allow-listed system settings | partial | ✅ |
 | App **inventory** + assisted reinstall | ❌ | ✅ |
 | Direct phone-to-phone over LAN | ❌ (needs a backup target) | ✅ |
@@ -39,7 +44,7 @@ misses, directly phone-to-phone.** They are complementary, not competitors:
 ## Capability tiers
 
 - **Tier 0 — no special privilege (always works):** contacts (vCard), calendar (ICS),
-  call log, SMS/MMS (via temporary default-SMS-app handoff), app inventory + assisted
+  call log, SMS texts (via temporary default-SMS-app handoff), app inventory + assisted
   reinstall, and the `Settings.System` slice of settings sync (font scale, screen
   timeout, auto-rotate, haptics, time format) via user-granted "Modify system settings."
 - **Tier 1 — one-time Wireless Debugging setup (graceful-degrade):** allow-listed
@@ -79,9 +84,10 @@ tests green on every push. What works, phone-to-phone over the Noise/TCP channel
   accept one receiver → stream the selected items with per-chunk AEAD + per-item SHA-256.
 - **`portage-recv`** — scan QR → handshake → checklist built from the live manifest (absent
   kinds shown disabled) → stage, verify, apply each item → done summary with real counts.
-- **All six Tier-0 providers**: contacts (vCard 3.0), calendar (ICS), call log, SMS
-  (role-gated default-SMS handoff), app inventory, and the SAFE `Settings.System` allowlist
-  slice.
+- **Tier-0 parity providers**: contacts (vCard 3.0), calendar (ICS), call log, SMS text
+  messages (role-gated default-SMS handoff), app inventory, the SAFE `Settings.System`
+  allowlist slice, static wallpaper, built-in sound selections, Bluetooth re-pair roster,
+  and app-native encrypted-backup relay.
 - **APK transfer (ADR-006, Phases 1–4, PRs #66–#69)**: streamed multi-file container codec,
   sender UI with running size total, receiver free-space gate, and the apply provider with
   Tier-0 `PackageInstaller` confirm-install fallback. Split-aware (base + config splits
@@ -103,12 +109,10 @@ tests green on every push. What works, phone-to-phone over the Noise/TCP channel
   on a Pixel 8 Pro (`husky`) using a forced-density override and fixed: reconcile now keeps
   a fallback density split instead of dropping to zero when no exact bucket match exists.
 
-**Genuinely still open:**
-
-- **Phase 5 — runtime-permission parity**: separate GO/NO-GO, not built yet (needs the
-  first production `grantRuntimePermission()` call site).
-- **AC-15 ABI leg**: structurally unreachable on the arm64-only Pixel/GOS fleet; closable
-  only on an x86_64 emulator.
+**Known boundary:** Portage is not a disk clone or an app-data backup. MMS/RCS media,
+launcher layout, Wi-Fi passwords, notification channels, accounts, hardware-backed
+credentials, eSIM, and secondary-profile state need another tool or manual setup. The
+[migration guide](docs/MIGRATION-GUIDE.md) enumerates the boundary and recommended workflow.
 
 Design artifacts live in [`docs/prp/`](docs/prp/) and [`docs/`](docs/):
 
@@ -117,6 +121,7 @@ Design artifacts live in [`docs/prp/`](docs/prp/) and [`docs/`](docs/):
 - [`ADR-003-self-contained-privilege.md`](docs/prp/ADR-003-self-contained-privilege.md) — self-contained ADB bridge replacing Shizuku
 - [`ADR-006-apk-transfer-and-permission-parity.md`](docs/prp/ADR-006-apk-transfer-and-permission-parity.md) — APK transfer keystone: wire format, reconcile policy, privilege seams, phase plan
 - [`P6-apk-hardware-runbook.md`](docs/prp/P6-apk-hardware-runbook.md) — on-device verification runbook + silent-install design + hardware evidence
+- [`MIGRATION-GUIDE.md`](docs/MIGRATION-GUIDE.md) — user-facing two-phone workflow and capability matrix
 - [`VERIFICATION-RUNBOOK.md`](docs/prp/VERIFICATION-RUNBOOK.md) — **pre-build** Tier-1 privilege *feasibility* probes (V1–V8 + results template)
 - [`TRANSFER-RUNBOOK.md`](docs/prp/TRANSFER-RUNBOOK.md) — two-phone Tier-0 transfer acceptance test
 - [`E2E-VERIFICATION-RUNBOOK.md`](docs/prp/E2E-VERIFICATION-RUNBOOK.md) — **post-build** two-phone end-to-end verification (wizard, settings, APK install, relay)
