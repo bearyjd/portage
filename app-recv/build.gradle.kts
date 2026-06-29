@@ -25,6 +25,7 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         versionCode = providers.gradleProperty("portageVersionCode").orElse("1").get().toInt()
         versionName = providers.gradleProperty("portageVersionName").orElse("0.1.0-dev").get()
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -108,4 +109,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.truth)
 }

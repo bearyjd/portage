@@ -41,6 +41,15 @@ private class FakeCallLogStore(
     }
 }
 
+private class FakeCallLogJournal : CallLogImportJournal {
+    private val records = mutableSetOf<CallRecord>()
+    override fun contains(record: CallRecord) = record in records
+    override fun record(record: CallRecord) {
+        records += record
+    }
+    override fun clear() = records.clear()
+}
+
 class CallLogProvidersTest {
 
     private val incoming = CallRecord("+15551234567", type = 1, dateMillis = 1_750_000_000_000, durationSeconds = 61)
@@ -94,5 +103,74 @@ class CallLogProvidersTest {
             .apply(ByteArrayInputStream(out.toByteArray()))
 
         assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+    }
+
+    @Test
+    fun `journal makes an exact call-log retry idempotent without read permission`() = runTest {
+        val out = ByteArrayOutputStream()
+        CallLogExportProvider(FakeCallLogStore(mutableListOf(incoming, missed))).exportTo(out)
+        val payload = out.toByteArray()
+        val store = FakeCallLogStore(throwOnRead = true)
+        val journal = FakeCallLogJournal()
+
+        val first = CallLogApplyProvider(store, journal).apply(ByteArrayInputStream(payload))
+        val second = CallLogApplyProvider(store, journal).apply(ByteArrayInputStream(payload))
+
+        assertThat(first.status).isEqualTo(ItemStatus.OK)
+        assertThat(second.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(incoming, missed).inOrder()
+        assertThat(second.detail).contains("already imported 2")
+    }
+
+    @Test
+    fun `journal write failure does not abort successful call-log inserts`() = runTest {
+        val out = ByteArrayOutputStream()
+        CallLogExportProvider(FakeCallLogStore(mutableListOf(incoming, missed))).exportTo(out)
+        val journal = object : CallLogImportJournal {
+            override fun contains(record: CallRecord) = false
+            override fun record(record: CallRecord) = throw java.io.IOException("disk full")
+            override fun clear() = Unit
+        }
+        val store = FakeCallLogStore(throwOnRead = true)
+
+        val outcome = CallLogApplyProvider(store, journal)
+            .apply(ByteArrayInputStream(out.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(incoming, missed).inOrder()
+        assertThat(outcome.detail).contains("applied 2")
+    }
+
+    @Test
+    fun `a new transfer clears call-log retry history`() = runTest {
+        val out = ByteArrayOutputStream()
+        CallLogExportProvider(FakeCallLogStore(mutableListOf(incoming))).exportTo(out)
+        val payload = out.toByteArray()
+        val store = FakeCallLogStore(throwOnRead = true)
+        val provider = CallLogApplyProvider(store, FakeCallLogJournal())
+
+        provider.beginTransfer()
+        provider.apply(ByteArrayInputStream(payload))
+        provider.apply(ByteArrayInputStream(payload))
+        provider.beginTransfer()
+        provider.apply(ByteArrayInputStream(payload))
+
+        assertThat(store.inserted).containsExactly(incoming, incoming).inOrder()
+    }
+
+    @Test
+    fun `failed call-log inserts are not journaled and retry later`() = runTest {
+        val out = ByteArrayOutputStream()
+        CallLogExportProvider(FakeCallLogStore(mutableListOf(incoming))).exportTo(out)
+        val payload = out.toByteArray()
+        val store = FakeCallLogStore(rejectInserts = true)
+        val journal = FakeCallLogJournal()
+
+        assertThat(CallLogApplyProvider(store, journal).apply(ByteArrayInputStream(payload)).status)
+            .isEqualTo(ItemStatus.WRITE_ERROR)
+        store.rejectInserts = false
+        assertThat(CallLogApplyProvider(store, journal).apply(ByteArrayInputStream(payload)).status)
+            .isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(incoming)
     }
 }

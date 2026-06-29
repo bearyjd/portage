@@ -56,6 +56,11 @@ interface ApplyProvider {
     suspend fun apply(source: InputStream): ApplyOutcome
 }
 
+/** Provider state that must survive retries within one transfer, but not cross transfer boundaries. */
+interface TransferScopedApplyProvider {
+    fun beginTransfer()
+}
+
 /**
  * Maps a manifest [ItemKind] to its compiled apply handler. The receiver NEVER acts on a
  * kind it does not recognize (THREAT_MODEL.md, malicious-sender row): an unregistered kind
@@ -64,6 +69,10 @@ interface ApplyProvider {
 class ApplyProviderRegistry(providers: List<ApplyProvider>) {
 
     private val byKind: Map<ItemKind, ApplyProvider> = providers.associateBy { it.kind }
+
+    fun beginTransfer() {
+        byKind.values.filterIsInstance<TransferScopedApplyProvider>().forEach { it.beginTransfer() }
+    }
 
     fun forKind(kind: ItemKind): ApplyProvider? = byKind[kind]
 

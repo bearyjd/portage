@@ -37,6 +37,7 @@ private class FakeContactsStore(
     override fun insert(record: ContactRecord): Boolean {
         if (record.displayName in failInsertsFor) return false
         inserted += record
+        contacts += record
         return true
     }
 }
@@ -97,6 +98,68 @@ class ContactsProvidersTest {
         assertThat(store.inserted).containsExactly(bob)
         assertThat(outcome.detail).contains("applied 1")
         assertThat(outcome.detail).contains("skipped 1")
+    }
+
+    @Test
+    fun `journal write failure does not abort successful contact inserts`() = runTest {
+        val journal = object : ContactImportJournal {
+            override fun contains(record: ContactRecord) = false
+            override fun record(record: ContactRecord) = throw java.io.IOException("disk full")
+            override fun clear() = Unit
+        }
+        val store = FakeContactsStore()
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(ada, bob), it) }
+
+        val outcome = ContactsApplyProvider(store, journal)
+            .apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(ada, bob).inOrder()
+        assertThat(outcome.detail).contains("applied 2")
+    }
+
+    @Test
+    fun `apply is idempotent for exact contacts already on the target`() = runTest {
+        val store = FakeContactsStore()
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(ada, bob), it) }.toByteArray()
+
+        val first = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload))
+        val second = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload))
+
+        assertThat(first.status).isEqualTo(ItemStatus.OK)
+        assertThat(second.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(ada, bob).inOrder()
+        assertThat(second.detail).contains("already present 2")
+    }
+
+    @Test
+    fun `dedup normalizes phone formatting and field order`() = runTest {
+        val formatted = ada.copy(phones = listOf(LabeledValue("+1 (555)", "cell")))
+        val store = FakeContactsStore(mutableListOf(formatted))
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(ada), it) }
+
+        val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).isEmpty()
+        assertThat(outcome.detail).contains("already present 1")
+    }
+
+    @Test
+    fun `dedup preserves distinct vanity phone numbers`() = runTest {
+        val flowers = ContactRecord(
+            displayName = "Florist",
+            phones = listOf(LabeledValue("1-800-FLOWERS", "WORK")),
+        )
+        val flowing = flowers.copy(phones = listOf(LabeledValue("1-800-FLOWING", "WORK")))
+        val store = FakeContactsStore(mutableListOf(flowers))
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(flowing), it) }
+
+        val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(flowing)
+        assertThat(outcome.detail).contains("applied 1")
     }
 
     @Test

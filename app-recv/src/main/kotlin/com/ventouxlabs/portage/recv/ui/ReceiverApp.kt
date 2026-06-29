@@ -11,7 +11,10 @@ package com.ventouxlabs.portage.recv.ui
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -42,6 +45,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -236,6 +240,14 @@ private fun ReviewingBody(
     viewModel: ReceiverViewModel,
 ) {
     val context = LocalContext.current
+    var permissionRequestInFlight by remember { mutableStateOf(false) }
+    val applyPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        permissionRequestInFlight = false
+        // Providers re-check permissions and fail per-item, so denial never blocks unrelated data.
+        viewModel.onConfirm()
+    }
     var canWriteSystem by remember {
         mutableStateOf(android.provider.Settings.System.canWrite(context))
     }
@@ -246,7 +258,20 @@ private fun ReviewingBody(
         senderName = current.senderName,
         groups = current.groups,
         onToggle = viewModel::onToggle,
-        onConfirm = viewModel::onConfirm,
+        onConfirm = {
+            if (!permissionRequestInFlight) {
+                val missing = ReceiverChecklist.requiredApplyPermissions(current.groups)
+                    .filter {
+                        ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+                    }
+                if (missing.isEmpty()) {
+                    viewModel.onConfirm()
+                } else {
+                    permissionRequestInFlight = true
+                    applyPermissionLauncher.launch(missing.toTypedArray())
+                }
+            }
+        },
         modifier = Modifier.fillMaxSize(),
         absentKinds = current.absentKinds,
         systemSettingsGrantNeeded =
