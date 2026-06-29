@@ -120,6 +120,7 @@ object ReceiverChecklist {
         ItemKind.CONTACTS_VCF, ItemKind.CALENDAR_ICS, ItemKind.CALL_LOG,
         ItemKind.SMS, ItemKind.APP_INVENTORY, ItemKind.SETTINGS, ItemKind.WALLPAPER,
         ItemKind.SOUND_SELECTION, ItemKind.BLUETOOTH_DEVICES, ItemKind.APP_BACKUP_RELAY,
+        ItemKind.USER_FILE,
     )
 
     /**

@@ -81,9 +81,9 @@ binary payload. Mirror the SMS/settings pair shape (`providers/.../sms/SmsProvid
 `providers/.../settings/SettingsProviders.kt`):
 
 - **core-model** (`core-model/.../Manifest.kt:24`): add one `ItemKind.WALLPAPER` enum entry,
-  `Tier.TIER0`. The enum is the frozen v1 wire vocabulary — additions are append-only and carry
-  the same care the `seedvault.blob` comment documents (`Manifest.kt:32-35`). No `ItemMeta`
-  changes: `size`/`sha256`/`displayName`/`group` already carry everything (`Manifest.kt:43-51`).
+  `Tier.TIER0`. Enum additions are append-only and require protocol-version review because old
+  builds cannot decode unknown enum values. No `ItemMeta` changes:
+  `size`/`sha256`/`displayName`/`group` already carry everything (`Manifest.kt:43-51`).
 - **providers** (`providers/.../wallpaper/WallpaperProviders.kt`, new): a `WallpaperStore` seam
   (the `ContentResolver`/`WallpaperManager` boundary, mirroring `SmsStore` / `SystemSettingsStore`)
   plus `WallpaperExportProvider : ExportProvider` and `WallpaperApplyProvider : ApplyProvider`

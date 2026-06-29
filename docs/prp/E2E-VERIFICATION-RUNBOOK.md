@@ -1,4 +1,4 @@
-# E2E-VERIFICATION-RUNBOOK.md — `portage` v1
+# E2E-VERIFICATION-RUNBOOK.md — `portage` v2
 
 A hands-on, **two-device end-to-end** verification checklist for the shipped portage apps.
 
@@ -18,7 +18,9 @@ sign-off table at the end.
 
 > Scope note: portage moves **settings / inventory / parity**, never app *data* (Seedvault owns
 > that). The app-backup relay (§C9) is a **courier** for a user-exported, app-encrypted blob —
-> portage never opens it. Keep that boundary in mind while verifying.
+> portage never opens it. User-file transfer carries only files explicitly selected through
+> Android's file picker; it is not a shared-storage crawler. Keep those boundaries in mind while
+> verifying.
 >
 > For the end-user migration sequence and the full Portage / Seedvault / app-native / manual
 > capability matrix, see [`../MIGRATION-GUIDE.md`](../MIGRATION-GUIDE.md). In particular, do not

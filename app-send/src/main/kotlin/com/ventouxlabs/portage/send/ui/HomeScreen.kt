@@ -33,6 +33,7 @@ import androidx.core.content.ContextCompat
 import com.ventouxlabs.portage.providers.apk.InstalledApp
 import com.ventouxlabs.portage.providers.relay.RelayCandidate
 import com.ventouxlabs.portage.send.relay.RelayFile
+import com.ventouxlabs.portage.send.userfile.PickedUserFile
 import com.ventouxlabs.portage.send.ui.theme.LocalSpacing
 
 /** Static device facts shown on the landing screen (computed once by the Activity). */
@@ -67,6 +68,9 @@ fun HomeScreen(
     relayPicks: List<RelayFile> = emptyList(),
     onResolveRelayPick: (resolve: () -> RelayFile?) -> Unit = {},
     onRemoveRelayPick: (Long) -> Unit = {},
+    userFiles: List<PickedUserFile> = emptyList(),
+    onResolveUserFiles: (List<() -> PickedUserFile?>) -> Unit = {},
+    onRemoveUserFile: (Long) -> Unit = {},
     availableApps: List<InstalledApp> = emptyList(),
     selectedAppPackages: Set<String> = emptySet(),
     onToggleApp: (String) -> Unit = {},
@@ -111,6 +115,14 @@ fun HomeScreen(
             text = "Carry contacts, calendar, history, your app list and settings to the new phone — over your own Wi-Fi, nothing leaves the room.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(s.lg))
+        HairlineDivider()
+        Spacer(Modifier.height(s.lg))
+        UserFilePickSection(
+            files = userFiles,
+            onResolveFiles = onResolveUserFiles,
+            onRemove = onRemoveUserFile,
         )
         // App-backup relay (PRP-06): only renders when Signal/Molly/Aegis is installed. Lets the user
         // pick the encrypted file they exported IN the app so it rides along with the Tier-0 items.

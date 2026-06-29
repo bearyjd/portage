@@ -26,6 +26,9 @@ import com.ventouxlabs.portage.send.relay.relayExportProviders
 import com.ventouxlabs.portage.send.transfer.ManifestBuilder
 import com.ventouxlabs.portage.send.transfer.StagedManifest
 import com.ventouxlabs.portage.send.transfer.TransferEngine
+import com.ventouxlabs.portage.send.userfile.PickedUserFile
+import com.ventouxlabs.portage.send.userfile.userFileExportProviders
+import com.ventouxlabs.portage.providers.userfile.UserFileHeader
 import com.ventouxlabs.portage.transport.DATA_PHASE_TIMEOUT_MS
 import com.ventouxlabs.portage.transport.NoiseSecureChannelFactory
 import com.ventouxlabs.portage.transport.PairingCodec
@@ -111,6 +114,10 @@ class SenderViewModel(
      */
     private val _relayPicks = MutableStateFlow<List<RelayFile>>(emptyList())
     val relayPicks: StateFlow<List<RelayFile>> = _relayPicks.asStateFlow()
+
+    /** Files explicitly selected through SAF to save under Downloads/Portage on the receiver. */
+    private val _userFiles = MutableStateFlow<List<PickedUserFile>>(emptyList())
+    val userFiles: StateFlow<List<PickedUserFile>> = _userFiles.asStateFlow()
 
     /**
      * The installed user apps the sender CAN carry (ADR-006 Phase 1b), enumerated once via the
@@ -202,6 +209,32 @@ class SenderViewModel(
         _relayPicks.value = kept
     }
 
+    /** Resolve all documents returned by one multi-select picker result off the main thread. */
+    fun resolveAndAddUserFiles(resolvers: List<() -> PickedUserFile?>) {
+        viewModelScope.launch(relayResolveDispatcher) {
+            val accepted = _userFiles.value.toMutableList()
+            var acceptedBytes = accepted.sumOf { it.byteLength }
+            for (resolve in resolvers) {
+                if (accepted.size >= UserFileHeader.MAX_FILES_PER_TRANSFER) break
+                val file = runCatching { resolve() }.getOrNull() ?: continue
+                val remaining = UserFileHeader.MAX_TOTAL_BYTES - acceptedBytes
+                if (file.byteLength < 0L || file.byteLength > remaining) {
+                    releaseGrant(file)
+                    continue
+                }
+                accepted += file
+                acceptedBytes += file.byteLength
+            }
+            _userFiles.value = accepted
+        }
+    }
+
+    fun removeUserFile(pickId: Long) {
+        val (removed, kept) = _userFiles.value.partition { it.pickId == pickId }
+        removed.forEach { releaseGrant(it) }
+        _userFiles.value = kept
+    }
+
     fun onStartTransfer() {
         if (_state.value !is SenderState.Home && _state.value !is SenderState.Failed) return
         _state.value = SenderState.Preparing
@@ -225,7 +258,10 @@ class SenderViewModel(
                 // are staged/hashed/manifested (default = none selected, no surprise multi-GB transfer).
                 // READ-ONLY PackageManager + file reads; no privilege, no escalation.
                 val allProviders =
-                    providers + relayExportProviders(livePicks) + apkExportProviders(selectedApps())
+                    providers +
+                        relayExportProviders(livePicks) +
+                        apkExportProviders(selectedApps()) +
+                        userFileExportProviders(_userFiles.value)
                 val built = ManifestBuilder(allProviders, stagingDir, senderName).build()
                     .also { staged = it }
                 if (built.items.isEmpty()) {
@@ -284,6 +320,7 @@ class SenderViewModel(
                 // on reset(). Picks flagged expired are KEPT so the user still sees "did not ship —
                 // re-pick" on the Done screen; they never silently disappear.
                 clearShippedRelayPicks()
+                clearUserFiles()
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
@@ -339,6 +376,7 @@ class SenderViewModel(
         // Drop the relay picks too (and release each SAF grant): returning Home is a fresh start; the
         // user re-picks from the live app export each session.
         clearRelayPicks()
+        clearUserFiles()
         // Reset the carry selection to the default (nothing selected) — a fresh start re-asks the user
         // which apps to carry rather than silently re-carrying the last set.
         clearAppSelection()
@@ -382,6 +420,15 @@ class SenderViewModel(
         runCatching { pick.releaseGrant() }
     }
 
+    private fun clearUserFiles() {
+        _userFiles.value.forEach { releaseGrant(it) }
+        _userFiles.value = emptyList()
+    }
+
+    private fun releaseGrant(file: PickedUserFile) {
+        runCatching { file.releaseGrant() }
+    }
+
     /** Fail-closed terminal transition: release the listener/channel, surface the reason. */
     private fun fail(reason: String) {
         closeChannel()
@@ -405,6 +452,8 @@ class SenderViewModel(
     override fun onCleared() {
         closeChannel()
         cleanupStaging()
+        clearRelayPicks()
+        clearUserFiles()
         super.onCleared()
     }
 

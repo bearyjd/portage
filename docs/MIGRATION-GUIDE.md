@@ -37,7 +37,8 @@ Before starting:
 - record the old phone's user profiles and Private Space separately;
 - export recovery codes and confirm access to the password manager;
 - make app-native backups for messaging, 2FA, password-manager, notes, and finance apps;
-- copy photos, videos, Downloads, documents, recordings, and custom sound files independently;
+- decide which photos, videos, Downloads, documents, recordings, and custom media should move
+  through Portage's explicit file picker versus another file workflow;
 - take screenshots of every launcher page, folder, widget, Quick Settings page, alarm, VPN, and
   important per-app setting;
 - if Seedvault is available, create a fresh backup and retain its 12-word recovery code.
@@ -56,12 +57,14 @@ to deduplicate across independent restore tools.
 Recommended ownership:
 
 - **Portage:** contacts, calendar, call history, SMS, supported settings, static wallpaper,
-  built-in sound selections, app/APK inventory, and the Bluetooth re-pair checklist.
+  built-in sound selections, app/APK inventory, user-selected shared files, and the Bluetooth
+  re-pair checklist.
 - **Seedvault:** app-private data for participating apps, when the old phone already has a usable
   Seedvault backup.
 - **App-native export:** Signal/Molly, Aegis and other apps with their own backup or device-transfer
   mechanism.
-- **File copy or sync:** photos, videos, music, downloads, documents, recordings, and custom media.
+- **File copy or sync:** very large media libraries, folder trees, or anything you do not select
+  explicitly in Portage.
 - **Manual:** accounts, hardware-bound credentials, launcher layout when the launcher has no export,
   Wi-Fi passwords, eSIM, widgets, and app-specific settings that were not restored.
 
@@ -126,10 +129,10 @@ Verify at minimum:
 | Runtime permissions | **Portage, limited** | Supported permission parity accompanies carried APKs. Dangerous permissions remain explicit and device/app policy still wins. GrapheneOS-specific toggles are not all ordinary Android permissions. |
 | App-private databases, preferences, and sessions | **Seedvault or app-native** | Portage cannot enter another app's sandbox. Seedvault works only for data the app allows and should be verified app by app. |
 | Signal/Molly/Aegis-style encrypted backups | **App-native + Portage relay** | The user creates the encrypted backup; Portage can courier supported files but never decrypts them or knows the passphrase. |
-| Photos, videos, music, downloads, documents | **File copy/sync** | Use USB storage, a computer, Syncthing, Nextcloud, or another verified file workflow. Portage does not currently transfer general shared storage. |
+| Photos, videos, music, downloads, documents | **Portage for selected files; file copy/sync for bulk libraries** | Portage transfers files the user explicitly selects through Android's file picker and writes them to `Downloads/Portage` on the receiver. It does not crawl folders, preserve original directory trees, or become a bulk sync engine. |
 | Allow-listed system settings | **Portage** | A conservative, validated subset is applied. Hardware-specific, unsafe, unknown, and many app-owned settings are intentionally excluded. |
 | Static home/lock wallpaper | **Portage** | PNG/JPEG/WebP static images transfer. Live wallpaper app state does not. |
-| Ringtone, notification, and alarm selection | **Portage, built-ins only** | The receiver resolves built-in sounds by title. Custom sound files require separate file copy and manual selection. |
+| Ringtone, notification, and alarm selection | **Portage, built-ins only** | The receiver resolves built-in sounds by title. Custom sound files can be carried as selected files, but assigning them as ringtone/notification/alarm still requires manual selection. |
 | Bluetooth devices | **Portage checklist + manual** | Names and addresses become a checklist. Link keys are not copied; every accessory must be paired again. |
 | Saved Wi-Fi networks/passwords | **Manual or Seedvault if it succeeds** | A normal app and shell-level Wireless Debugging cannot read saved passphrases on GrapheneOS. Portage cannot transfer them. |
 | Launcher pages, folders, icon positions | **Launcher export, Seedvault, or manual** | Portage cannot read or write another launcher's private database. Same-launcher backup/import may work. Seedvault may restore launcher data when that launcher participates, but this is launcher- and restore-dependent. Keep screenshots as the reliable fallback. |

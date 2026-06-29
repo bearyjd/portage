@@ -47,8 +47,9 @@ class ItemStreamReceiver(
     // ALONE gets a raised, still-finite ceiling here. Every kind NOT in this map keeps [maxItemBytes]
     // — the raised relay cap MUST NOT leak into the Tier-0/PII item paths (PRP-06 §5).
     private val maxBytesByKind: Map<ItemKind, Long> = emptyMap(),
+    private val userFileMaxTotalBytes: Long = Long.MAX_VALUE,
     // Usable-space probe for the staging volume, seam-injected so tests can simulate a near-full disk
-    // deterministically (ADR-006 AC-16). Production reads the real free space; the gate is APK-only.
+    // deterministically. Production reads the real free space.
     private val freeSpace: (File) -> Long = { it.usableSpace },
     // Staging-file sink factory, seam-injected so tests can simulate a mid-stream disk fault (ENOSPC)
     // deterministically. Production opens the real cacheDir file; only the LOCAL staging write throws.
@@ -78,10 +79,10 @@ class ItemStreamReceiver(
         // closes the one otherwise-unbounded loop (security review 2026-06-11, MEDIUM).
         val maxItems = expected.size + UNREQUESTED_ITEM_SLACK
         var begun = 0
-        // Running sum of ACCEPTED APK-item declared sizes, bounded by MAX_APK_TOTAL_BYTES (ADR-006
-        // D4 / AC-17). APK-only: no other kind is aggregate-bounded. An item is added only after it
-        // clears every up-front gate, so a rejected item never consumes budget.
+        // Running sums of ACCEPTED large-item declared sizes. Items are added only after they clear
+        // every up-front gate, so a rejected item never consumes budget.
         val apkBudget = ApkAggregateBudget()
+        val userFileBudget = ByteBudget(userFileMaxTotalBytes)
         try {
             stream@ while (true) {
                 val message = receiveSkippingPing(channel)
@@ -91,7 +92,10 @@ class ItemStreamReceiver(
                         if (++begun > maxItems) {
                             throw TransportException("sender exceeded the item-count cap")
                         }
-                        val result = receiveOneItem(channel, message, expected[message.itemId], apkBudget, apply, onEvent)
+                        val result = receiveOneItem(
+                            channel, message, expected[message.itemId], apkBudget,
+                            userFileBudget, apply, onEvent,
+                        )
                         results[message.itemId] = result
                         onEvent(Event.ItemFinished(result))
                     }
@@ -128,6 +132,7 @@ class ItemStreamReceiver(
         begin: ProtocolMessage.ItemBegin,
         meta: ItemMeta?,
         apkBudget: ApkAggregateBudget,
+        userFileBudget: ByteBudget,
         apply: suspend (ItemMeta, InputStream) -> ApplyOutcome,
         onEvent: (Event) -> Unit,
     ): ItemResult {
@@ -137,11 +142,11 @@ class ItemStreamReceiver(
         // meta.kind first, so a relay raise can't be claimed by mislabeling a PII item).
         val itemCap = capFor(begin.kind)
         val isApk = begin.kind == ItemKind.APK
+        val isUserFile = begin.kind == ItemKind.USER_FILE
 
-        // Refuse BEFORE staging a byte; the stream is still drained to stay in sync. The two
-        // APK-only gates (aggregate budget, free space) run LAST, after the manifest/kind/size/
-        // per-item-cap agreement, so they only ever judge an otherwise-valid APK item — and never
-        // touch any non-APK kind (ADR-006 AC-16/AC-17).
+        // Refuse BEFORE staging a byte; the stream is still drained to stay in sync. Aggregate and
+        // free-space gates run LAST, after manifest/kind/size/per-item-cap agreement, so they only
+        // ever judge otherwise-valid large items.
         var failure: ItemResult? = when {
             // Floor: a negative declared size clears every numeric guard (cap, aggregate, free-space)
             // and would poison the APK aggregate budget. Reject as OVERSIZE before any other check
@@ -160,20 +165,25 @@ class ItemStreamReceiver(
             // aggregate ceiling. OVERSIZE — it is a size-bound refusal, just at the batch scope.
             isApk && apkBudget.wouldExceed(begin.size) ->
                 ItemResult(begin.itemId, ItemStatus.OVERSIZE, "exceeds the aggregate APK byte budget")
+            isUserFile && userFileBudget.wouldExceed(begin.size) ->
+                ItemResult(begin.itemId, ItemStatus.OVERSIZE, "exceeds the aggregate user-file byte budget")
             // AC-16: fail CLOSED if the staging volume can't hold the double-stage (cacheDir item
             // file -> split files -> pm session). Not a size-cap breach, so WRITE_ERROR, the kind's
             // existing local-staging failure status. Runs AFTER begin.size == meta.size agreement
             // so hasRoomToStage consults the validated size — the ordering is load-bearing.
             isApk && !hasRoomToStage(begin.size) ->
                 ItemResult(begin.itemId, ItemStatus.WRITE_ERROR, "not enough free space to stage this APK")
+            isUserFile && !hasRoomToStage(begin.size) ->
+                ItemResult(begin.itemId, ItemStatus.WRITE_ERROR, "not enough free space to receive this file")
             else -> null
         }
 
-        // The item cleared every up-front gate — commit its size to the APK aggregate budget so the
-        // NEXT APK item is judged against the running total. Only items that clear every up-front gate
-        // consume budget; a later stream-time rejection does not refund the charge (this is the
-        // intended DoS bound — we bound what the sender CLAIMS up front, before staging).
+        // The item cleared every up-front gate — commit its size to the relevant aggregate budget so
+        // the next same-kind large item is judged against the running total. Only items that clear
+        // every up-front gate consume budget; a later stream-time rejection does not refund the
+        // charge (this is the intended DoS bound — we bound what the sender CLAIMS up front).
         if (failure == null && isApk) apkBudget.add(begin.size)
+        if (failure == null && isUserFile) userFileBudget.add(begin.size)
 
         // Generated name — display fields are NEVER paths (THREAT_MODEL, path traversal).
         val file = File(stagingDir, "stage-${begin.itemId}.bin")
@@ -306,7 +316,7 @@ class ItemStreamReceiver(
      * items in one batch and refuses the item that would carry the total past
      * [ApkContainerValidation.MAX_APK_TOTAL_BYTES]. Single-coroutine by construction — items are
      * processed serially — so plain mutation is safe. APK-scoped: the caller only consults this for
-     * [ItemKind.APK], leaving every other kind unbounded in aggregate (as before).
+     * [ItemKind.APK].
      */
     private class ApkAggregateBudget {
         private var acceptedBytes = 0L
@@ -326,6 +336,18 @@ class ItemStreamReceiver(
          */
         fun add(size: Long) {
             require(size >= 0L) { "APK budget add called with negative size: $size" }
+            acceptedBytes += size
+        }
+    }
+
+    private class ByteBudget(private val limit: Long) {
+        private var acceptedBytes = 0L
+
+        fun wouldExceed(size: Long): Boolean =
+            size < 0L || limit < 0L || size > limit - acceptedBytes
+
+        fun add(size: Long) {
+            require(size >= 0L)
             acceptedBytes += size
         }
     }

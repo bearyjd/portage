@@ -43,6 +43,8 @@ import com.ventouxlabs.portage.providers.sound.AndroidSoundStore
 import com.ventouxlabs.portage.providers.sound.SoundSelectionApplyProvider
 import com.ventouxlabs.portage.providers.wallpaper.AndroidWallpaperStore
 import com.ventouxlabs.portage.providers.wallpaper.WallpaperApplyProvider
+import com.ventouxlabs.portage.providers.userfile.UserFileApplyProvider
+import com.ventouxlabs.portage.recv.files.AndroidUserFileStore
 import com.ventouxlabs.portage.recv.install.PackageInstallerApkInstaller
 import com.ventouxlabs.portage.recv.install.androidApkTargetConfig
 import com.ventouxlabs.portage.recv.install.androidInstalledPackageVersions
@@ -232,6 +234,9 @@ private class ReceiverViewModelFactory(
                         onPrompt = sinks.onRelayPrompt,
                         handoff = AndroidRelayHandoff(context)::write,
                     ),
+                    // Explicit SAF-selected user files land in the public Downloads/Portage
+                    // collection through MediaStore; no broad storage permission or path is trusted.
+                    UserFileApplyProvider(writeFile = AndroidUserFileStore(context)::write),
                 ),
             )
         }
