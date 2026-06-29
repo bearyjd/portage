@@ -520,6 +520,61 @@ class ItemStreamReceiverTest {
     }
 
     @Test
+    fun `a USER_FILE item fails closed when free space is under twice its size, then proceeds when ample`() = runTest {
+        val blob = "portable-file".toByteArray()
+        val size = blob.size.toLong()
+        val fileMeta = ItemMeta(1, ItemKind.USER_FILE, size, sha256(blob), "notes.txt", "Files")
+
+        val tightFrames = itemFrames(fileMeta, blob) + ProtocolMessage.BatchEnd(listOf(1), "done")
+        var tightApplyCalled = false
+        val tight = ItemStreamReceiver(
+            tmp.newFolder(),
+            freeSpace = { 2 * size - 1 },
+        ).run(ScriptedChannel(*tightFrames.toTypedArray()), mapOf(1 to fileMeta), { _, _ ->
+            tightApplyCalled = true
+            ApplyOutcome(ItemStatus.OK)
+        }) { }
+
+        assertThat(tightApplyCalled).isFalse()
+        assertThat(tight.single().status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(tight.single().detail).contains("free space")
+
+        val roomyFrames = itemFrames(fileMeta, blob) + ProtocolMessage.BatchEnd(listOf(1), "done")
+        val applied = mutableListOf<ByteArray>()
+        val roomy = ItemStreamReceiver(
+            tmp.newFolder(),
+            freeSpace = { 2 * size },
+        ).run(ScriptedChannel(*roomyFrames.toTypedArray()), mapOf(1 to fileMeta), { _, source ->
+            applied += source.readBytes()
+            ApplyOutcome(ItemStatus.OK)
+        }) { }
+
+        assertThat(roomy.single().status).isEqualTo(ItemStatus.OK)
+        assertThat(applied.single()).isEqualTo(blob)
+    }
+
+    @Test
+    fun `USER_FILE items are aggregate-bounded across one transfer`() = runTest {
+        val bytesA = "abcdef".toByteArray()
+        val bytesB = "ghijkl".toByteArray()
+        val a = ItemMeta(1, ItemKind.USER_FILE, bytesA.size.toLong(), sha256(bytesA), "a.txt", "Files")
+        val b = ItemMeta(2, ItemKind.USER_FILE, bytesB.size.toLong(), sha256(bytesB), "b.txt", "Files")
+        val frames = itemFrames(a, bytesA) + itemFrames(b, bytesB) + ProtocolMessage.BatchEnd(listOf(1, 2), "done")
+
+        val results = ItemStreamReceiver(
+            tmp.newFolder(),
+            userFileMaxTotalBytes = 10L,
+            freeSpace = { Long.MAX_VALUE },
+        ).run(ScriptedChannel(*frames.toTypedArray()), mapOf(1 to a, 2 to b), { _, _ ->
+            ApplyOutcome(ItemStatus.OK)
+        }) { }
+
+        assertThat(results.first { it.itemId == 1 }.status).isEqualTo(ItemStatus.OK)
+        assertThat(results.first { it.itemId == 2 }.status).isEqualTo(ItemStatus.OVERSIZE)
+        assertThat(results.first { it.itemId == 2 }.detail).contains("aggregate")
+    }
+
+    @Test
     fun `AC-17 APK items each under the per-item cap are aggregate-bounded — the one that breaches is OVERSIZE`() = runTest {
         // Three APK items, each 3 GiB — individually under the per-item cap (raised to 4 GiB here so
         // the per-item gate is NOT what fires), but whose running total crosses MAX_APK_TOTAL_BYTES

@@ -106,10 +106,10 @@ class ReceiverChecklistTest {
     fun `absent Tier-0 kinds are reported so the UI can gray them, not hide them`() {
         val absent = ReceiverChecklist.absentKinds(manifest)
         // Manifest has contacts/calendar/sms/settings — call log, inventory, wallpaper, sound
-        // selection, the bonded-Bluetooth roster, and the app-backup relay are missing.
+        // selection, the bonded-Bluetooth roster, app-backup relay, and user files are missing.
         assertThat(absent).containsExactly(
             ItemKind.CALL_LOG, ItemKind.APP_INVENTORY, ItemKind.WALLPAPER, ItemKind.SOUND_SELECTION,
-            ItemKind.BLUETOOTH_DEVICES, ItemKind.APP_BACKUP_RELAY,
+            ItemKind.BLUETOOTH_DEVICES, ItemKind.APP_BACKUP_RELAY, ItemKind.USER_FILE,
         ).inOrder()
     }
 
@@ -123,8 +123,9 @@ class ReceiverChecklistTest {
                 meta(5, ItemKind.APP_INVENTORY, "g"), meta(6, ItemKind.SETTINGS, "g"),
                 meta(7, ItemKind.WALLPAPER, "g"), meta(8, ItemKind.SOUND_SELECTION, "g"),
                 meta(9, ItemKind.BLUETOOTH_DEVICES, "g"), meta(10, ItemKind.APP_BACKUP_RELAY, "g"),
+                meta(11, ItemKind.USER_FILE, "g"),
             ),
-            totalBytes = 10,
+            totalBytes = 11,
         )
         assertThat(ReceiverChecklist.absentKinds(full)).isEmpty()
     }

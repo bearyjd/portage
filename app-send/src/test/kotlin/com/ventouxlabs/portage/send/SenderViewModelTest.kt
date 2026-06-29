@@ -23,6 +23,8 @@ import com.ventouxlabs.portage.providers.inventory.InventorySource
 import com.ventouxlabs.portage.providers.relay.RelayApp
 import com.ventouxlabs.portage.send.relay.RelayFile
 import com.ventouxlabs.portage.send.relay.RelayRestoreNotes
+import com.ventouxlabs.portage.send.userfile.PickedUserFile
+import com.ventouxlabs.portage.providers.userfile.UserFileHeader
 import com.ventouxlabs.portage.transport.PairingCodecImpl
 import com.ventouxlabs.portage.transport.SecureChannel
 import com.ventouxlabs.portage.transport.TransportException
@@ -199,6 +201,20 @@ class SenderViewModelTest {
         restoreNote = RelayRestoreNotes.defaultFor(RelayApp.SIGNAL),
         byteLength = bytes.size.toLong(),
         openStream = openStream,
+        releaseGrant = releaseGrant,
+    )
+
+    private fun userFile(
+        pickId: Long = 20L,
+        bytes: ByteArray = "document".toByteArray(),
+        byteLength: Long = bytes.size.toLong(),
+        releaseGrant: () -> Unit = {},
+    ) = PickedUserFile(
+        pickId = pickId,
+        displayName = "notes.txt",
+        mimeType = "text/plain",
+        byteLength = byteLength,
+        openStream = { java.io.ByteArrayInputStream(bytes) },
         releaseGrant = releaseGrant,
     )
 
@@ -576,6 +592,103 @@ class SenderViewModelTest {
         advanceUntilIdle()
 
         assertThat(vm.relayPicks.value).isEmpty()
+    }
+
+    // ---- explicitly selected user files ----
+
+    @Test
+    fun `multiple selected files become distinct USER_FILE manifest items`() = runTest(dispatcher) {
+        val channel = happyChannel()
+        val vm = viewModel(FakeFactory(channel))
+        vm.resolveAndAddUserFiles(
+            listOf(
+                { userFile(pickId = 20L, bytes = "one".toByteArray()) },
+                { userFile(pickId = 21L, bytes = "two".toByteArray()) },
+            ),
+        )
+        advanceUntilIdle()
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        val manifest = channel.sent.filterIsInstance<ProtocolMessage.Manifest>().single().manifest
+        assertThat(manifest.items.count { it.kind == ItemKind.USER_FILE }).isEqualTo(2)
+    }
+
+    @Test
+    fun `remove and reset release selected file grants`() = runTest(dispatcher) {
+        var removedReleased = false
+        var resetReleased = false
+        val vm = viewModel(FakeFactory(happyChannel()))
+        vm.resolveAndAddUserFiles(
+            listOf(
+                { userFile(pickId = 20L, releaseGrant = { removedReleased = true }) },
+                { userFile(pickId = 21L, releaseGrant = { resetReleased = true }) },
+            ),
+        )
+        advanceUntilIdle()
+
+        vm.removeUserFile(20L)
+        vm.reset()
+
+        assertThat(removedReleased).isTrue()
+        assertThat(resetReleased).isTrue()
+        assertThat(vm.userFiles.value).isEmpty()
+    }
+
+    @Test
+    fun `failed file resolutions are omitted while valid selections are retained`() = runTest(dispatcher) {
+        val vm = viewModel(FakeFactory(happyChannel()))
+        vm.resolveAndAddUserFiles(
+            listOf(
+                { throw java.io.IOException("grant denied") },
+                { null },
+                { userFile(pickId = 22L) },
+            ),
+        )
+        advanceUntilIdle()
+
+        assertThat(vm.userFiles.value.map { it.pickId }).containsExactly(22L)
+    }
+
+    @Test
+    fun `selected user files are capped by count without resolving beyond the limit`() = runTest(dispatcher) {
+        val vm = viewModel(FakeFactory(happyChannel()))
+        var resolverCalls = 0
+        vm.resolveAndAddUserFiles(
+            (0..UserFileHeader.MAX_FILES_PER_TRANSFER).map { index ->
+                {
+                    resolverCalls += 1
+                    userFile(pickId = index.toLong())
+                }
+            },
+        )
+        advanceUntilIdle()
+
+        assertThat(vm.userFiles.value).hasSize(UserFileHeader.MAX_FILES_PER_TRANSFER)
+        assertThat(resolverCalls).isEqualTo(UserFileHeader.MAX_FILES_PER_TRANSFER)
+    }
+
+    @Test
+    fun `selected user files are capped by aggregate bytes and rejected grants are released`() = runTest(dispatcher) {
+        var rejectedReleased = false
+        val vm = viewModel(FakeFactory(happyChannel()))
+        vm.resolveAndAddUserFiles(
+            listOf(
+                { userFile(pickId = 30L, byteLength = UserFileHeader.MAX_TOTAL_BYTES) },
+                {
+                    userFile(
+                        pickId = 31L,
+                        byteLength = 1L,
+                        releaseGrant = { rejectedReleased = true },
+                    )
+                },
+            ),
+        )
+        advanceUntilIdle()
+
+        assertThat(vm.userFiles.value.map { it.pickId }).containsExactly(30L)
+        assertThat(rejectedReleased).isTrue()
     }
 
     // ---- apps to carry (ADR-006 Phase 1b): selection + sender-side APK provider append ----

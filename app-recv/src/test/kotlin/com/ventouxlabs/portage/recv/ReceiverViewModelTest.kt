@@ -260,7 +260,7 @@ class ReceiverViewModelTest {
         assertThat(reviewing.absentKinds).containsExactly(
             ItemKind.CALENDAR_ICS, ItemKind.SMS, ItemKind.APP_INVENTORY, ItemKind.SETTINGS,
             ItemKind.WALLPAPER, ItemKind.SOUND_SELECTION, ItemKind.BLUETOOTH_DEVICES,
-            ItemKind.APP_BACKUP_RELAY,
+            ItemKind.APP_BACKUP_RELAY, ItemKind.USER_FILE,
         ).inOrder()
     }
 

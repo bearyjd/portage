@@ -1,4 +1,4 @@
-# PROTOCOL.md — `portage` pairing + transfer wire format (v1)
+# PROTOCOL.md — `portage` pairing + transfer wire format (v2)
 
 Scope: one sender (`portage-send`, old phone), one receiver (`portage-recv`, new phone),
 same LAN, no cloud, no relay. One transfer session at a time.
@@ -25,7 +25,7 @@ URI form: `portage1:<base64url(CBOR)>` with fields:
 
 | field | type | meaning |
 |---|---|---|
-| `v` | uint | protocol version, `1` |
+| `v` | uint | protocol version, `2` |
 | `psk` | bytes(32) | one-time pre-shared key, CSPRNG |
 | `sid` | bytes(16) | session id (public; also used to match the mDNS instance) |
 | `ip` | array of text | sender's current addresses, best-effort hints |
@@ -123,15 +123,15 @@ close
 ```
 
 `ItemMeta = {item_id (u32), kind (tstr: "contacts.vcf" | "calendar.ics" | "calllog" |
-"sms" | "inventory" | "apk" | "settings" | "wallpaper" | "app.backup.relay" | …), tier (0|1),
+"sms" | "inventory" | "apk" | "settings" | "wallpaper" | "app.backup.relay" |
+"user.file" | …), tier (0|1),
 size, sha256, display_name, group}`.
 
 > The `wallpaper` kind (PRP-02) is the first binary-blob payload (a home/lock wallpaper
 > image, not structured text). Its item stream is a one-line JSON `WallpaperHeader`
 > (surface + advisory format/bounds) followed by the raw image bytes. The receiver
 > re-derives format from magic bytes and runs a bounds-only decode gate before setting the
-> wallpaper — see THREAT_MODEL §2 row 10. Adding the kind is append-only and needs no
-> pairing-`v` bump: an older receiver returns `ITEM_ACK{status:SKIPPED}` (UNKNOWN_KIND).
+> wallpaper — see THREAT_MODEL §2 row 10.
 
 > The `app.backup.relay` kind (PRP-06) carries an OPAQUE, user-exported app backup
 > (Signal/Molly message history, Aegis 2FA vault) device-to-device. Its item stream is a
@@ -141,12 +141,18 @@ size, sha256, display_name, group}`.
 > categorically NOT the forbidden `seedvault.blob` below (PRP-06 §2 — "portage must never
 > be the thing that creates the backup"). The per-item byte cap is raised FOR THIS KIND
 > ONLY (app backups exceed the 64 MiB Tier-0 ceiling); the raise never touches the Tier-0
-> PII paths. Adding the kind is append-only and needs no pairing-`v` bump: an older
-> receiver returns `ITEM_ACK{status:SKIPPED}` (UNKNOWN_KIND).
+> PII paths.
 
-> No `seedvault.blob` kind in v1: couriering a Seedvault file would imply app-data
+> The `user.file` kind carries only files explicitly selected through Android's Storage
+> Access Framework. Each item is a bounded JSON header plus opaque bytes and is saved through
+> MediaStore under `Downloads/Portage`. It is capped at 512 MiB per file, 64 files and 4 GiB
+> per transfer. Protocol `v=2` is required because `ItemKind` is encoded as an enum: a v1 peer
+> cannot decode an unknown enum value, so mixed versions fail during QR validation rather than
+> failing after pairing.
+
+> No `seedvault.blob` kind in v2: couriering a Seedvault file would imply app-data
 > transfer, which the Seedvault division of labor explicitly excludes (PRP §2,
-> DEVILS_ADVOCATE Q5). Reconsider only behind a v2 protocol bump with explicit UX copy.
+> DEVILS_ADVOCATE Q5). Reconsider only behind a future protocol bump with explicit UX copy.
 
 - **Integrity:** every byte already rides inside AEAD frames (in-flight integrity);
   `ITEM_END.sha256` is the *at-rest* check over the assembled item — it catches

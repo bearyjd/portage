@@ -30,11 +30,7 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     APK("apk", Tier.TIER1),
     SETTINGS("settings", Tier.TIER1),
     // APPEND-ONLY wire bump (PRP-02 §4): the active home/lock wallpaper image, the first kind
-    // whose payload is a large binary blob rather than structured text. Adding an enum entry is
-    // backward-compatible by design — an older receiver lacking this handler returns UNKNOWN_KIND
-    // (Providers.kt, ApplyProviderRegistry) rather than crashing (PROTOCOL.md §3-5). The pairing
-    // PROTOCOL_VERSION (Pairing.kt) is NOT bumped: it versions the QR trust anchor, not the
-    // append-only kind vocabulary, and bumping it would reject every existing v1 pairing QR.
+    // whose payload is a large binary blob rather than structured text.
     WALLPAPER("wallpaper", Tier.TIER0),
     // APPEND-ONLY wire bump (PRP-04 §4): the three default-sound role selections (ringtone /
     // notification / alarm) as a small TEXT snapshot. Tier 0 — applied via the normal
@@ -42,9 +38,7 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     // carries built-in/system selections ONLY: the receiver re-resolves each built-in to a LOCAL
     // URI by title and never writes a sender-supplied URI verbatim (THREAT_MODEL.md). Phase 2
     // (custom user-supplied sound FILES → a SOUND_FILE binary kind + MediaStore re-register + URI
-    // remap) is DEFERRED to a follow-up PR. As with WALLPAPER, an older receiver lacking this
-    // handler degrades via UNKNOWN_KIND (Providers.kt, ApplyProviderRegistry); PROTOCOL_VERSION
-    // (Pairing.kt) is NOT bumped — it versions the QR trust anchor, not the kind vocabulary.
+    // remap) is DEFERRED to a follow-up PR.
     SOUND_SELECTION("sound.selection", Tier.TIER0),
     // APPEND-ONLY wire bump (PRP-07, public-API approach): the list of bonded Bluetooth devices
     // (display name + MAC + device type/major-class) as a small JSON snapshot. Tier 0 — the SENDER
@@ -55,9 +49,7 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     // LIST ONLY and presents it as a "re-pair each on this device" checklist; it NEVER carries link
     // keys / bond secrets (cryptographically controller-bound and non-transferable — re-pairing is
     // unavoidable and honest) and NEVER calls createBond (assisted programmatic re-pair is DEFERRED
-    // to a Phase 2 follow-up). As with WALLPAPER/SOUND_SELECTION, an older receiver lacking this
-    // handler degrades via UNKNOWN_KIND (Providers.kt, ApplyProviderRegistry); PROTOCOL_VERSION
-    // (Pairing.kt) is NOT bumped — it versions the QR trust anchor, not the append-only kind vocab.
+    // to a Phase 2 follow-up).
     BLUETOOTH_DEVICES("bluetooth.devices", Tier.TIER0),
     // APPEND-ONLY wire bump (PRP-06 §4): an OPAQUE, user-initiated app-backup export ferried
     // device-to-device — Signal/Molly (message history) and Aegis (2FA vault) keep their OWN
@@ -70,14 +62,16 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     // (PRP-06 §2 deciding test — "portage must never be the thing that creates the backup"). Tier 0
     // — pure file transfer + guided UX, no privilege. The per-item byte cap is raised FOR THIS KIND
     // ONLY (ItemStreamReceiver.maxBytesByKind) because app backups routinely exceed the 64 MiB
-    // Tier-0 ceiling; the raise must NEVER leak into the Tier-0/PII item paths. As with the kinds
-    // above, an older receiver lacking this handler degrades via UNKNOWN_KIND (Providers.kt,
-    // ApplyProviderRegistry); PROTOCOL_VERSION (Pairing.kt) is NOT bumped.
+    // Tier-0 ceiling; the raise must NEVER leak into the Tier-0/PII item paths.
     APP_BACKUP_RELAY("app.backup.relay", Tier.TIER0),
+    // User-selected shared-storage files. Selection is explicit through Android's Storage Access
+    // Framework; Portage never crawls shared storage. Payload bytes are opaque and streamed into
+    // Downloads/Portage on the receiver.
+    USER_FILE("user.file", Tier.TIER0),
     // NOTE: no SEEDVAULT_BLOB. Couriering a Seedvault file would imply app-DATA transfer,
     // which contradicts the Seedvault division of labor (PRP §2, DEVILS_ADVOCATE Q5). If
-    // ever wanted, it goes in a v2 protocol bump behind explicit "carrying, not backing up"
-    // UX — never silently in the frozen v1 enum.
+    // ever wanted, it goes in a future protocol bump behind explicit "carrying, not backing up"
+    // UX — never silently in the current enum.
 }
 
 /**

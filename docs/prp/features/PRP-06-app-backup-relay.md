@@ -122,10 +122,10 @@ the silent auto-export `ExportProvider` model, and that difference is the whole 
   (`ManifestBuilder.kt:18`) the normal way *after* the user picks a file, then merges into the
   manifest item list. The transport sees an ordinary item; only the *staging origin* differs.
 - **core-model** (`Manifest.kt:24`): add `ItemKind.APP_BACKUP_RELAY("app.backup.relay", Tier.TIER0)`.
-  The enum is the frozen v1 wire vocabulary; **additions are append-only** and carry the same care
-  the `seedvault.blob` comment documents (`Manifest.kt:32-35`). Unlike `seedvault.blob`, this kind
-  is admissible in v1 precisely because it is courier-not-backup (§2) — but the enum comment must
-  say so explicitly so a future reader does not confuse the two.
+  Enum additions are append-only and require protocol-version review because old builds cannot
+  decode unknown enum values. Unlike `seedvault.blob`, this kind is admissible precisely because it
+  is courier-not-backup (§2) — but the enum comment must say so explicitly so a future reader does
+  not confuse the two.
 - **`ItemMeta` carries the association + restore note.** No new transport field is needed: reuse
   the existing display-only `displayName` (e.g. "Signal backup") and `group` (e.g. "App backups")
   (`Manifest.kt:48-50`). The structured **app id + human restore note** ride a small typed header

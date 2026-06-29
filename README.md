@@ -12,8 +12,8 @@
 # portage
 
 **Device-to-device parity transfer for GrapheneOS.** Make a new phone feel like the old
-one — settings, contacts, calendar, call log, SMS, and your app set — over your LAN.
-No cloud, no account, no relay.
+one — settings, contacts, calendar, call log, SMS, selected files, and your app set —
+over your LAN. No cloud, no account, no relay.
 
 > *portage* (Fr.) — carrying your belongings over. Also what you do when you *port* to a
 > new device.
@@ -37,6 +37,7 @@ is a complete device image:
 |---|---|---|
 | App internal data, databases, login sessions | best effort (app-controlled) | ❌ (use Seedvault or app-native export) |
 | Contacts / calendar / call log / SMS texts | partial | ✅ |
+| User-selected photos, videos, downloads, documents | ❌ | ✅ |
 | Curated, allow-listed system settings | partial | ✅ |
 | App **inventory** + assisted reinstall | ❌ | ✅ |
 | Direct phone-to-phone over LAN | ❌ (needs a backup target) | ✅ |
@@ -44,8 +45,8 @@ is a complete device image:
 ## Capability tiers
 
 - **Tier 0 — no special privilege (always works):** contacts (vCard), calendar (ICS),
-  call log, SMS texts (via temporary default-SMS-app handoff), app inventory + assisted
-  reinstall, and the `Settings.System` slice of settings sync (font scale, screen
+  call log, SMS texts (via temporary default-SMS-app handoff), selected shared files,
+  app inventory + assisted reinstall, and the `Settings.System` slice of settings sync (font scale, screen
   timeout, auto-rotate, haptics, time format) via user-granted "Modify system settings."
 - **Tier 1 — one-time Wireless Debugging setup (graceful-degrade):** allow-listed
   `Settings.Secure` / `Settings.Global` sync, batched app reinstall, and opt-in
@@ -85,7 +86,7 @@ tests green on every push. What works, phone-to-phone over the Noise/TCP channel
 - **`portage-recv`** — scan QR → handshake → checklist built from the live manifest (absent
   kinds shown disabled) → stage, verify, apply each item → done summary with real counts.
 - **Tier-0 parity providers**: contacts (vCard 3.0), calendar (ICS), call log, SMS text
-  messages (role-gated default-SMS handoff), app inventory, the SAFE `Settings.System`
+  messages (role-gated default-SMS handoff), selected shared files, app inventory, the SAFE `Settings.System`
   allowlist slice, static wallpaper, built-in sound selections, Bluetooth re-pair roster,
   and app-native encrypted-backup relay.
 - **APK transfer (ADR-006, Phases 1–4, PRs #66–#69)**: streamed multi-file container codec,
@@ -109,7 +110,8 @@ tests green on every push. What works, phone-to-phone over the Noise/TCP channel
   on a Pixel 8 Pro (`husky`) using a forced-density override and fixed: reconcile now keeps
   a fallback density split instead of dropping to zero when no exact bucket match exists.
 
-**Known boundary:** Portage is not a disk clone or an app-data backup. MMS/RCS media,
+**Known boundary:** Portage is not a disk clone or an app-data backup. It transfers selected
+shared files, but does not crawl folder trees or sync whole media libraries. MMS/RCS media,
 launcher layout, Wi-Fi passwords, notification channels, accounts, hardware-backed
 credentials, eSIM, and secondary-profile state need another tool or manual setup. The
 [migration guide](docs/MIGRATION-GUIDE.md) enumerates the boundary and recommended workflow.

@@ -27,6 +27,7 @@ import com.ventouxlabs.portage.providers.relay.RelayCandidate
 import com.ventouxlabs.portage.send.SenderState
 import com.ventouxlabs.portage.send.SenderViewModel
 import com.ventouxlabs.portage.send.relay.RelayFile
+import com.ventouxlabs.portage.send.userfile.PickedUserFile
 import com.ventouxlabs.portage.send.ui.theme.PortageTheme
 
 /**
@@ -38,6 +39,7 @@ fun SenderApp(viewModel: SenderViewModel, summary: DeviceSummary) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val relayCandidates by viewModel.relayCandidates.collectAsStateWithLifecycle()
     val relayPicks by viewModel.relayPicks.collectAsStateWithLifecycle()
+    val userFiles by viewModel.userFiles.collectAsStateWithLifecycle()
     val availableApps by viewModel.availableApps.collectAsStateWithLifecycle()
     val selectedAppPackages by viewModel.selectedAppPackages.collectAsStateWithLifecycle()
 
@@ -68,6 +70,7 @@ fun SenderApp(viewModel: SenderViewModel, summary: DeviceSummary) {
                     summary = summary,
                     relayCandidates = relayCandidates,
                     relayPicks = relayPicks,
+                    userFiles = userFiles,
                     availableApps = availableApps,
                     selectedAppPackages = selectedAppPackages,
                 )
@@ -84,6 +87,7 @@ private fun StateBody(
     summary: DeviceSummary,
     relayCandidates: List<RelayCandidate>,
     relayPicks: List<RelayFile>,
+    userFiles: List<PickedUserFile>,
     availableApps: List<InstalledApp>,
     selectedAppPackages: Set<String>,
 ) {
@@ -97,6 +101,9 @@ private fun StateBody(
                 relayPicks = relayPicks,
                 onResolveRelayPick = viewModel::resolveAndAddRelayPick,
                 onRemoveRelayPick = viewModel::removeRelayPick,
+                userFiles = userFiles,
+                onResolveUserFiles = viewModel::resolveAndAddUserFiles,
+                onRemoveUserFile = viewModel::removeUserFile,
                 availableApps = availableApps,
                 selectedAppPackages = selectedAppPackages,
                 onToggleApp = viewModel::toggleApp,

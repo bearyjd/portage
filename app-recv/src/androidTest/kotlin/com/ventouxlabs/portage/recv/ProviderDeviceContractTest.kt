@@ -13,11 +13,13 @@ import android.Manifest
 import android.app.role.RoleManager
 import android.content.ContentProviderOperation
 import android.content.ContentUris
+import android.net.Uri
 import android.provider.CallLog.Calls
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Phone
 import android.provider.ContactsContract.Data
 import android.provider.ContactsContract.RawContacts
+import android.provider.MediaStore
 import android.provider.Telephony
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -37,6 +39,8 @@ import com.ventouxlabs.portage.providers.sms.AndroidSmsStore
 import com.ventouxlabs.portage.providers.sms.SmsApplyProvider
 import com.ventouxlabs.portage.providers.sms.SmsExportProvider
 import com.ventouxlabs.portage.providers.sms.SmsRecord
+import com.ventouxlabs.portage.providers.userfile.UserFileHeader
+import com.ventouxlabs.portage.recv.files.AndroidUserFileStore
 import com.ventouxlabs.portage.recv.imports.FileCallLogImportJournal
 import com.ventouxlabs.portage.recv.imports.FileContactImportJournal
 import kotlinx.coroutines.runBlocking
@@ -187,6 +191,36 @@ class ProviderDeviceContractTest {
         assertThat(countSms()).isEqualTo(1)
     }
 
+    @Test
+    fun userFileWritePublishesExactBytesAndMetadataInPortageDownloads() {
+        val bytes = "Portage device contract\n\u0000binary-safe".toByteArray()
+        val header = UserFileHeader(USER_FILE_NAME, USER_FILE_MIME, bytes.size.toLong())
+
+        assertThat(AndroidUserFileStore(context).write(header, ByteArrayInputStream(bytes))).isTrue()
+
+        val rows = downloadRows(USER_FILE_NAME)
+        assertThat(rows).hasSize(1)
+        val row = rows.single()
+        assertThat(row.mimeType).isEqualTo(USER_FILE_MIME)
+        assertThat(row.relativePath).isEqualTo("Download/Portage/")
+        assertThat(row.pending).isEqualTo(0)
+        assertThat(resolver.openInputStream(row.uri)?.use { it.readBytes() }).isEqualTo(bytes)
+    }
+
+    @Test
+    fun userFileWriteDeletesRowWhenInputIsTruncated() {
+        val bytes = "truncated".toByteArray()
+        val header = UserFileHeader(
+            USER_FILE_TRUNCATED_NAME,
+            USER_FILE_MIME,
+            bytes.size.toLong() + 7,
+        )
+
+        assertThat(AndroidUserFileStore(context).write(header, ByteArrayInputStream(bytes))).isFalse()
+
+        assertThat(downloadRows(USER_FILE_TRUNCATED_NAME)).isEmpty()
+    }
+
     private fun cleanup() {
         val rawIds = mutableListOf<Long>()
         resolver.query(
@@ -229,6 +263,41 @@ class ProviderDeviceContractTest {
         }
         File(context.cacheDir, "device-contract-contact-journal").delete()
         File(context.cacheDir, "device-contract-call-journal").delete()
+        deleteDownloads(USER_FILE_NAME)
+        deleteDownloads(USER_FILE_TRUNCATED_NAME)
+    }
+
+    private fun downloadRows(displayName: String): List<DownloadRow> {
+        val rows = mutableListOf<DownloadRow>()
+        resolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            arrayOf(
+                MediaStore.Downloads._ID,
+                MediaStore.Downloads.MIME_TYPE,
+                MediaStore.Downloads.RELATIVE_PATH,
+                MediaStore.Downloads.IS_PENDING,
+            ),
+            "${MediaStore.Downloads.DISPLAY_NAME} = ?",
+            arrayOf(displayName),
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                rows += DownloadRow(
+                    uri = ContentUris.withAppendedId(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        cursor.getLong(0),
+                    ),
+                    mimeType = cursor.getString(1),
+                    relativePath = cursor.getString(2),
+                    pending = cursor.getInt(3),
+                )
+            }
+        }
+        return rows
+    }
+
+    private fun deleteDownloads(displayName: String) {
+        downloadRows(displayName).forEach { resolver.delete(it.uri, null, null) }
     }
 
     private fun countCalls(): Int =
@@ -263,6 +332,13 @@ class ProviderDeviceContractTest {
         override fun insert(record: SmsRecord) = error("export fixture only")
     }
 
+    private data class DownloadRow(
+        val uri: Uri,
+        val mimeType: String,
+        val relativePath: String,
+        val pending: Int,
+    )
+
     private companion object {
         const val CONTACT_NAME = "PORTAGE DEVICE CONTRACT"
         const val CONTACT_PHONE = "+1 555 000 9911"
@@ -273,5 +349,8 @@ class ProviderDeviceContractTest {
         const val SMS_ADDRESS = "+15550009913"
         const val SMS_BODY = "PORTAGE DEVICE CONTRACT — SAFE TO DELETE"
         const val SMS_DATE = 1_893_456_100_000L
+        const val USER_FILE_NAME = "portage-device-contract.bin"
+        const val USER_FILE_TRUNCATED_NAME = "portage-device-contract-truncated.bin"
+        const val USER_FILE_MIME = "application/octet-stream"
     }
 }
