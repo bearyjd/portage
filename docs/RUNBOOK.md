@@ -7,6 +7,9 @@ build config.
 
 For on-device *verification* procedures (two-phone acceptance, privilege bootstrap, APK
 hardware) see the detailed runbooks under [`docs/prp/`](prp/) — linked at the bottom.
+For an actual old-Android → new-GrapheneOS migration, start with
+[`MIGRATION-GUIDE.md`](MIGRATION-GUIDE.md); it assigns each category to Portage, Seedvault,
+an app-native export, file copy, or manual setup.
 
 ## Build & install ("deploy")
 
@@ -72,6 +75,7 @@ disconnects right after the capability probe (never holds shell uid). Details:
 
 ## On-device verification runbooks (detailed)
 
+- [`MIGRATION-GUIDE.md`](MIGRATION-GUIDE.md) — user-facing two-phone workflow and capability matrix
 - [`TRANSFER-RUNBOOK.md`](prp/TRANSFER-RUNBOOK.md) — two-phone Tier-0 transfer acceptance (DoD gate)
 - [`E2E-VERIFICATION-RUNBOOK.md`](prp/E2E-VERIFICATION-RUNBOOK.md) — full-feature two-phone E2E
 - [`VERIFICATION-RUNBOOK.md`](prp/VERIFICATION-RUNBOOK.md) — pre-build Tier-1 feasibility probes
