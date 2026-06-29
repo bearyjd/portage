@@ -9,12 +9,14 @@
  */
 package com.ventouxlabs.portage.providers.sms
 
+import android.app.role.RoleManager
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import android.provider.Telephony
+import android.util.Log
 
 /**
  * Thin Telephony.Sms adapter behind [SmsStore]. Exports inbox + sent only (drafts and
@@ -62,7 +64,20 @@ class AndroidSmsStore(private val resolver: ContentResolver) : SmsStore {
             put(Telephony.Sms.READ, if (record.read) 1 else 0)
             put(Telephony.Sms.SEEN, 1)
         }
-        return runCatching { resolver.insert(Telephony.Sms.CONTENT_URI, values) != null }.getOrDefault(false)
+        return try {
+            val uri = resolver.insert(Telephony.Sms.CONTENT_URI, values)
+            if (uri == null) Log.w(TAG, "SMS provider returned no URI for an insert")
+            uri != null
+        } catch (t: Throwable) {
+            // Never log message/address values. The exception class and platform reason are enough
+            // to distinguish role propagation, app-op, and provider failures on hardware.
+            Log.w(TAG, "SMS provider insert failed: ${t.javaClass.simpleName}: ${t.message}")
+            false
+        }
+    }
+
+    private companion object {
+        const val TAG = "PortageSms"
     }
 }
 
@@ -74,21 +89,21 @@ class AndroidSmsStore(private val resolver: ContentResolver) : SmsStore {
  * silently reassign roles.
  */
 class AndroidSmsRoleGateway(private val context: Context) : SmsRoleGateway {
+    private val roleManager: RoleManager? = context.getSystemService(RoleManager::class.java)
 
     override fun isSelfDefault(): Boolean =
-        Telephony.Sms.getDefaultSmsPackage(context) == context.packageName
+        roleManager?.isRoleHeld(RoleManager.ROLE_SMS)
+            ?: (Telephony.Sms.getDefaultSmsPackage(context) == context.packageName)
 
     override fun currentDefault(): String? = Telephony.Sms.getDefaultSmsPackage(context)
 
     override fun launchRestore(priorHolderPackage: String?): Boolean {
-        if (priorHolderPackage != null && priorHolderPackage != context.packageName) {
-            val changeDefault = Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT)
-                .putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, priorHolderPackage)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (runCatching { context.startActivity(changeDefault) }.isSuccess) return true
-        }
+        // ACTION_CHANGE_DEFAULT has been unsupported since Android 10. RoleManager can request the
+        // role only for the calling app, not give it to [priorHolderPackage], so the supported
+        // teardown is the system default-apps screen plus Portage's persistent restore banner.
         val settings = Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return runCatching { context.startActivity(settings) }.isSuccess
     }
+
 }

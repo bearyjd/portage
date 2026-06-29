@@ -38,7 +38,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
     override fun readAll(): List<ContactRecord> {
         val builders = linkedMapOf<Long, MutableContact>()
         val projection = arrayOf(
-            Data.CONTACT_ID, Data.DISPLAY_NAME_PRIMARY, Data.MIMETYPE,
+            Data.RAW_CONTACT_ID, Data.DISPLAY_NAME_PRIMARY, Data.MIMETYPE,
             Data.DATA1, Data.DATA2, Data.DATA3, Data.DATA4,
         )
         val mimes = arrayOf(
@@ -47,15 +47,22 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         )
         val selection = "${Data.MIMETYPE} IN (${mimes.joinToString(",") { "?" }})"
 
-        resolver.query(Data.CONTENT_URI, projection, selection, mimes, Data.CONTACT_ID)?.use { cursor ->
+        // CONTACT_ID is Android's aggregate identity and can union fields from several raw
+        // contacts. Import deduplication needs the original per-source record, so group Data rows
+        // by RAW_CONTACT_ID and derive its display name from its own StructuredName row.
+        resolver.query(Data.CONTENT_URI, projection, selection, mimes, Data.RAW_CONTACT_ID)?.use { cursor ->
             while (cursor.moveToNext()) {
-                val contactId = cursor.getLong(0)
-                val contact = builders.getOrPut(contactId) {
+                val rawContactId = cursor.getLong(0)
+                // Some constituent raw contacts contain useful phone/email rows but no name row.
+                // Seed those from the aggregate display name so they remain exportable; an own
+                // StructuredName below replaces the fallback without merging any other fields.
+                val contact = builders.getOrPut(rawContactId) {
                     MutableContact(displayName = cursor.getString(1).orEmpty())
                 }
                 val data1 = cursor.getString(3)
                 when (cursor.getString(2)) {
                     StructuredName.CONTENT_ITEM_TYPE -> {
+                        contact.displayName = data1.orEmpty()
                         contact.givenName = cursor.getString(4)?.ifBlank { null }
                         contact.familyName = cursor.getString(5)?.ifBlank { null }
                     }
@@ -131,7 +138,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
     }
 
     private class MutableContact(
-        val displayName: String,
+        var displayName: String = "",
         var givenName: String? = null,
         var familyName: String? = null,
         val phones: MutableList<LabeledValue> = mutableListOf(),

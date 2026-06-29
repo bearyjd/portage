@@ -46,6 +46,8 @@ import com.ventouxlabs.portage.providers.wallpaper.WallpaperApplyProvider
 import com.ventouxlabs.portage.recv.install.PackageInstallerApkInstaller
 import com.ventouxlabs.portage.recv.install.androidApkTargetConfig
 import com.ventouxlabs.portage.recv.install.androidInstalledPackageVersions
+import com.ventouxlabs.portage.recv.imports.FileCallLogImportJournal
+import com.ventouxlabs.portage.recv.imports.FileContactImportJournal
 import com.ventouxlabs.portage.recv.privilege.providePrivilegeIntegration
 import com.ventouxlabs.portage.recv.sms.AndroidSmsRoleCoordinator
 import com.ventouxlabs.portage.recv.sms.SmsRoleCoordinator
@@ -137,9 +139,15 @@ private class ReceiverViewModelFactory(
             val apkStagingDir = File(File(context.cacheDir, STAGING_DIR), APK_STAGING_DIR)
             ApplyProviderRegistry(
                 listOf(
-                    ContactsApplyProvider(AndroidContactsStore(resolver)),
+                    ContactsApplyProvider(
+                        AndroidContactsStore(resolver),
+                        FileContactImportJournal(File(context.filesDir, "contact-imports.sha256")),
+                    ),
                     CalendarApplyProvider(AndroidCalendarStore(resolver)),
-                    CallLogApplyProvider(AndroidCallLogStore(resolver)),
+                    CallLogApplyProvider(
+                        AndroidCallLogStore(resolver),
+                        FileCallLogImportJournal(File(context.filesDir, "call-log-imports.sha256")),
+                    ),
                     // SMS writes only while portage transiently holds ROLE_SMS — the ViewModel
                     // acquires it (SmsRoleCoordinator) around the transfer when SMS is selected,
                     // and the gateway's isSelfDefault gate self-skips outside that window.

@@ -55,6 +55,45 @@ class ReceiverChecklistTest {
     }
 
     @Test
+    fun `selected provider kinds map to the receiver permissions needed before apply`() {
+        val groups = ReceiverChecklist.build(
+            TransferManifest(
+                senderName = "old phone",
+                items = listOf(
+                    meta(1, ItemKind.CONTACTS_VCF, "People"),
+                    meta(2, ItemKind.CALENDAR_ICS, "Calendar"),
+                    meta(3, ItemKind.CALL_LOG, "History"),
+                ),
+                totalBytes = 3,
+            ),
+        )
+
+        assertThat(ReceiverChecklist.requiredApplyPermissions(groups)).containsExactly(
+            ReceiverChecklist.READ_CONTACTS,
+            ReceiverChecklist.WRITE_CONTACTS,
+            ReceiverChecklist.READ_CALENDAR,
+            ReceiverChecklist.WRITE_CALENDAR,
+            ReceiverChecklist.WRITE_CALL_LOG,
+        ).inOrder()
+    }
+
+    @Test
+    fun `unselected kinds do not request their receiver permissions`() {
+        val groups = ReceiverChecklist.toggle(
+            ReceiverChecklist.build(
+                TransferManifest(
+                    senderName = "old phone",
+                    items = listOf(meta(1, ItemKind.CONTACTS_VCF, "People")),
+                    totalBytes = 1,
+                ),
+            ),
+            1,
+        )
+
+        assertThat(ReceiverChecklist.requiredApplyPermissions(groups)).isEmpty()
+    }
+
+    @Test
     fun `toggle flips exactly one item immutably`() {
         val groups = ReceiverChecklist.build(manifest)
         val afterOptInSms = ReceiverChecklist.toggle(groups, itemId = 3)

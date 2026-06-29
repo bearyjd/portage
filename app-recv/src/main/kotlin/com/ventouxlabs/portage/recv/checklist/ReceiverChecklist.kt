@@ -28,6 +28,12 @@ data class ChecklistGroup(val title: String, val items: List<ChecklistItem>)
  */
 object ReceiverChecklist {
 
+    const val READ_CONTACTS = "android.permission.READ_CONTACTS"
+    const val WRITE_CONTACTS = "android.permission.WRITE_CONTACTS"
+    const val READ_CALENDAR = "android.permission.READ_CALENDAR"
+    const val WRITE_CALENDAR = "android.permission.WRITE_CALENDAR"
+    const val WRITE_CALL_LOG = "android.permission.WRITE_CALL_LOG"
+
     /**
      * Default check state. Pre-check only Tier 0 (always works, no privilege setup) and not SMS
      * (needs the default-SMS-app handoff). Tier 1 items (settings, APK install) are shown
@@ -68,6 +74,20 @@ object ReceiverChecklist {
     /** The distinct kinds among currently-checked items — drives review-time capability hints. */
     fun selectedKinds(groups: List<ChecklistGroup>): Set<ItemKind> =
         groups.flatMap { it.items }.filter { it.checked }.map { it.meta.kind }.toSet()
+
+    /**
+     * Runtime permissions needed to apply the selected public-provider items. Contacts requests
+     * read as well as write because apply performs exact-record deduplication. Call log deliberately
+     * remains write-only; its retry journal avoids expanding that privacy boundary.
+     */
+    fun requiredApplyPermissions(groups: List<ChecklistGroup>): List<String> {
+        val kinds = selectedKinds(groups)
+        return buildList {
+            if (ItemKind.CONTACTS_VCF in kinds) addAll(listOf(READ_CONTACTS, WRITE_CONTACTS))
+            if (ItemKind.CALENDAR_ICS in kinds) addAll(listOf(READ_CALENDAR, WRITE_CALENDAR))
+            if (ItemKind.CALL_LOG in kinds) add(WRITE_CALL_LOG)
+        }
+    }
 
     /**
      * Whether to offer the one-tap "Modify system settings" grant on the review screen: the user

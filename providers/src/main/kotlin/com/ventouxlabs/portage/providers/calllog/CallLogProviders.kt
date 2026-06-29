@@ -14,6 +14,7 @@ import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.providers.ApplyOutcome
 import com.ventouxlabs.portage.providers.ApplyProvider
 import com.ventouxlabs.portage.providers.ExportProvider
+import com.ventouxlabs.portage.providers.TransferScopedApplyProvider
 import com.ventouxlabs.portage.providers.wire.JsonLines
 import kotlinx.serialization.Serializable
 import java.io.InputStream
@@ -42,6 +43,22 @@ interface CallLogStore {
     fun insert(record: CallRecord): Boolean
 }
 
+/**
+ * Retry ledger for write-only call-log apply. The receiver deliberately does not request
+ * READ_CALL_LOG, so it cannot query the target provider for duplicates.
+ */
+interface CallLogImportJournal {
+    fun contains(record: CallRecord): Boolean
+    fun record(record: CallRecord)
+    fun clear()
+
+    object None : CallLogImportJournal {
+        override fun contains(record: CallRecord) = false
+        override fun record(record: CallRecord) = Unit
+        override fun clear() = Unit
+    }
+}
+
 /** Sender side: call log → JSON lines. Denied permission ⇒ unavailable, empty export. */
 class CallLogExportProvider(private val store: CallLogStore) : ExportProvider {
 
@@ -59,18 +76,40 @@ class CallLogExportProvider(private val store: CallLogStore) : ExportProvider {
 }
 
 /** Receiver side: JSON lines → call-log rows, best-effort per record. */
-class CallLogApplyProvider(private val store: CallLogStore) : ApplyProvider {
+class CallLogApplyProvider(
+    private val store: CallLogStore,
+    private val journal: CallLogImportJournal = CallLogImportJournal.None,
+) : ApplyProvider, TransferScopedApplyProvider {
 
     override val kind = ItemKind.CALL_LOG
+
+    override fun beginTransfer() {
+        runCatching { journal.clear() }
+    }
 
     override suspend fun apply(source: InputStream): ApplyOutcome {
         val parsed = JsonLines.readFrom<CallRecord>(source)
         var applied = 0
+        var alreadyImported = 0
         var skipped = parsed.malformed
         for (record in parsed.records) {
-            if (runCatching { store.insert(record) }.getOrDefault(false)) applied++ else skipped++
+            if (runCatching { journal.contains(record) }.getOrDefault(false)) {
+                alreadyImported++
+            } else if (runCatching { store.insert(record) }.getOrDefault(false)) {
+                applied++
+                // The call row is durable already; losing the retry fingerprint must not stop later
+                // records or turn a successful provider write into an item-level failure.
+                runCatching { journal.record(record) }
+            } else {
+                skipped++
+            }
         }
-        val status = if (parsed.records.isNotEmpty() && applied == 0) ItemStatus.WRITE_ERROR else ItemStatus.OK
-        return ApplyOutcome(status, "applied $applied, skipped $skipped")
+        val status =
+            if (parsed.records.isNotEmpty() && applied == 0 && alreadyImported == 0) {
+                ItemStatus.WRITE_ERROR
+            } else {
+                ItemStatus.OK
+            }
+        return ApplyOutcome(status, "applied $applied, already imported $alreadyImported, skipped $skipped")
     }
 }

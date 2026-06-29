@@ -252,6 +252,9 @@ class ReceiverViewModel(
         val current = _state.value as? ReceiverState.Reviewing ?: return
         val selected = ReceiverChecklist.selectedMetas(current.groups)
         if (selected.isEmpty()) return
+        // Retry ledgers prevent duplicate rows only within this transfer. A later intentional
+        // transfer must be able to restore records the user deleted in the meantime.
+        applyRegistry.beginTransfer()
         _state.value = ReceiverState.Transferring(
             items = selected.map { ItemProgress(it.itemId, it.displayName) },
         )
