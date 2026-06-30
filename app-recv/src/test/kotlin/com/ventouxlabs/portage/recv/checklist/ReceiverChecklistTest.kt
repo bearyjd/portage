@@ -26,9 +26,10 @@ class ReceiverChecklistTest {
             meta(1, ItemKind.CONTACTS_VCF, "People"),
             meta(2, ItemKind.CALENDAR_ICS, "People"),
             meta(3, ItemKind.SMS, "Messages"),
-            meta(4, ItemKind.SETTINGS, "System"),
+            meta(4, ItemKind.MMS, "Messages"),
+            meta(5, ItemKind.SETTINGS, "System"),
         ),
-        totalBytes = 4,
+        totalBytes = 5,
     )
 
     @Test
@@ -39,12 +40,13 @@ class ReceiverChecklistTest {
     }
 
     @Test
-    fun `Tier-0 non-SMS items are pre-checked, SMS and Tier-1 are opt-in`() {
+    fun `Tier-0 non-message-role items are pre-checked, SMS MMS and Tier-1 are opt-in`() {
         val groups = ReceiverChecklist.build(manifest)
         val byKind = groups.flatMap { it.items }.associateBy { it.meta.kind }
         assertThat(byKind.getValue(ItemKind.CONTACTS_VCF).checked).isTrue() // Tier 0
         assertThat(byKind.getValue(ItemKind.CALENDAR_ICS).checked).isTrue() // Tier 0
         assertThat(byKind.getValue(ItemKind.SMS).checked).isFalse()         // Tier 0, but handoff
+        assertThat(byKind.getValue(ItemKind.MMS).checked).isFalse()         // Tier 0, but handoff
         assertThat(byKind.getValue(ItemKind.SETTINGS).checked).isFalse()    // Tier 1, opt-in
     }
 
@@ -121,12 +123,13 @@ class ReceiverChecklistTest {
             items = listOf(
                 meta(1, ItemKind.CONTACTS_VCF, "g"), meta(2, ItemKind.CALENDAR_ICS, "g"),
                 meta(3, ItemKind.CALL_LOG, "g"), meta(4, ItemKind.SMS, "g"),
-                meta(5, ItemKind.APP_INVENTORY, "g"), meta(6, ItemKind.SETTINGS, "g"),
-                meta(7, ItemKind.WALLPAPER, "g"), meta(8, ItemKind.SOUND_FILE, "g"),
-                meta(9, ItemKind.SOUND_SELECTION, "g"), meta(10, ItemKind.BLUETOOTH_DEVICES, "g"),
-                meta(11, ItemKind.APP_BACKUP_RELAY, "g"), meta(12, ItemKind.USER_FILE, "g"),
+                meta(5, ItemKind.MMS, "g"), meta(6, ItemKind.APP_INVENTORY, "g"),
+                meta(7, ItemKind.SETTINGS, "g"), meta(8, ItemKind.WALLPAPER, "g"),
+                meta(9, ItemKind.SOUND_FILE, "g"), meta(10, ItemKind.SOUND_SELECTION, "g"),
+                meta(11, ItemKind.BLUETOOTH_DEVICES, "g"), meta(12, ItemKind.APP_BACKUP_RELAY, "g"),
+                meta(13, ItemKind.USER_FILE, "g"),
             ),
-            totalBytes = 11,
+            totalBytes = 13,
         )
         assertThat(ReceiverChecklist.absentKinds(full)).isEmpty()
     }
@@ -148,10 +151,10 @@ class ReceiverChecklistTest {
 
     @Test
     fun `selectedKinds reflects only the checked items' kinds`() {
-        val groups = ReceiverChecklist.build(manifest) // contacts + calendar checked; SMS + SETTINGS opt-in
+        val groups = ReceiverChecklist.build(manifest) // contacts + calendar checked; SMS + MMS + SETTINGS opt-in
         assertThat(ReceiverChecklist.selectedKinds(groups))
             .containsExactly(ItemKind.CONTACTS_VCF, ItemKind.CALENDAR_ICS)
-        val withSettings = ReceiverChecklist.toggle(groups, itemId = 4) // opt SETTINGS in
+        val withSettings = ReceiverChecklist.toggle(groups, itemId = 5) // opt SETTINGS in
         assertThat(ReceiverChecklist.selectedKinds(withSettings))
             .containsExactly(ItemKind.CONTACTS_VCF, ItemKind.CALENDAR_ICS, ItemKind.SETTINGS)
     }
@@ -163,7 +166,7 @@ class ReceiverChecklistTest {
         assertThat(ReceiverChecklist.systemSettingsGrantNeeded(base, canWriteSystem = false)).isFalse()
         assertThat(ReceiverChecklist.systemSettingsGrantNeeded(base, canWriteSystem = true)).isFalse()
 
-        val withSettings = ReceiverChecklist.toggle(base, itemId = 4) // opt SETTINGS in
+        val withSettings = ReceiverChecklist.toggle(base, itemId = 5) // opt SETTINGS in
         // SETTINGS selected but access missing → prompt.
         assertThat(ReceiverChecklist.systemSettingsGrantNeeded(withSettings, canWriteSystem = false)).isTrue()
         // SETTINGS selected and access already held → no prompt.

@@ -1,4 +1,4 @@
-# E2E-VERIFICATION-RUNBOOK.md — `portage` v3
+# E2E-VERIFICATION-RUNBOOK.md — `portage` v4
 
 A hands-on, **two-device end-to-end** verification checklist for the shipped portage apps.
 

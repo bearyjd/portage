@@ -32,6 +32,8 @@ import com.ventouxlabs.portage.providers.contacts.AndroidContactsStore
 import com.ventouxlabs.portage.providers.contacts.ContactsExportProvider
 import com.ventouxlabs.portage.providers.inventory.AndroidInventorySource
 import com.ventouxlabs.portage.providers.inventory.AppInventoryExportProvider
+import com.ventouxlabs.portage.providers.mms.AndroidMmsStore
+import com.ventouxlabs.portage.providers.mms.MmsExportProvider
 import com.ventouxlabs.portage.providers.settings.AndroidSecureGlobalSettingsStore
 import com.ventouxlabs.portage.providers.settings.AndroidSystemSettingsStore
 import com.ventouxlabs.portage.providers.settings.SettingsExportProvider
@@ -146,6 +148,7 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
             CalendarExportProvider(AndroidCalendarStore(resolver)),
             CallLogExportProvider(AndroidCallLogStore(resolver)),
             SmsExportProvider(AndroidSmsStore(resolver)),
+            MmsExportProvider(AndroidMmsStore(resolver)),
             AppInventoryExportProvider(AndroidInventorySource(context.packageManager)),
             // Reads SAFE keys across both namespaces (reads need no grant on either seam).
             SettingsExportProvider(

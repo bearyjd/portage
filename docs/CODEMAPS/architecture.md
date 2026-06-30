@@ -37,7 +37,7 @@ SENDER (app-send)                          RECEIVER (app-recv)
 ```
 
 ## Privilege tiers
-- TIER0 — no privilege: contacts, calendar, calllog, sms, inventory, wallpaper, sound, bluetooth, relay.
+- TIER0 — no privilege: contacts, calendar, calllog, sms/mms, inventory, wallpaper, sound, bluetooth, relay.
 - TIER1 — one-shot `pm grant` via adb-bridge: apk install, settings write.
 
 ## See also

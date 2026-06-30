@@ -123,7 +123,8 @@ Verify at minimum:
 | Contacts | **Portage** | vCard transfer into device-local contacts; exact retries and existing raw contacts are deduplicated. Account-backed contacts may instead reappear through their sync provider. |
 | Calendar events | **Portage** | ICS event transfer. Account sync may be preferable for cloud calendars. Avoid restoring the same events through two tools. |
 | Call history | **Portage** | Phone provider rows are copied. Retries within one Portage transfer are idempotent; independent tools are not cross-deduplicated. |
-| SMS text messages | **Portage** | Requires a temporary default-SMS role on the receiver. **MMS/RCS media and service state are not currently transferred.** |
+| SMS text messages | **Portage** | Requires a temporary default-SMS role on the receiver. |
+| MMS messages | **Portage, limited** | Requires the same temporary default-SMS role. Portage carries inbox/sent MMS message rows, address rows, and text/binary parts up to the standard 64 MiB item cap; large video/attachment-heavy messages may be skipped. RCS media/state, carrier/service state, drafts, pending sends, and exact thread state are not currently transferred. |
 | Installed app list | **Portage** | Produces an assisted reinstall list. This does not include app-private data. |
 | APK files and splits | **Portage** | Carries compatible installed APKs. Tier 0 requires system confirmation; Advanced Transfer can install silently. Paid/licensed, device-incompatible, or protected apps may need their store. |
 | Runtime permissions | **Portage, limited** | Supported permission parity accompanies carried APKs. Dangerous permissions remain explicit and device/app policy still wins. GrapheneOS-specific toggles are not all ordinary Android permissions. |
