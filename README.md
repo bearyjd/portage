@@ -87,7 +87,8 @@ tests green on every push. What works, phone-to-phone over the Noise/TCP channel
   kinds shown disabled) → stage, verify, apply each item → done summary with real counts.
 - **Tier-0 parity providers**: contacts (vCard 3.0), calendar (ICS), call log, SMS text
   messages (role-gated default-SMS handoff), selected shared files, app inventory, the SAFE `Settings.System`
-  allowlist slice, static wallpaper, built-in sound selections, Bluetooth re-pair roster,
+  allowlist slice, static wallpaper, default sound selections including active custom sound files,
+  Bluetooth re-pair roster,
   and app-native encrypted-backup relay.
 - **APK transfer (ADR-006, Phases 1–4, PRs #66–#69)**: streamed multi-file container codec,
   sender UI with running size total, receiver free-space gate, and the apply provider with

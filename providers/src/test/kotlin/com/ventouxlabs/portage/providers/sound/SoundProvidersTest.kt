@@ -32,6 +32,8 @@ private class FakeSoundStore(
     private val titles: MutableMap<SoundRole, String?> = mutableMapOf(),
     /** (role, title) the TARGET can resolve to a local URI, and the URI it yields. */
     private val resolvable: MutableMap<Pair<SoundRole, String>, String> = mutableMapOf(),
+    private val customFiles: MutableMap<SoundRole, SoundFileCandidate> = mutableMapOf(),
+    private val registeredUris: MutableMap<SoundRole, String> = mutableMapOf(),
     var writable: Boolean = true,
     /** Roles for which setDefault returns false (platform refused), distinct from canWrite=false. */
     private val failRoles: Set<SoundRole> = emptySet(),
@@ -44,6 +46,8 @@ private class FakeSoundStore(
     override fun titleOf(uri: String): String? =
         titles.entries.firstOrNull { current[it.key] == uri }?.value
 
+    override fun customFile(role: SoundRole, uri: String): SoundFileCandidate? = customFiles[role]
+
     override fun resolveBuiltin(role: SoundRole, title: String): String? = resolvable[role to title]
 
     override fun canWrite(): Boolean = writable
@@ -51,6 +55,12 @@ private class FakeSoundStore(
     override fun setDefault(role: SoundRole, uri: String): Boolean {
         setCalls += role to uri
         return role !in failRoles
+    }
+
+    override fun registerSoundFile(header: SoundFileHeader, source: java.io.InputStream): String? {
+        val expected = customFiles[header.role]?.byteLength ?: header.byteLength
+        val copied = SoundFileCodec.stream(source, ByteArrayOutputStream(), expected)
+        return if (copied == expected) registeredUris[header.role] else null
     }
 }
 
@@ -67,6 +77,12 @@ class SoundProvidersTest {
     fun `SOUND_SELECTION kind is registered as a tier-0 wire kind`() {
         assertThat(ItemKind.SOUND_SELECTION.wire).isEqualTo("sound.selection")
         assertThat(ItemKind.SOUND_SELECTION.tier).isEqualTo(Tier.TIER0)
+    }
+
+    @Test
+    fun `SOUND_FILE kind is registered as a tier-0 wire kind`() {
+        assertThat(ItemKind.SOUND_FILE.wire).isEqualTo("sound.file")
+        assertThat(ItemKind.SOUND_FILE.tier).isEqualTo(Tier.TIER0)
     }
 
     @Test
@@ -129,9 +145,8 @@ class SoundProvidersTest {
     }
 
     @Test
-    fun `Phase 1 omits a user-file backed role so nothing dangles`() = runTest {
-        // A role whose current URI resolves to NO built-in title (titleOf == null) is a user file;
-        // in Phase 1 (no file transfer) it must not be carried as a resolvable selection.
+    fun `export carries a user-file backed role as USER_FILE`() = runTest {
+        val customBytes = "OggS-tone".toByteArray()
         val store = FakeSoundStore(
             current = mutableMapOf(
                 SoundRole.RINGTONE to builtinRingtone,
@@ -141,10 +156,46 @@ class SoundProvidersTest {
                 SoundRole.RINGTONE to "Flutey Phone",
                 SoundRole.NOTIFICATION to null, // user file → no built-in identity
             ),
+            customFiles = mutableMapOf(
+                SoundRole.NOTIFICATION to SoundFileCandidate(
+                    role = SoundRole.NOTIFICATION,
+                    displayName = "notify.ogg",
+                    mimeType = "audio/ogg",
+                    byteLength = customBytes.size.toLong(),
+                    openStream = { ByteArrayInputStream(customBytes) },
+                ),
+            ),
         )
         val decoded = SoundCodec.decode(ByteArrayInputStream(exportPayload(store)))!!
-        // The user-file role is dropped entirely (only resolvable built-ins ship in Phase 1).
-        assertThat(decoded.choices.map { it.role }).containsExactly(SoundRole.RINGTONE)
+        val byRole = decoded.choices.associateBy { it.role }
+        assertThat(byRole.getValue(SoundRole.RINGTONE).source).isEqualTo(SoundSource.BUILTIN)
+        assertThat(byRole.getValue(SoundRole.NOTIFICATION).source).isEqualTo(SoundSource.USER_FILE)
+        assertThat(byRole.getValue(SoundRole.NOTIFICATION).fileDisplayName).isEqualTo("notify.ogg")
+    }
+
+    @Test
+    fun `sound file provider frames the custom audio bytes`() = runTest {
+        val customBytes = "OggS-tone".toByteArray()
+        val store = FakeSoundStore(
+            current = mutableMapOf(SoundRole.ALARM to "content://media/external/audio/media/100"),
+            customFiles = mutableMapOf(
+                SoundRole.ALARM to SoundFileCandidate(
+                    role = SoundRole.ALARM,
+                    displayName = "wake.ogg",
+                    mimeType = "audio/ogg",
+                    byteLength = customBytes.size.toLong(),
+                    openStream = { ByteArrayInputStream(customBytes) },
+                ),
+            ),
+        )
+        val out = ByteArrayOutputStream()
+        SoundFileExportProvider(SoundRole.ALARM, store).exportTo(out)
+        val input = ByteArrayInputStream(out.toByteArray())
+
+        val header = SoundFileCodec.readHeader(input)
+        assertThat(header?.role).isEqualTo(SoundRole.ALARM)
+        assertThat(header?.displayName).isEqualTo("wake.ogg")
+        assertThat(input.readBytes()).isEqualTo(customBytes)
     }
 
     @Test
@@ -220,7 +271,7 @@ class SoundProvidersTest {
     }
 
     @Test
-    fun `apply skips a USER_FILE role in Phase 1 because no backing file is delivered`() = runTest {
+    fun `apply skips a USER_FILE role when no backing file was delivered`() = runTest {
         val store = FakeSoundStore(
             resolvable = mutableMapOf((SoundRole.RINGTONE to "Flutey Phone") to targetRingtoneUri),
         )
@@ -232,6 +283,62 @@ class SoundProvidersTest {
         )
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(store.setCalls).containsExactly(SoundRole.RINGTONE to targetRingtoneUri)
+    }
+
+    @Test
+    fun `sound file apply populates remap used by sound selection apply`() = runTest {
+        val customBytes = "OggS-tone".toByteArray()
+        val localUri = "content://media/external/audio/media/200"
+        val remap = SoundFileRemap()
+        val store = FakeSoundStore(
+            customFiles = mutableMapOf(
+                SoundRole.ALARM to SoundFileCandidate(
+                    role = SoundRole.ALARM,
+                    displayName = "wake.ogg",
+                    mimeType = "audio/ogg",
+                    byteLength = customBytes.size.toLong(),
+                    openStream = { ByteArrayInputStream(customBytes) },
+                ),
+            ),
+            registeredUris = mutableMapOf(SoundRole.ALARM to localUri),
+        )
+        val filePayload = ByteArrayOutputStream().also {
+            SoundFileCodec.writeHeader(
+                it,
+                SoundFileHeader(SoundRole.ALARM, "wake.ogg", "audio/ogg", customBytes.size.toLong()),
+            )
+            it.write(customBytes)
+        }
+
+        val fileOutcome = SoundFileApplyProvider(store, remap).apply(ByteArrayInputStream(filePayload.toByteArray()))
+        val selectionOutcome = SoundSelectionApplyProvider(store, remap).apply(
+            frameOf(SoundChoice(SoundRole.ALARM, SoundSource.USER_FILE, fileDisplayName = "wake.ogg")),
+        )
+
+        assertThat(fileOutcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(selectionOutcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.setCalls).containsExactly(SoundRole.ALARM to localUri)
+    }
+
+    @Test
+    fun `sound file apply skips non-audio payload before registration`() = runTest {
+        val remap = SoundFileRemap()
+        val store = FakeSoundStore(registeredUris = mutableMapOf(SoundRole.ALARM to "content://media/1"))
+        val notAudio = "plain text".toByteArray()
+        val filePayload = ByteArrayOutputStream().also {
+            SoundFileCodec.writeHeader(
+                it,
+                SoundFileHeader(SoundRole.ALARM, "wake.txt", "audio/ogg", notAudio.size.toLong()),
+            )
+            it.write(notAudio)
+        }
+
+        val outcome = SoundFileApplyProvider(store, remap).apply(ByteArrayInputStream(filePayload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.SKIPPED)
+        assertThat(SoundSelectionApplyProvider(store, remap).apply(
+            frameOf(SoundChoice(SoundRole.ALARM, SoundSource.USER_FILE)),
+        ).detail).contains("skipped 1")
     }
 
     @Test

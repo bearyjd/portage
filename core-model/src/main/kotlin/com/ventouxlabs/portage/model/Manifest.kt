@@ -34,12 +34,13 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     WALLPAPER("wallpaper", Tier.TIER0),
     // APPEND-ONLY wire bump (PRP-04 §4): the three default-sound role selections (ringtone /
     // notification / alarm) as a small TEXT snapshot. Tier 0 — applied via the normal
-    // Settings.System "modify system settings" special access, no privilege bridge. Phase 1
-    // carries built-in/system selections ONLY: the receiver re-resolves each built-in to a LOCAL
-    // URI by title and never writes a sender-supplied URI verbatim (THREAT_MODEL.md). Phase 2
-    // (custom user-supplied sound FILES → a SOUND_FILE binary kind + MediaStore re-register + URI
-    // remap) is DEFERRED to a follow-up PR.
+    // Settings.System "modify system settings" special access, no privilege bridge. Built-ins
+    // re-resolve to a LOCAL URI by title. Custom files ride as SOUND_FILE items first; the receiver
+    // registers each file locally, then this selection item remaps by role before writing.
     SOUND_SELECTION("sound.selection", Tier.TIER0),
+    // One custom ringtone/notification/alarm audio file selected as the active default on the
+    // sender. The receiver stores it through MediaStore and never writes the sender's URI.
+    SOUND_FILE("sound.file", Tier.TIER0),
     // APPEND-ONLY wire bump (PRP-07, public-API approach): the list of bonded Bluetooth devices
     // (display name + MAC + device type/major-class) as a small JSON snapshot. Tier 0 — the SENDER
     // reads its own roster via the PUBLIC, NON-PRIVILEGED BluetoothAdapter.getBondedDevices() API,

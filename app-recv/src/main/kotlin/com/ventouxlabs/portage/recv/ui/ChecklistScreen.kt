@@ -380,6 +380,7 @@ private fun tierHint(kind: ItemKind): String {
         ItemKind.APK -> "App package"
         ItemKind.SETTINGS -> "Device settings"
         ItemKind.WALLPAPER -> "Wallpaper"
+        ItemKind.SOUND_FILE -> "Custom sound file"
         ItemKind.SOUND_SELECTION -> "Ringtone & notification sounds"
         ItemKind.BLUETOOTH_DEVICES -> "Paired Bluetooth devices to re-pair"
         ItemKind.APP_BACKUP_RELAY -> "App backup to relay (Signal, Aegis)"

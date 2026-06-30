@@ -40,6 +40,8 @@ import com.ventouxlabs.portage.providers.sms.AndroidSmsRoleGateway
 import com.ventouxlabs.portage.providers.sms.AndroidSmsStore
 import com.ventouxlabs.portage.providers.sms.SmsApplyProvider
 import com.ventouxlabs.portage.providers.sound.AndroidSoundStore
+import com.ventouxlabs.portage.providers.sound.SoundFileApplyProvider
+import com.ventouxlabs.portage.providers.sound.SoundFileRemap
 import com.ventouxlabs.portage.providers.sound.SoundSelectionApplyProvider
 import com.ventouxlabs.portage.providers.wallpaper.AndroidWallpaperStore
 import com.ventouxlabs.portage.providers.wallpaper.WallpaperApplyProvider
@@ -139,7 +141,9 @@ private class ReceiverViewModelFactory(
             // PackageInstaller adapter copies the bytes into its session, then the provider wipes them
             // (stage → act → wipe). Plaintext payload, so it lives under the swept cacheDir staging root.
             val apkStagingDir = File(File(context.cacheDir, STAGING_DIR), APK_STAGING_DIR)
-            ApplyProviderRegistry(
+                val soundStore = AndroidSoundStore(context)
+                val soundFileRemap = SoundFileRemap()
+                ApplyProviderRegistry(
                 listOf(
                     ContactsApplyProvider(
                         AndroidContactsStore(resolver),
@@ -214,11 +218,13 @@ private class ReceiverViewModelFactory(
                     // The provider's bounds-only decode gate rejects decompression bombs before
                     // any bitmap is allocated (PRP-02 §7).
                     WallpaperApplyProvider(AndroidWallpaperStore(context)),
+                    // Tier 0: registers custom default sound files in MediaStore before the
+                    // selection snapshot remaps ringtone/notification/alarm by role.
+                    SoundFileApplyProvider(soundStore, soundFileRemap),
                     // Tier 0: sets default ringtone/notification/alarm via the "modify system
-                    // settings" special access (Settings.System.canWrite). The provider re-resolves
-                    // each carried built-in title to a LOCAL URI and never writes a sender-supplied
-                    // URI — an unmatched built-in leaves that role at the device default (PRP-04 §3).
-                    SoundSelectionApplyProvider(AndroidSoundStore(context)),
+                    // settings" special access (Settings.System.canWrite). Built-ins are re-resolved
+                    // to LOCAL URIs; custom files resolve only through the transfer-scoped remap.
+                    SoundSelectionApplyProvider(soundStore, soundFileRemap),
                     // Tier 0: the bonded-Bluetooth roster (PRP-07 public-API approach). Phase 1
                     // SURFACES the list as a "re-pair each here" checklist and applies nothing —
                     // it never calls createBond (deferred to Phase 2) and carries no link keys

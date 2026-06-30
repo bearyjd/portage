@@ -1,6 +1,6 @@
 # PRP-04 — Ringtone / notification / alarm sound selection (+ custom sound files)
 
-Backlog item #4 (`docs/prp/feature-research-2026-06.md:18`). Status: PROPOSED. Privilege ceiling: **Tier 0**.
+Backlog item #4 (`docs/prp/feature-research-2026-06.md:18`). Status: SHIPPED. Privilege ceiling: **Tier 0**.
 
 ---
 
@@ -8,8 +8,8 @@ Backlog item #4 (`docs/prp/feature-research-2026-06.md:18`). Status: PROPOSED. P
 
 Move the user's three *active default sound selections* — ringtone, notification sound, alarm —
 from the old phone to the new one, **including the backing audio file** when the user picked a
-custom sound rather than a built-in one. Today portage explicitly *declines* this: the catalog
-carries a `ringtone` key tagged `DEVICE_SPECIFIC, NA` with the note
+custom sound rather than a built-in one. Portage explicitly avoids a bare settings-key copy: the
+catalog still tags `ringtone` as `DEVICE_SPECIFIC, NA` with the note
 "TRAP: content URI to on-device media absent on the new phone → silent/crash"
 (`settings-catalog/src/main/kotlin/com/ventouxlabs/portage/settings/SettingsAllowlist.kt:59-60`). That
 exclusion is correct for a *bare-URI* copy — this PRP is the salvage that makes the selection
@@ -107,7 +107,7 @@ staging path being reused beyond text.
   (`providers/.../SettingsProviders.kt:111-142`): `available()` false when nothing is set,
   `exportTo` writes JSON via `JsonLines.format` (`providers/.../wire/JsonLines.kt`).
 - `SoundFileExportProvider : ExportProvider` (kind `SOUND_FILE`) — for each role whose source is a
-  user file, streams the raw audio bytes (one item per file; dedup identical files by hash).
+  user file, streams a role header plus the raw audio bytes (one item per role).
 - `SoundSelectionApplyProvider : ApplyProvider` (kind `SOUND_SELECTION`) — decodes the snapshot,
   resolves/remaps each role's URI on the target, gates on `SystemSettingsStore.canWrite()`, applies
   via `RingtoneManager.setActualDefaultRingtoneUri`. Mirror `SettingsApplyProvider.apply`
@@ -157,23 +157,24 @@ receiver cap — do not raise it.
     val role: SoundRole,
     val source: SoundSource,
     val builtinTitle: String? = null,  // BUILTIN: stable identity to match on target
-    val fileSha256: String? = null,    // USER_FILE: links to the SOUND_FILE item's hash
+    val fileSha256: String? = null,    // reserved; current implementation remaps USER_FILE by role
     val fileDisplayName: String? = null,
 )
 @Serializable data class SoundSelection(val choices: List<SoundChoice>)
 ```
 
-`SOUND_FILE` payload = **raw audio bytes**, one file per item (no envelope) — staged and
-hash-verified by `ItemStreamReceiver` exactly like any item; the `ItemMeta.sha256`
-(`core-model/.../Manifest.kt:48`) is the join key the `SOUND_SELECTION` apply uses to find the new
-URI in the remap table. The role flag lives in the *selection* payload, not the file item, so the
-same file backing two roles ships once.
+`SOUND_FILE` payload = **one-line JSON `SoundFileHeader`** (`role`, display name, MIME, byte
+length) followed by opaque audio bytes. The receiver stages and hash-verifies the item like every
+other item, sniffs the payload as audio, inserts it into MediaStore, and stores the resulting local
+URI in a transfer-scoped remap table keyed by `SoundRole`. The later `SOUND_SELECTION` item uses
+that role remap for `USER_FILE` choices. This may ship the same physical file twice if two roles
+point at it; the tradeoff keeps the receiver join simple and avoids trusting sender URIs.
 
 **Validation (receiver-side, before any write):**
 - `source == BUILTIN` → `builtinTitle` non-blank, matched against the target's enumerated built-ins;
   unmatched ⇒ role skipped.
-- `source == USER_FILE` → `fileSha256` present AND a `SOUND_FILE` with that hash was staged AND the
-  staged bytes **sniff as audio**. Validate by content, not extension or display name: check a magic
+- `source == USER_FILE` → a prior `SOUND_FILE` for that role was staged AND the staged bytes
+  **sniff as audio**. Validate by content, not extension or display name: check a magic
   header (RIFF/WAVE, `ID3`/MPEG frame sync, `ftyp` for MP4/M4A, `OggS`, `fLaC`) and/or
   `MediaMetadataRetriever.extractMetadata(METADATA_KEY_HAS_AUDIO)`. Reject anything that doesn't
   decode as audio — never feed an unvalidated blob to `MediaStore`.
@@ -205,12 +206,12 @@ review → merge). Each phase is its own feature branch + PR.
 - Ships value on its own: built-in selections are the common case.
 
 **Phase 2 — custom file copy + URI remap (`feat/sound-files`).**
-- `SoundFileExportProvider` (stream bytes, dedup by hash); `SoundFileApplyProvider` (validate audio,
-  `MediaStore` insert, populate remap table); extend `SoundSelectionExportProvider` to emit
-  `USER_FILE` + `fileSha256`; extend the selection apply to resolve file-backed roles via the remap
-  table; enforce file-before-selection ordering in `ManifestBuilder`.
+- `SoundFileExportProvider` (role-header + stream bytes); `SoundFileApplyProvider` (validate audio,
+  `MediaStore` insert, populate role remap table); extend `SoundSelectionExportProvider` to emit
+  `USER_FILE`; extend the selection apply to resolve file-backed roles via the remap table; enforce
+  file-before-selection ordering in provider registration.
 - Tests: audio-sniff validator accepts WAV/MP3/OGG/FLAC/M4A headers and **rejects** a renamed
-  text/EXE blob; remap table join (file hash → new URI) drives the selection write; missing
+  text/EXE blob; remap table join (role → new URI) drives the selection write; missing
   `SOUND_FILE` → file-backed role `SKIPPED`; oversize file → `OVERSIZE` (lean on
   `ItemStreamReceiverTest` `app-recv/.../ItemStreamReceiverTest.kt:137`).
 - A `LoopbackTransferSmokeTest`-style end-to-end (`app-recv/.../LoopbackTransferSmokeTest.kt`) sends a

@@ -67,9 +67,9 @@ data class PairingPayload(
     }
 
     companion object {
-        // v2 adds USER_FILE. ItemKind is serialized as an enum, so an unknown kind cannot be
+        // v3 adds SOUND_FILE. ItemKind is serialized as an enum, so an unknown kind cannot be
         // decoded by a v1 peer; fail during QR validation instead of failing after pairing.
-        const val PROTOCOL_VERSION = 2
+        const val PROTOCOL_VERSION = 3
         const val PSK_BYTES = 32
         const val SID_BYTES = 16
         const val SCHEME = "portage1:"
