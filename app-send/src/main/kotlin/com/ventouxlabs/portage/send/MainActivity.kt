@@ -39,6 +39,7 @@ import com.ventouxlabs.portage.providers.sms.AndroidSmsStore
 import com.ventouxlabs.portage.providers.sms.SmsExportProvider
 import com.ventouxlabs.portage.providers.sound.AndroidSoundStore
 import com.ventouxlabs.portage.providers.sound.SoundSelectionExportProvider
+import com.ventouxlabs.portage.providers.sound.soundFileExportProviders
 import com.ventouxlabs.portage.providers.wallpaper.AndroidWallpaperStore
 import com.ventouxlabs.portage.providers.wallpaper.WallpaperExportProvider
 import com.ventouxlabs.portage.providers.wallpaper.WallpaperSurface
@@ -139,6 +140,7 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         val resolver = context.contentResolver
+        val soundStore = AndroidSoundStore(context)
         val providers = listOf(
             ContactsExportProvider(AndroidContactsStore(resolver)),
             CalendarExportProvider(AndroidCalendarStore(resolver)),
@@ -156,11 +158,12 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
             // item is emitted in the mirror case.
             WallpaperExportProvider(AndroidWallpaperStore(context), WallpaperSurface.HOME),
             WallpaperExportProvider(AndroidWallpaperStore(context), WallpaperSurface.LOCK),
+            // Custom default-sound files must stage before the selection snapshot so the receiver
+            // can register them locally and then remap ringtone/notification/alarm by role.
+            *soundFileExportProviders(soundStore).toTypedArray(),
             // Default ringtone/notification/alarm selections as a tiny text snapshot (PRP-04).
-            // Reads need no permission; Phase 1 carries built-in selections only (custom sound
-            // FILES are deferred to a follow-up PR). The receiver re-resolves each built-in to a
-            // local URI by title, so nothing dangles on a device that lacks the source's sound.
-            SoundSelectionExportProvider(AndroidSoundStore(context)),
+            // Built-ins re-resolve by title; custom-file roles resolve through the sound.file remap.
+            SoundSelectionExportProvider(soundStore),
             // The bonded Bluetooth roster (name + MAC + type/class) via the PUBLIC, NON-PRIVILEGED
             // BluetoothAdapter.getBondedDevices() API, guarded by the normal BLUETOOTH_CONNECT
             // runtime permission (PRP-07 public-API approach — NO ADB bridge, NO escalation). Phase

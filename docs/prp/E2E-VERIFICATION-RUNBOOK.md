@@ -1,4 +1,4 @@
-# E2E-VERIFICATION-RUNBOOK.md — `portage` v2
+# E2E-VERIFICATION-RUNBOOK.md — `portage` v3
 
 A hands-on, **two-device end-to-end** verification checklist for the shipped portage apps.
 
@@ -197,14 +197,14 @@ Run a transfer (§B) with the relevant items selected, then check each on the re
   batch continues. Live wallpapers can't be exported (no file bytes) → item absent.
 
 **C7 — Sound selection (ringtone / notification / alarm)**
-- **Do:** On the sender, set **built-in** ringtone/notification/alarm sounds (Phase 1 carries
-  built-ins only); export Sound selection. Needs "Modify system settings" on the receiver.
-- **Expect:** Receiver → Sound settings shows the same titles; a test ring/notification plays the
-  expected sound.
-- **Notes:** The receiver re-resolves each built-in **by title** to a *local* URI — it never writes
-  a sender-supplied URI verbatim. If a title has no match on the receiver (different OEM sound set),
-  that role is left as-is (status OK, "no matching built-in"). Custom sound **files** are Phase 2
-  (USER_FILE roles are skipped).
+- **Do:** On the sender, set ringtone/notification/alarm defaults. Cover at least one built-in and,
+  when available, one custom audio file. Needs "Modify system settings" on the receiver.
+- **Expect:** Receiver → Sound settings shows the same choices; a test ring/notification plays the
+  expected sound. Active custom files are copied to MediaStore under `Ringtones/Portage` before the
+  selection is applied.
+- **Notes:** The receiver re-resolves each built-in **by title** to a *local* URI and remaps custom
+  files by role after registering them locally — it never writes a sender-supplied URI verbatim. If
+  a built-in title has no match or a custom file is missing, that role is left as-is.
 
 **C8 — Bluetooth pairings (list + re-pair checklist)**
 - **Do:** With Bluetooth on and `BLUETOOTH_CONNECT` granted on the sender, export Bluetooth pairings.

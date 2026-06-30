@@ -1,4 +1,4 @@
-# PROTOCOL.md — `portage` pairing + transfer wire format (v2)
+# PROTOCOL.md — `portage` pairing + transfer wire format (v3)
 
 Scope: one sender (`portage-send`, old phone), one receiver (`portage-recv`, new phone),
 same LAN, no cloud, no relay. One transfer session at a time.
@@ -123,8 +123,8 @@ close
 ```
 
 `ItemMeta = {item_id (u32), kind (tstr: "contacts.vcf" | "calendar.ics" | "calllog" |
-"sms" | "inventory" | "apk" | "settings" | "wallpaper" | "app.backup.relay" |
-"user.file" | …), tier (0|1),
+"sms" | "inventory" | "apk" | "settings" | "wallpaper" | "sound.selection" |
+"sound.file" | "app.backup.relay" | "user.file" | …), tier (0|1),
 size, sha256, display_name, group}`.
 
 > The `wallpaper` kind (PRP-02) is the first binary-blob payload (a home/lock wallpaper
@@ -150,7 +150,16 @@ size, sha256, display_name, group}`.
 > cannot decode an unknown enum value, so mixed versions fail during QR validation rather than
 > failing after pairing.
 
-> No `seedvault.blob` kind in v2: couriering a Seedvault file would imply app-data
+> The `sound.file` kind carries one active custom default-sound file for ringtone,
+> notification, or alarm. Each item is a bounded JSON header (role + display name + MIME +
+> length) followed by opaque audio bytes. The receiver stores it through MediaStore under
+> `Ringtones/Portage`, marks the appropriate ringtone/notification/alarm media flag, and
+> records the new local URI in a transfer-scoped remap table. The later `sound.selection`
+> item uses that remap by role; if the file was absent or failed to register, the role is
+> skipped rather than writing a dangling sender URI. Protocol `v=3` is required for the new
+> enum value.
+
+> No `seedvault.blob` kind in v3: couriering a Seedvault file would imply app-data
 > transfer, which the Seedvault division of labor explicitly excludes (PRP §2,
 > DEVILS_ADVOCATE Q5). Reconsider only behind a future protocol bump with explicit UX copy.
 

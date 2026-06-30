@@ -23,8 +23,9 @@ import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
 import com.ventouxlabs.portage.providers.bluetooth.RePairEntry
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.relay.AppBackupRelayApplyProvider
-import com.ventouxlabs.portage.providers.userfile.UserFileHeader
 import com.ventouxlabs.portage.providers.relay.RelayRestorePrompt
+import com.ventouxlabs.portage.providers.sound.SoundFileHeader
+import com.ventouxlabs.portage.providers.userfile.UserFileHeader
 import com.ventouxlabs.portage.recv.checklist.ReceiverChecklist
 import com.ventouxlabs.portage.recv.install.ApkInstallPrompt
 import com.ventouxlabs.portage.recv.sms.SmsRoleCoordinator
@@ -289,6 +290,7 @@ class ReceiverViewModel(
                             maxBytesByKind = mapOf(
                                 ItemKind.APP_BACKUP_RELAY to MAX_RELAY_ITEM_BYTES,
                                 ItemKind.APK to ApkContainerValidation.MAX_APK_ITEM_BYTES,
+                                ItemKind.SOUND_FILE to SoundFileHeader.MAX_ITEM_BYTES,
                                 ItemKind.USER_FILE to UserFileHeader.MAX_ITEM_BYTES,
                             ),
                             userFileMaxTotalBytes = UserFileHeader.MAX_TOTAL_BYTES,
