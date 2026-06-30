@@ -236,7 +236,7 @@ private fun ChecklistRow(
 ) {
     val s = LocalSpacing.current
     val meta = item.meta
-    val isSms = meta.kind == ItemKind.SMS
+    val isSms = meta.kind == ItemKind.SMS || meta.kind == ItemKind.MMS
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val rowTint by animateColorAsState(
@@ -376,6 +376,7 @@ private fun tierHint(kind: ItemKind): String {
         ItemKind.CALENDAR_ICS -> "Calendar events"
         ItemKind.CALL_LOG -> "Call history"
         ItemKind.SMS -> "Text messages"
+        ItemKind.MMS -> "MMS messages"
         ItemKind.APP_INVENTORY -> "App list for reinstall"
         ItemKind.APK -> "App package"
         ItemKind.SETTINGS -> "Device settings"

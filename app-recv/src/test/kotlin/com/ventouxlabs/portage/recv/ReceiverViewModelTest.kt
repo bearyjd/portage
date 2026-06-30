@@ -258,9 +258,10 @@ class ReceiverViewModelTest {
         assertThat(channel.sent.filterIsInstance<ProtocolMessage.Hello>()).hasSize(1)
         // Kinds the sender did not advertise surface as disabled rows, not gaps.
         assertThat(reviewing.absentKinds).containsExactly(
-            ItemKind.CALENDAR_ICS, ItemKind.SMS, ItemKind.APP_INVENTORY, ItemKind.SETTINGS,
-            ItemKind.WALLPAPER, ItemKind.SOUND_FILE, ItemKind.SOUND_SELECTION,
-            ItemKind.BLUETOOTH_DEVICES, ItemKind.APP_BACKUP_RELAY, ItemKind.USER_FILE,
+            ItemKind.CALENDAR_ICS, ItemKind.SMS, ItemKind.MMS, ItemKind.APP_INVENTORY,
+            ItemKind.SETTINGS, ItemKind.WALLPAPER, ItemKind.SOUND_FILE,
+            ItemKind.SOUND_SELECTION, ItemKind.BLUETOOTH_DEVICES, ItemKind.APP_BACKUP_RELAY,
+            ItemKind.USER_FILE,
         ).inOrder()
     }
 

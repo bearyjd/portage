@@ -11,11 +11,13 @@ No database. "Data" is the LAN wire protocol (CBOR) + compiled safety allowlists
 | calendar.ics | TIER0 | | sound.selection | TIER0 |
 | calllog | TIER0 | | bluetooth.devices | TIER0 |
 | sms | TIER0 | | app.backup.relay | TIER0 |
+| mms | TIER0 | | user.file | TIER0 |
 | inventory | TIER0 | | **apk** | **TIER1** |
-| | | | **settings** | **TIER1** |
+| sound.file | TIER0 | | **settings** | **TIER1** |
 
 Tier1 needs a one-shot grant via adb-bridge; Tier0 writes via normal Android APIs. Wire strings are
-append-only (never renumber/reuse) so an old peer degrades gracefully.
+append-only (never renumber/reuse) so an old peer fails during protocol-version validation rather
+than applying an unknown kind.
 
 ## Protocol messages (`core-model/Messages.kt`, `MessageType`)
 ```

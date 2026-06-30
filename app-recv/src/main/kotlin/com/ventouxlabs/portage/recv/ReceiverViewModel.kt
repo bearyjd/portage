@@ -260,7 +260,7 @@ class ReceiverViewModel(
         _state.value = ReceiverState.Transferring(
             items = selected.map { ItemProgress(it.itemId, it.displayName) },
         )
-        val needsSmsRole = selected.any { it.kind == ItemKind.SMS }
+        val needsSmsRole = selected.any { it.kind == ItemKind.SMS || it.kind == ItemKind.MMS }
         viewModelScope.launch {
             try {
                 val ch = channel ?: error("no channel")

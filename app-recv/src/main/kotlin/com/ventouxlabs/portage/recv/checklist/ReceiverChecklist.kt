@@ -40,7 +40,7 @@ object ReceiverChecklist {
      * but OPT-IN — PRP §7: "everything in Tier 0 works without ever seeing [Tier 1]".
      */
     fun defaultChecked(meta: ItemMeta): Boolean =
-        meta.kind.tier == Tier.TIER0 && meta.kind != ItemKind.SMS
+        meta.kind.tier == Tier.TIER0 && meta.kind != ItemKind.SMS && meta.kind != ItemKind.MMS
 
     /** Build the grouped checklist from a manifest, preserving first-seen group order. */
     fun build(manifest: TransferManifest): List<ChecklistGroup> =
@@ -118,7 +118,7 @@ object ReceiverChecklist {
      */
     private val EXPECTED_KINDS = listOf(
         ItemKind.CONTACTS_VCF, ItemKind.CALENDAR_ICS, ItemKind.CALL_LOG,
-        ItemKind.SMS, ItemKind.APP_INVENTORY, ItemKind.SETTINGS, ItemKind.WALLPAPER,
+        ItemKind.SMS, ItemKind.MMS, ItemKind.APP_INVENTORY, ItemKind.SETTINGS, ItemKind.WALLPAPER,
         ItemKind.SOUND_FILE, ItemKind.SOUND_SELECTION, ItemKind.BLUETOOTH_DEVICES,
         ItemKind.APP_BACKUP_RELAY, ItemKind.USER_FILE,
     )

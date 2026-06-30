@@ -26,6 +26,10 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     CALENDAR_ICS("calendar.ics", Tier.TIER0),
     CALL_LOG("calllog", Tier.TIER0),
     SMS("sms", Tier.TIER0),
+    // MMS history as message rows + address rows + text/binary parts. Kept separate from SMS
+    // because the payload shape and restore failure modes are different, while the receiver still
+    // gates writes behind the same transient default-SMS role.
+    MMS("mms", Tier.TIER0),
     APP_INVENTORY("inventory", Tier.TIER0),
     APK("apk", Tier.TIER1),
     SETTINGS("settings", Tier.TIER1),

@@ -1,4 +1,4 @@
-# PROTOCOL.md — `portage` pairing + transfer wire format (v3)
+# PROTOCOL.md — `portage` pairing + transfer wire format (v4)
 
 Scope: one sender (`portage-send`, old phone), one receiver (`portage-recv`, new phone),
 same LAN, no cloud, no relay. One transfer session at a time.
@@ -25,7 +25,7 @@ URI form: `portage1:<base64url(CBOR)>` with fields:
 
 | field | type | meaning |
 |---|---|---|
-| `v` | uint | protocol version, `2` |
+| `v` | uint | protocol version, `4` |
 | `psk` | bytes(32) | one-time pre-shared key, CSPRNG |
 | `sid` | bytes(16) | session id (public; also used to match the mDNS instance) |
 | `ip` | array of text | sender's current addresses, best-effort hints |
@@ -123,7 +123,7 @@ close
 ```
 
 `ItemMeta = {item_id (u32), kind (tstr: "contacts.vcf" | "calendar.ics" | "calllog" |
-"sms" | "inventory" | "apk" | "settings" | "wallpaper" | "sound.selection" |
+"sms" | "mms" | "inventory" | "apk" | "settings" | "wallpaper" | "sound.selection" |
 "sound.file" | "app.backup.relay" | "user.file" | …), tier (0|1),
 size, sha256, display_name, group}`.
 
@@ -159,7 +159,17 @@ size, sha256, display_name, group}`.
 > skipped rather than writing a dangling sender URI. Protocol `v=3` is required for the new
 > enum value.
 
-> No `seedvault.blob` kind in v3: couriering a Seedvault file would imply app-data
+> The `mms` kind carries MMS inbox/sent history as JSON-lines `MmsRecord` rows: message
+> metadata, address rows, and text/binary parts. It is separate from `sms` because MMS uses
+> Android's MMS tables (`content://mms`, `addr`, `part`) and has different partial-failure
+> behavior. Sender export is capped to the receiver's standard 64 MiB Tier-0 item limit and
+> streams one MMS record at a time; large binary parts / records that would exceed the bounded
+> export are skipped rather than creating an item the receiver will refuse. Receiver writes
+> require the same transient default-SMS role as SMS. RCS state, carrier/service state, drafts,
+> pending sends, and original thread ids remain out of scope. Protocol `v=4` is required for
+> the new enum value.
+
+> No `seedvault.blob` kind in v4: couriering a Seedvault file would imply app-data
 > transfer, which the Seedvault division of labor explicitly excludes (PRP §2,
 > DEVILS_ADVOCATE Q5). Reconsider only behind a future protocol bump with explicit UX copy.
 

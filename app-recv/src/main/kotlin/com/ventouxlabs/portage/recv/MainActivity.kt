@@ -31,6 +31,8 @@ import com.ventouxlabs.portage.providers.contacts.AndroidContactsStore
 import com.ventouxlabs.portage.providers.contacts.ContactsApplyProvider
 import com.ventouxlabs.portage.providers.inventory.AndroidInventorySource
 import com.ventouxlabs.portage.providers.inventory.AppInventoryApplyProvider
+import com.ventouxlabs.portage.providers.mms.AndroidMmsStore
+import com.ventouxlabs.portage.providers.mms.MmsApplyProvider
 import com.ventouxlabs.portage.providers.relay.AppBackupRelayApplyProvider
 import com.ventouxlabs.portage.recv.relay.AndroidRelayHandoff
 import com.ventouxlabs.portage.providers.settings.AndroidSecureGlobalSettingsStore
@@ -154,10 +156,11 @@ private class ReceiverViewModelFactory(
                         AndroidCallLogStore(resolver),
                         FileCallLogImportJournal(File(context.filesDir, "call-log-imports.sha256")),
                     ),
-                    // SMS writes only while portage transiently holds ROLE_SMS — the ViewModel
-                    // acquires it (SmsRoleCoordinator) around the transfer when SMS is selected,
+                    // SMS/MMS writes only while portage transiently holds ROLE_SMS — the ViewModel
+                    // acquires it (SmsRoleCoordinator) around the transfer when either is selected,
                     // and the gateway's isSelfDefault gate self-skips outside that window.
                     SmsApplyProvider(AndroidSmsStore(resolver), AndroidSmsRoleGateway(context)),
+                    MmsApplyProvider(AndroidMmsStore(resolver), AndroidSmsRoleGateway(context)),
                     AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), sinks.onInstallActions),
                     // APK keystone (ADR-006): stage each carried app's split set, reconcile against this
                     // device, then install. The silent (privileged) seam is the P6 stdin-streaming
