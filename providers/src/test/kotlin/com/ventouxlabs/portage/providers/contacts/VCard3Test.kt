@@ -58,6 +58,19 @@ class VCard3Test {
     }
 
     @Test
+    fun `round trips favorite starred state through portage extension`() {
+        val record = ContactRecord(displayName = "Favorite", starred = true)
+
+        val out = ByteArrayOutputStream()
+        VCard3.write(listOf(record), out)
+        val text = out.toString(Charsets.UTF_8)
+        val back = VCard3.parse(ByteArrayInputStream(out.toByteArray()))
+
+        assertThat(text).contains("X-PORTAGE-STARRED:1\r\n")
+        assertThat(back.records).containsExactly(record)
+    }
+
+    @Test
     fun `writes version 3 with CRLF line endings`() {
         val out = ByteArrayOutputStream()
         VCard3.write(listOf(ContactRecord(displayName = "X")), out)
@@ -104,6 +117,14 @@ class VCard3Test {
 
         assertThat(back.malformed).isEqualTo(0)
         assertThat(back.records.map { it.displayName }).containsExactly("Keeper")
+    }
+
+    @Test
+    fun `non-starred contacts omit the portage starred extension`() {
+        val out = ByteArrayOutputStream()
+        VCard3.write(listOf(ContactRecord(displayName = "Plain")), out)
+
+        assertThat(out.toString(Charsets.UTF_8)).doesNotContain("X-PORTAGE-STARRED")
     }
 
     @Test

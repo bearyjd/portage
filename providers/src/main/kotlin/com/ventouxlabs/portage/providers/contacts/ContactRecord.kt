@@ -14,7 +14,8 @@ data class LabeledValue(val value: String, val type: String)
 
 /**
  * One contact, as much of it as portage carries: name, phones, emails, postal addresses,
- * organization, note. Photos and app-specific raw-contact data are out of scope for v1.
+ * organization, note, and the user-visible favorite/starred bit. Photos and app-specific
+ * raw-contact data are out of scope for v1.
  */
 data class ContactRecord(
     val displayName: String,
@@ -26,4 +27,5 @@ data class ContactRecord(
     val organization: String? = null,
     val title: String? = null,
     val note: String? = null,
+    val starred: Boolean = false,
 )
