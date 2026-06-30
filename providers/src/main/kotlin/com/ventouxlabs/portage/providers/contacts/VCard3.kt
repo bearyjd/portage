@@ -49,6 +49,7 @@ object VCard3 {
         record.organization?.let { appendLine("ORG:${RfcText.escape(it)}") }
         record.title?.let { appendLine("TITLE:${RfcText.escape(it)}") }
         record.note?.let { appendLine("NOTE:${RfcText.escape(it)}") }
+        if (record.starred) appendLine("X-PORTAGE-STARRED:1")
         appendLine("END:VCARD")
     }
 
@@ -118,6 +119,7 @@ object VCard3 {
         var organization: String? = null
         var title: String? = null
         var note: String? = null
+        var starred: Boolean = false
 
         fun acceptProperty(line: String) {
             val colon = line.indexOf(':')
@@ -152,6 +154,7 @@ object VCard3 {
                 "ORG" -> organization = RfcText.unescape(rawValue).ifEmpty { null }
                 "TITLE" -> title = RfcText.unescape(rawValue).ifEmpty { null }
                 "NOTE" -> note = RfcText.unescape(rawValue).ifEmpty { null }
+                "X-PORTAGE-STARRED" -> starred = rawValue.trim() == "1"
                 else -> Unit // unknown property — ignore (forward compat)
             }
         }
@@ -169,6 +172,7 @@ object VCard3 {
                 organization = organization,
                 title = title,
                 note = note,
+                starred = starred,
             )
         }
     }

@@ -46,6 +46,7 @@ class ContactsProvidersTest {
 
     private val ada = ContactRecord(displayName = "Ada", phones = listOf(LabeledValue("+1555", "CELL")))
     private val bob = ContactRecord(displayName = "Bob")
+    private val favorite = ContactRecord(displayName = "Favorite", starred = true)
 
     @Test
     fun `available is true only when readable and non-empty`() = runTest {
@@ -62,10 +63,10 @@ class ContactsProvidersTest {
     @Test
     fun `exportTo streams the store as vCards`() = runTest {
         val out = ByteArrayOutputStream()
-        ContactsExportProvider(FakeContactsStore(mutableListOf(ada, bob))).exportTo(out)
+        ContactsExportProvider(FakeContactsStore(mutableListOf(ada, bob, favorite))).exportTo(out)
 
         val back = VCard3.parse(ByteArrayInputStream(out.toByteArray()))
-        assertThat(back.records).containsExactly(ada, bob).inOrder()
+        assertThat(back.records).containsExactly(ada, bob, favorite).inOrder()
     }
 
     @Test
@@ -160,6 +161,19 @@ class ContactsProvidersTest {
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(store.inserted).containsExactly(flowing)
         assertThat(outcome.detail).contains("applied 1")
+    }
+
+    @Test
+    fun `dedup does not duplicate an existing contact solely to change starred state`() = runTest {
+        val unstarred = favorite.copy(starred = false)
+        val store = FakeContactsStore(mutableListOf(unstarred))
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(favorite), it) }
+
+        val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).isEmpty()
+        assertThat(outcome.detail).contains("already present 1")
     }
 
     @Test

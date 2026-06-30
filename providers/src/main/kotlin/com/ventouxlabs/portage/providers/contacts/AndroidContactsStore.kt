@@ -40,6 +40,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         val projection = arrayOf(
             Data.RAW_CONTACT_ID, Data.DISPLAY_NAME_PRIMARY, Data.MIMETYPE,
             Data.DATA1, Data.DATA2, Data.DATA3, Data.DATA4,
+            ContactsContract.Contacts.STARRED,
         )
         val mimes = arrayOf(
             StructuredName.CONTENT_ITEM_TYPE, Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE,
@@ -57,7 +58,10 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
                 // Seed those from the aggregate display name so they remain exportable; an own
                 // StructuredName below replaces the fallback without merging any other fields.
                 val contact = builders.getOrPut(rawContactId) {
-                    MutableContact(displayName = cursor.getString(1).orEmpty())
+                    MutableContact(
+                        displayName = cursor.getString(1).orEmpty(),
+                        starred = cursor.getInt(7) == 1,
+                    )
                 }
                 val data1 = cursor.getString(3)
                 when (cursor.getString(2)) {
@@ -94,6 +98,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
             ContentProviderOperation.newInsert(RawContacts.CONTENT_URI)
                 .withValue(RawContacts.ACCOUNT_TYPE, null)
                 .withValue(RawContacts.ACCOUNT_NAME, null)
+                .withValue(RawContacts.STARRED, if (record.starred) 1 else 0)
                 .build(),
         )
 
@@ -147,11 +152,12 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         var organization: String? = null,
         var title: String? = null,
         var note: String? = null,
+        var starred: Boolean = false,
     ) {
         fun toRecord() = ContactRecord(
             displayName, givenName, familyName,
             phones.toList(), emails.toList(), postals.toList(),
-            organization, title, note,
+            organization, title, note, starred,
         )
     }
 

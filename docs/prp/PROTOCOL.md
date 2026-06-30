@@ -127,6 +127,11 @@ close
 "sound.file" | "app.backup.relay" | "user.file" | …), tier (0|1),
 size, sha256, display_name, group}`.
 
+> The `contacts.vcf` kind is vCard 3.0 plus Portage extension fields where Android exposes
+> useful device-local metadata that standard vCard does not carry. `X-PORTAGE-STARRED:1`
+> preserves the user's favorite/starred contact flag when Portage inserts a fresh raw contact.
+> Existing matching contacts are deduplicated rather than mutated solely to change this bit.
+
 > The `wallpaper` kind (PRP-02) is the first binary-blob payload (a home/lock wallpaper
 > image, not structured text). Its item stream is a one-line JSON `WallpaperHeader`
 > (surface + advisory format/bounds) followed by the raw image bytes. The receiver
