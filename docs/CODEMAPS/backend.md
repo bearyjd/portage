@@ -23,7 +23,7 @@ ExportProvider { val kind: ItemKind; suspend exportTo(sink: OutputStream) }
 ApplyProvider  { val kind: ItemKind; suspend apply(source): ApplyOutcome }
 ApplyProviderRegistry(providers).apply(kind, source)   ← receiver dispatch by manifest kind
 ```
-Per-kind subpackages: contacts/ (VCard3 + Portage starred extension) · calendar/ (Ics) · calllog/ · sms/ + mms/ (transient default-SMS
+Per-kind subpackages: contacts/ (VCard3 + starred state + bounded thumbnails) · calendar/ (Ics) · calllog/ · sms/ + mms/ (transient default-SMS
 role) · wallpaper/ · sound/ · bluetooth/ · inventory/ · relay/ (AppBackupRelay, opaque) · settings/
 (SAFE-allowlist gated) · apk/ (the keystone). Support pkgs: text/ (formatting), wire/ (codec helpers).
 

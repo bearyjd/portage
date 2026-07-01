@@ -12,6 +12,7 @@ package com.ventouxlabs.portage.providers.contacts
 import com.ventouxlabs.portage.providers.text.RfcText
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.Base64
 
 /** Parsed payload: contacts plus how many cards were unusable (per-record resilience). */
 data class VCardParseResult(val records: List<ContactRecord>, val malformed: Int)
@@ -50,8 +51,20 @@ object VCard3 {
         record.title?.let { appendLine("TITLE:${RfcText.escape(it)}") }
         record.note?.let { appendLine("NOTE:${RfcText.escape(it)}") }
         if (record.starred) appendLine("X-PORTAGE-STARRED:1")
+        record.photoBase64?.let { appendLine("PHOTO;ENCODING=b;TYPE=${photoType(it)}:$it") }
         appendLine("END:VCARD")
     }
+
+    private fun photoType(base64: String): String =
+        runCatching { Base64.getDecoder().decode(base64.take(16)) }
+            .getOrNull()
+            ?.let { bytes ->
+                if (bytes.size >= 4 &&
+                    bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() &&
+                    bytes[2] == 0x4e.toByte() && bytes[3] == 0x47.toByte()
+                ) "PNG" else "JPEG"
+            }
+            ?: "JPEG"
 
     private fun StringBuilder.appendLine(line: String) {
         append(RfcText.fold(line))
@@ -120,6 +133,7 @@ object VCard3 {
         var title: String? = null
         var note: String? = null
         var starred: Boolean = false
+        var photoBase64: String? = null
 
         fun acceptProperty(line: String) {
             val colon = line.indexOf(':')
@@ -155,8 +169,17 @@ object VCard3 {
                 "TITLE" -> title = RfcText.unescape(rawValue).ifEmpty { null }
                 "NOTE" -> note = RfcText.unescape(rawValue).ifEmpty { null }
                 "X-PORTAGE-STARRED" -> starred = rawValue.trim() == "1"
+                "PHOTO" -> photoBase64 = validatedPhoto(rawValue)
                 else -> Unit // unknown property — ignore (forward compat)
             }
+        }
+
+        private fun validatedPhoto(value: String): String? {
+            // Reject on encoded length before decoding so hostile cards cannot force a large allocation.
+            val maxEncodedLength = ((MAX_CONTACT_PHOTO_BYTES + 2) / 3) * 4
+            if (value.length > maxEncodedLength) return null
+            val bytes = runCatching { Base64.getDecoder().decode(value) }.getOrNull() ?: return null
+            return value.takeIf { bytes.size <= MAX_CONTACT_PHOTO_BYTES }
         }
 
         /** A card is usable only with a non-blank FN; anything else is malformed. */
@@ -173,6 +196,7 @@ object VCard3 {
                 title = title,
                 note = note,
                 starred = starred,
+                photoBase64 = photoBase64,
             )
         }
     }

@@ -91,6 +91,8 @@ class ProviderDeviceContractTest {
         val record = ContactRecord(
             displayName = CONTACT_NAME,
             phones = listOf(LabeledValue(CONTACT_PHONE, "CELL")),
+            // Valid 1x1 PNG: exercise the real ContactsProvider photo row without large fixtures.
+            photoBase64 = CONTACT_PHOTO,
         )
         val payload = ByteArrayOutputStream().also { VCard3.write(listOf(record), it) }.toByteArray()
         val journalFile = File(context.cacheDir, "device-contract-contact-journal")
@@ -105,8 +107,9 @@ class ProviderDeviceContractTest {
 
         assertThat(retry.status).isEqualTo(ItemStatus.OK)
         assertThat(retry.detail).contains("already present 1")
-        assertThat(AndroidContactsStore(resolver).readAll().count { it.displayName == CONTACT_NAME })
-            .isEqualTo(1)
+        val imported = AndroidContactsStore(resolver).readAll().filter { it.displayName == CONTACT_NAME }
+        assertThat(imported).hasSize(1)
+        assertThat(imported.single().photoBase64).isNotNull()
     }
 
     @Test
@@ -343,6 +346,8 @@ class ProviderDeviceContractTest {
         const val CONTACT_NAME = "PORTAGE DEVICE CONTRACT"
         const val CONTACT_PHONE = "+1 555 000 9911"
         const val CONTACT_PHONE_SECOND = "+1 555 000 9914"
+        const val CONTACT_PHOTO =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
         const val CALL_NUMBER = "+15550009912"
         const val CALL_NAME = "PORTAGE CONTRACT"
         const val CALL_DATE = 1_893_456_000_000L

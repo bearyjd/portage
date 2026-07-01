@@ -16,10 +16,12 @@ import android.provider.ContactsContract.CommonDataKinds.Email
 import android.provider.ContactsContract.CommonDataKinds.Note
 import android.provider.ContactsContract.CommonDataKinds.Organization
 import android.provider.ContactsContract.CommonDataKinds.Phone
+import android.provider.ContactsContract.CommonDataKinds.Photo
 import android.provider.ContactsContract.CommonDataKinds.StructuredName
 import android.provider.ContactsContract.CommonDataKinds.StructuredPostal
 import android.provider.ContactsContract.Data
 import android.provider.ContactsContract.RawContacts
+import android.util.Base64
 
 /**
  * Thin ContactsContract adapter behind [ContactsStore]. Deliberately mechanical — all
@@ -27,6 +29,10 @@ import android.provider.ContactsContract.RawContacts
  * propagate [SecurityException] (providers degrade); writes return false on any failure.
  */
 class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStore {
+
+    private companion object {
+        const val MAX_TOTAL_PHOTO_BYTES = 8 * 1024 * 1024
+    }
 
     override fun count(): Int =
         resolver.query(
@@ -40,17 +46,19 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         val projection = arrayOf(
             Data.RAW_CONTACT_ID, Data.DISPLAY_NAME_PRIMARY, Data.MIMETYPE,
             Data.DATA1, Data.DATA2, Data.DATA3, Data.DATA4,
-            ContactsContract.Contacts.STARRED,
+            ContactsContract.Contacts.STARRED, Data.DATA15,
         )
         val mimes = arrayOf(
             StructuredName.CONTENT_ITEM_TYPE, Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE,
             StructuredPostal.CONTENT_ITEM_TYPE, Organization.CONTENT_ITEM_TYPE, Note.CONTENT_ITEM_TYPE,
+            Photo.CONTENT_ITEM_TYPE,
         )
         val selection = "${Data.MIMETYPE} IN (${mimes.joinToString(",") { "?" }})"
 
         // CONTACT_ID is Android's aggregate identity and can union fields from several raw
         // contacts. Import deduplication needs the original per-source record, so group Data rows
         // by RAW_CONTACT_ID and derive its display name from its own StructuredName row.
+        var retainedPhotoBytes = 0
         resolver.query(Data.CONTENT_URI, projection, selection, mimes, Data.RAW_CONTACT_ID)?.use { cursor ->
             while (cursor.moveToNext()) {
                 val rawContactId = cursor.getLong(0)
@@ -84,6 +92,15 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
                         contact.title = cursor.getString(6)?.ifBlank { null }
                     }
                     Note.CONTENT_ITEM_TYPE -> contact.note = data1?.ifBlank { null }
+                    Photo.CONTENT_ITEM_TYPE -> cursor.getBlob(8)?.let { photo ->
+                        if (contact.photoBase64 == null &&
+                            photo.size <= MAX_CONTACT_PHOTO_BYTES &&
+                            retainedPhotoBytes + photo.size <= MAX_TOTAL_PHOTO_BYTES
+                        ) {
+                            contact.photoBase64 = Base64.encodeToString(photo, Base64.NO_WRAP)
+                            retainedPhotoBytes += photo.size
+                        }
+                    }
                 }
             }
         }
@@ -138,6 +155,12 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         record.note?.let {
             ops += dataRow(Note.CONTENT_ITEM_TYPE).withValue(Note.NOTE, it).build()
         }
+        record.photoBase64?.let { encoded ->
+            val photo = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull()
+            if (photo != null && photo.size <= MAX_CONTACT_PHOTO_BYTES) {
+                ops += dataRow(Photo.CONTENT_ITEM_TYPE).withValue(Photo.PHOTO, photo).build()
+            }
+        }
 
         return runCatching { resolver.applyBatch(ContactsContract.AUTHORITY, ops) }.isSuccess
     }
@@ -153,11 +176,12 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         var title: String? = null,
         var note: String? = null,
         var starred: Boolean = false,
+        var photoBase64: String? = null,
     ) {
         fun toRecord() = ContactRecord(
             displayName, givenName, familyName,
             phones.toList(), emails.toList(), postals.toList(),
-            organization, title, note, starred,
+            organization, title, note, starred, photoBase64,
         )
     }
 
