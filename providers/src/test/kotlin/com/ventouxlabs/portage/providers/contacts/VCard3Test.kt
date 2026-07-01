@@ -13,6 +13,7 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.util.Base64
 
 class VCard3Test {
 
@@ -68,6 +69,35 @@ class VCard3Test {
 
         assertThat(text).contains("X-PORTAGE-STARRED:1\r\n")
         assertThat(back.records).containsExactly(record)
+    }
+
+    @Test
+    fun `round trips a bounded contact photo`() {
+        val photo = Base64.getEncoder().encodeToString(
+            byteArrayOf(0xff.toByte(), 0xd8.toByte(), 1, 2, 3, 0xff.toByte(), 0xd9.toByte()),
+        )
+        val record = ContactRecord(displayName = "Portrait", photoBase64 = photo)
+
+        val out = ByteArrayOutputStream()
+        VCard3.write(listOf(record), out)
+        val back = VCard3.parse(ByteArrayInputStream(out.toByteArray()))
+
+        assertThat(out.toString(Charsets.UTF_8)).contains("PHOTO;ENCODING=b;TYPE=JPEG:")
+        assertThat(back.records).containsExactly(record)
+    }
+
+    @Test
+    fun `oversize and malformed photos are ignored without dropping the contact`() {
+        val oversize = Base64.getEncoder().encodeToString(ByteArray(MAX_CONTACT_PHOTO_BYTES + 1))
+        val back = parse(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Oversize\r\n" +
+                "PHOTO;ENCODING=b:$oversize\r\nEND:VCARD\r\n" +
+                "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Malformed\r\n" +
+                "PHOTO;ENCODING=b:not-base64!\r\nEND:VCARD\r\n",
+        )
+
+        assertThat(back.records).hasSize(2)
+        assertThat(back.records.map { it.photoBase64 }).containsExactly(null, null)
     }
 
     @Test

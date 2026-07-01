@@ -15,6 +15,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.util.Base64
 
 /** Hand-written fake at the ContentResolver seam (no Android on the JVM test classpath). */
 private class FakeContactsStore(
@@ -168,6 +169,20 @@ class ContactsProvidersTest {
         val unstarred = favorite.copy(starred = false)
         val store = FakeContactsStore(mutableListOf(unstarred))
         val payload = ByteArrayOutputStream().also { VCard3.write(listOf(favorite), it) }
+
+        val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).isEmpty()
+        assertThat(outcome.detail).contains("already present 1")
+    }
+
+    @Test
+    fun `dedup does not duplicate an existing contact solely to add a photo`() = runTest {
+        val photo = Base64.getEncoder().encodeToString(byteArrayOf(1, 2, 3))
+        val pictured = ada.copy(photoBase64 = photo)
+        val store = FakeContactsStore(mutableListOf(ada))
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(pictured), it) }
 
         val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
 

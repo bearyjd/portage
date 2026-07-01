@@ -14,8 +14,8 @@ data class LabeledValue(val value: String, val type: String)
 
 /**
  * One contact, as much of it as portage carries: name, phones, emails, postal addresses,
- * organization, note, and the user-visible favorite/starred bit. Photos and app-specific
- * raw-contact data are out of scope for v1.
+ * organization, note, the user-visible favorite/starred bit, and a bounded thumbnail.
+ * App-specific raw-contact data and full-resolution display photos are out of scope.
  */
 data class ContactRecord(
     val displayName: String,
@@ -28,4 +28,8 @@ data class ContactRecord(
     val title: String? = null,
     val note: String? = null,
     val starred: Boolean = false,
+    /** Base64-encoded JPEG/PNG thumbnail, bounded by [MAX_CONTACT_PHOTO_BYTES] when read/parsed. */
+    val photoBase64: String? = null,
 )
+
+const val MAX_CONTACT_PHOTO_BYTES = 256 * 1024

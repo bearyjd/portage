@@ -130,7 +130,9 @@ size, sha256, display_name, group}`.
 > The `contacts.vcf` kind is vCard 3.0 plus Portage extension fields where Android exposes
 > useful device-local metadata that standard vCard does not carry. `X-PORTAGE-STARRED:1`
 > preserves the user's favorite/starred contact flag when Portage inserts a fresh raw contact.
-> Existing matching contacts are deduplicated rather than mutated solely to change this bit.
+> Standard inline `PHOTO;ENCODING=b` carries thumbnails up to 256 KiB each; sender-side retained
+> photo bytes are capped at 8 MiB per export. Existing matching contacts are deduplicated rather
+> than mutated solely to change the starred bit or photo.
 
 > The `wallpaper` kind (PRP-02) is the first binary-blob payload (a home/lock wallpaper
 > image, not structured text). Its item stream is a one-line JSON `WallpaperHeader`
