@@ -93,6 +93,9 @@ class ProviderDeviceContractTest {
             phones = listOf(LabeledValue(CONTACT_PHONE, "CELL")),
             // Valid 1x1 PNG: exercise the real ContactsProvider photo row without large fixtures.
             photoBase64 = CONTACT_PHOTO,
+            nickname = "Portage fixture",
+            birthday = "--07-01",
+            websites = listOf(LabeledValue("https://portage.example", "HOME")),
         )
         val payload = ByteArrayOutputStream().also { VCard3.write(listOf(record), it) }.toByteArray()
         val journalFile = File(context.cacheDir, "device-contract-contact-journal")
@@ -110,6 +113,11 @@ class ProviderDeviceContractTest {
         val imported = AndroidContactsStore(resolver).readAll().filter { it.displayName == CONTACT_NAME }
         assertThat(imported).hasSize(1)
         assertThat(imported.single().photoBase64).isNotNull()
+        assertThat(imported.single().nickname).isEqualTo("Portage fixture")
+        assertThat(imported.single().birthday).isEqualTo("--07-01")
+        assertThat(imported.single().websites)
+            .containsExactly(LabeledValue("https://portage.example", "HOME"))
+        Unit
     }
 
     @Test

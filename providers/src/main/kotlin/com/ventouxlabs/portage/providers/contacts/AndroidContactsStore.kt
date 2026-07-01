@@ -13,12 +13,15 @@ import android.content.ContentProviderOperation
 import android.content.ContentResolver
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Email
+import android.provider.ContactsContract.CommonDataKinds.Event
+import android.provider.ContactsContract.CommonDataKinds.Nickname
 import android.provider.ContactsContract.CommonDataKinds.Note
 import android.provider.ContactsContract.CommonDataKinds.Organization
 import android.provider.ContactsContract.CommonDataKinds.Phone
 import android.provider.ContactsContract.CommonDataKinds.Photo
 import android.provider.ContactsContract.CommonDataKinds.StructuredName
 import android.provider.ContactsContract.CommonDataKinds.StructuredPostal
+import android.provider.ContactsContract.CommonDataKinds.Website
 import android.provider.ContactsContract.Data
 import android.provider.ContactsContract.RawContacts
 import android.util.Base64
@@ -51,7 +54,8 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         val mimes = arrayOf(
             StructuredName.CONTENT_ITEM_TYPE, Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE,
             StructuredPostal.CONTENT_ITEM_TYPE, Organization.CONTENT_ITEM_TYPE, Note.CONTENT_ITEM_TYPE,
-            Photo.CONTENT_ITEM_TYPE,
+            Photo.CONTENT_ITEM_TYPE, Nickname.CONTENT_ITEM_TYPE, Event.CONTENT_ITEM_TYPE,
+            Website.CONTENT_ITEM_TYPE,
         )
         val selection = "${Data.MIMETYPE} IN (${mimes.joinToString(",") { "?" }})"
 
@@ -92,6 +96,13 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
                         contact.title = cursor.getString(6)?.ifBlank { null }
                     }
                     Note.CONTENT_ITEM_TYPE -> contact.note = data1?.ifBlank { null }
+                    Nickname.CONTENT_ITEM_TYPE -> contact.nickname = data1?.ifBlank { null }
+                    Event.CONTENT_ITEM_TYPE -> if (cursor.getInt(4) == Event.TYPE_BIRTHDAY) {
+                        contact.birthday = data1?.ifBlank { null }
+                    }
+                    Website.CONTENT_ITEM_TYPE -> data1?.let {
+                        contact.websites += LabeledValue(it, contactTypeName(cursor.getInt(4)))
+                    }
                     Photo.CONTENT_ITEM_TYPE -> cursor.getBlob(8)?.let { photo ->
                         if (contact.photoBase64 == null &&
                             photo.size <= MAX_CONTACT_PHOTO_BYTES &&
@@ -155,6 +166,21 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         record.note?.let {
             ops += dataRow(Note.CONTENT_ITEM_TYPE).withValue(Note.NOTE, it).build()
         }
+        record.nickname?.let {
+            ops += dataRow(Nickname.CONTENT_ITEM_TYPE).withValue(Nickname.NAME, it).build()
+        }
+        record.birthday?.let {
+            ops += dataRow(Event.CONTENT_ITEM_TYPE)
+                .withValue(Event.START_DATE, it)
+                .withValue(Event.TYPE, Event.TYPE_BIRTHDAY)
+                .build()
+        }
+        record.websites.forEach {
+            ops += dataRow(Website.CONTENT_ITEM_TYPE)
+                .withValue(Website.URL, it.value)
+                .withValue(Website.TYPE, contactTypeValue(it.type))
+                .build()
+        }
         record.photoBase64?.let { encoded ->
             val photo = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull()
             if (photo != null && photo.size <= MAX_CONTACT_PHOTO_BYTES) {
@@ -177,11 +203,15 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         var note: String? = null,
         var starred: Boolean = false,
         var photoBase64: String? = null,
+        var nickname: String? = null,
+        var birthday: String? = null,
+        val websites: MutableList<LabeledValue> = mutableListOf(),
     ) {
         fun toRecord() = ContactRecord(
             displayName, givenName, familyName,
             phones.toList(), emails.toList(), postals.toList(),
             organization, title, note, starred, photoBase64,
+            nickname, birthday, websites.toList(),
         )
     }
 

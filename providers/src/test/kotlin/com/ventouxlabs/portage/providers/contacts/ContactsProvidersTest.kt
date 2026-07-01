@@ -192,6 +192,22 @@ class ContactsProvidersTest {
     }
 
     @Test
+    fun `dedup preserves contacts with distinct birthday nickname or website details`() = runTest {
+        val detailed = ada.copy(
+            nickname = "Countess",
+            birthday = "1815-12-10",
+            websites = listOf(LabeledValue("https://ada.example", "HOME")),
+        )
+        val store = FakeContactsStore(mutableListOf(ada))
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(detailed), it) }
+
+        val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(detailed)
+    }
+
+    @Test
     fun `nothing applied from a non-empty payload is a WRITE_ERROR`() = runTest {
         val store = FakeContactsStore(failInsertsFor = setOf("Ada", "Bob"))
         val payload = ByteArrayOutputStream().also { VCard3.write(listOf(ada, bob), it) }

@@ -132,7 +132,8 @@ size, sha256, display_name, group}`.
 > preserves the user's favorite/starred contact flag when Portage inserts a fresh raw contact.
 > Standard inline `PHOTO;ENCODING=b` carries thumbnails up to 256 KiB each; sender-side retained
 > photo bytes are capped at 8 MiB per export. Existing matching contacts are deduplicated rather
-> than mutated solely to change the starred bit or photo.
+> than mutated solely to change the starred bit or photo. Standard `NICKNAME`, `BDAY`, and typed
+> `URL` properties preserve the corresponding Android raw-contact rows.
 
 > The `wallpaper` kind (PRP-02) is the first binary-blob payload (a home/lock wallpaper
 > image, not structured text). Its item stream is a one-line JSON `WallpaperHeader`

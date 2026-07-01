@@ -30,6 +30,10 @@ data class ContactRecord(
     val starred: Boolean = false,
     /** Base64-encoded JPEG/PNG thumbnail, bounded by [MAX_CONTACT_PHOTO_BYTES] when read/parsed. */
     val photoBase64: String? = null,
+    val nickname: String? = null,
+    /** Android's birthday value, normally ISO `yyyy-MM-dd` or yearless `--MM-dd`. */
+    val birthday: String? = null,
+    val websites: List<LabeledValue> = emptyList(),
 )
 
 const val MAX_CONTACT_PHOTO_BYTES = 256 * 1024

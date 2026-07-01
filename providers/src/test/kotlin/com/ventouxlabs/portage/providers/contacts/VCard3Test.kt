@@ -38,6 +38,9 @@ class VCard3Test {
             organization = "Analytical Engines Ltd",
             title = "Mathematician",
             note = "First programmer",
+            nickname = "Enchantress of Numbers",
+            birthday = "1815-12-10",
+            websites = listOf(LabeledValue("https://example.org/ada", "WORK")),
         )
 
         val back = roundTrip(listOf(record))
@@ -98,6 +101,21 @@ class VCard3Test {
 
         assertThat(back.records).hasSize(2)
         assertThat(back.records.map { it.photoBase64 }).containsExactly(null, null)
+    }
+
+    @Test
+    fun `round trips a yearless birthday and multiple typed websites`() {
+        val record = ContactRecord(
+            displayName = "Details",
+            nickname = "D",
+            birthday = "--02-29",
+            websites = listOf(
+                LabeledValue("https://home.example", "HOME"),
+                LabeledValue("https://work.example", "WORK"),
+            ),
+        )
+
+        assertThat(roundTrip(listOf(record)).records).containsExactly(record)
     }
 
     @Test

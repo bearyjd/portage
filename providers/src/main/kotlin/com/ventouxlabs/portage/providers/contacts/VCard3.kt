@@ -49,6 +49,9 @@ object VCard3 {
         record.postals.forEach { appendLine("ADR;TYPE=${it.type}:;;${RfcText.escape(it.value)};;;;") }
         record.organization?.let { appendLine("ORG:${RfcText.escape(it)}") }
         record.title?.let { appendLine("TITLE:${RfcText.escape(it)}") }
+        record.nickname?.let { appendLine("NICKNAME:${RfcText.escape(it)}") }
+        record.birthday?.let { appendLine("BDAY:${RfcText.escape(it)}") }
+        record.websites.forEach { appendLine("URL;TYPE=${it.type}:${RfcText.escape(it.value)}") }
         record.note?.let { appendLine("NOTE:${RfcText.escape(it)}") }
         if (record.starred) appendLine("X-PORTAGE-STARRED:1")
         record.photoBase64?.let { appendLine("PHOTO;ENCODING=b;TYPE=${photoType(it)}:$it") }
@@ -134,6 +137,9 @@ object VCard3 {
         var note: String? = null
         var starred: Boolean = false
         var photoBase64: String? = null
+        var nickname: String? = null
+        var birthday: String? = null
+        val websites = mutableListOf<LabeledValue>()
 
         fun acceptProperty(line: String) {
             val colon = line.indexOf(':')
@@ -167,6 +173,9 @@ object VCard3 {
                 }
                 "ORG" -> organization = RfcText.unescape(rawValue).ifEmpty { null }
                 "TITLE" -> title = RfcText.unescape(rawValue).ifEmpty { null }
+                "NICKNAME" -> nickname = RfcText.unescape(rawValue).ifEmpty { null }
+                "BDAY" -> birthday = RfcText.unescape(rawValue).ifEmpty { null }
+                "URL" -> websites += LabeledValue(RfcText.unescape(rawValue), type)
                 "NOTE" -> note = RfcText.unescape(rawValue).ifEmpty { null }
                 "X-PORTAGE-STARRED" -> starred = rawValue.trim() == "1"
                 "PHOTO" -> photoBase64 = validatedPhoto(rawValue)
@@ -197,6 +206,9 @@ object VCard3 {
                 note = note,
                 starred = starred,
                 photoBase64 = photoBase64,
+                nickname = nickname,
+                birthday = birthday,
+                websites = websites.toList(),
             )
         }
     }
