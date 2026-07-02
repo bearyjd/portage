@@ -9,8 +9,15 @@
  */
 package com.ventouxlabs.portage.providers.contacts
 
-/** A typed value like `TEL;TYPE=CELL`. [type] is the uppercase vCard TYPE token. */
-data class LabeledValue(val value: String, val type: String)
+/**
+ * A typed value like `TEL;TYPE=CELL`. [type] is the uppercase vCard TYPE token.
+ * [customLabel] is used only when Android's provider type is CUSTOM.
+ */
+data class LabeledValue(
+    val value: String,
+    val type: String,
+    val customLabel: String? = null,
+)
 
 /**
  * One contact, as much of it as portage carries: name, phones, emails, postal addresses,
@@ -30,6 +37,10 @@ data class ContactRecord(
     val starred: Boolean = false,
     /** Base64-encoded JPEG/PNG thumbnail, bounded by [MAX_CONTACT_PHOTO_BYTES] when read/parsed. */
     val photoBase64: String? = null,
+    val nickname: String? = null,
+    /** Android's birthday value, normally ISO `yyyy-MM-dd` or yearless `--MM-dd`. */
+    val birthday: String? = null,
+    val websites: List<LabeledValue> = emptyList(),
 )
 
 const val MAX_CONTACT_PHOTO_BYTES = 256 * 1024

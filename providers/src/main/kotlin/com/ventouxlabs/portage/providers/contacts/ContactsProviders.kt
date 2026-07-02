@@ -103,4 +103,9 @@ private fun ContactRecord.dedupKey(): String = listOf(
     organization.orEmpty().trim().lowercase(),
     title.orEmpty().trim().lowercase(),
     note.orEmpty().trim(),
+    nickname.orEmpty().trim().lowercase(),
+    birthday.orEmpty().trim(),
+    websites.map {
+        "${it.value.trim().lowercase()}:${it.type.uppercase()}:${it.customLabel.orEmpty().trim()}"
+    }.sorted().joinToString("|"),
 ).joinToString("\u001f")

@@ -38,6 +38,9 @@ class VCard3Test {
             organization = "Analytical Engines Ltd",
             title = "Mathematician",
             note = "First programmer",
+            nickname = "Enchantress of Numbers",
+            birthday = "1815-12-10",
+            websites = listOf(LabeledValue("https://example.org/ada", "WORK")),
         )
 
         val back = roundTrip(listOf(record))
@@ -98,6 +101,54 @@ class VCard3Test {
 
         assertThat(back.records).hasSize(2)
         assertThat(back.records.map { it.photoBase64 }).containsExactly(null, null)
+    }
+
+    @Test
+    fun `round trips a yearless birthday and multiple typed websites`() {
+        val record = ContactRecord(
+            displayName = "Details",
+            nickname = "D",
+            birthday = "--02-29",
+            websites = listOf(
+                LabeledValue("https://home.example", "HOME"),
+                LabeledValue("https://work.example", "WORK"),
+            ),
+        )
+
+        assertThat(roundTrip(listOf(record)).records).containsExactly(record)
+    }
+
+    @Test
+    fun `round trips every Android website type and a custom label`() {
+        val types = listOf("HOMEPAGE", "BLOG", "PROFILE", "HOME", "WORK", "FTP", "OTHER")
+        val websites = types.map { LabeledValue("https://${it.lowercase()}.example", it) } +
+            LabeledValue("https://custom.example", "CUSTOM", "Family portal; private")
+        val record = ContactRecord(displayName = "All websites", websites = websites)
+
+        val out = ByteArrayOutputStream()
+        VCard3.write(listOf(record), out)
+        val back = VCard3.parse(ByteArrayInputStream(out.toByteArray()))
+
+        assertThat(out.toString(Charsets.UTF_8)).contains("X-PORTAGE-LABEL=")
+        assertThat(back.records).containsExactly(record)
+    }
+
+    @Test
+    fun `oversize custom website labels are bounded before serialization`() {
+        val original = "😀".repeat(100) + "x".repeat(200)
+        val record = ContactRecord(
+            displayName = "Bounded label",
+            websites = listOf(LabeledValue("https://custom.example", "CUSTOM", original)),
+        )
+
+        val out = ByteArrayOutputStream()
+        VCard3.write(listOf(record), out)
+        val back = VCard3.parse(ByteArrayInputStream(out.toByteArray())).records.single()
+        val restored = back.websites.single().customLabel!!
+
+        assertThat(restored).isEqualTo("😀".repeat(48))
+        assertThat(restored.codePointCount(0, restored.length)).isAtMost(128)
+        assertThat(restored.toByteArray(Charsets.UTF_8).size).isAtMost(192)
     }
 
     @Test

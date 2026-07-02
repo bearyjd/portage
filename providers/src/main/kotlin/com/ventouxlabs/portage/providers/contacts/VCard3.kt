@@ -49,6 +49,14 @@ object VCard3 {
         record.postals.forEach { appendLine("ADR;TYPE=${it.type}:;;${RfcText.escape(it.value)};;;;") }
         record.organization?.let { appendLine("ORG:${RfcText.escape(it)}") }
         record.title?.let { appendLine("TITLE:${RfcText.escape(it)}") }
+        record.nickname?.let { appendLine("NICKNAME:${RfcText.escape(it)}") }
+        record.birthday?.let { appendLine("BDAY:${RfcText.escape(it)}") }
+        record.websites.forEach {
+            val custom = it.customLabel?.let(::encodeCustomLabel)
+                ?.let { encoded -> ";X-PORTAGE-LABEL=$encoded" }
+                .orEmpty()
+            appendLine("URL;TYPE=${it.type}$custom:${RfcText.escape(it.value)}")
+        }
         record.note?.let { appendLine("NOTE:${RfcText.escape(it)}") }
         if (record.starred) appendLine("X-PORTAGE-STARRED:1")
         record.photoBase64?.let { appendLine("PHOTO;ENCODING=b;TYPE=${photoType(it)}:$it") }
@@ -65,6 +73,34 @@ object VCard3 {
                 ) "PNG" else "JPEG"
             }
             ?: "JPEG"
+
+    /**
+     * Keep the extension bounded in decoded and encoded form. Android does not impose a useful
+     * portable label limit, so oversize labels are truncated at Unicode code-point boundaries.
+     */
+    private fun encodeCustomLabel(label: String): String? {
+        if (label.isBlank()) return null
+        val bounded = StringBuilder()
+        var byteCount = 0
+        var codePoints = 0
+        var offset = 0
+        while (offset < label.length && codePoints < MAX_CUSTOM_LABEL_CODE_POINTS) {
+            val codePoint = label.codePointAt(offset)
+            val encoded = String(Character.toChars(codePoint)).toByteArray(Charsets.UTF_8)
+            if (byteCount + encoded.size > MAX_CUSTOM_LABEL_BYTES) break
+            bounded.appendCodePoint(codePoint)
+            byteCount += encoded.size
+            codePoints++
+            offset += Character.charCount(codePoint)
+        }
+        return bounded.toString().takeIf(String::isNotBlank)?.let {
+            Base64.getUrlEncoder().withoutPadding().encodeToString(it.toByteArray(Charsets.UTF_8))
+        }
+    }
+
+    private const val MAX_CUSTOM_LABEL_CODE_POINTS = 128
+    private const val MAX_CUSTOM_LABEL_BYTES = 192
+    private const val MAX_CUSTOM_LABEL_ENCODED_CHARS = 256
 
     private fun StringBuilder.appendLine(line: String) {
         append(RfcText.fold(line))
@@ -134,6 +170,9 @@ object VCard3 {
         var note: String? = null
         var starred: Boolean = false
         var photoBase64: String? = null
+        var nickname: String? = null
+        var birthday: String? = null
+        val websites = mutableListOf<LabeledValue>()
 
         fun acceptProperty(line: String) {
             val colon = line.indexOf(':')
@@ -148,6 +187,10 @@ object VCard3 {
                 ?.substringBefore(',')
                 ?.uppercase()
                 ?: "OTHER"
+            val customLabel = nameAndParams.drop(1)
+                .firstOrNull { it.uppercase().startsWith("X-PORTAGE-LABEL=") }
+                ?.substringAfter('=')
+                ?.let(::decodeCustomLabel)
 
             when (name) {
                 "FN" -> displayName = RfcText.unescape(rawValue)
@@ -167,11 +210,26 @@ object VCard3 {
                 }
                 "ORG" -> organization = RfcText.unescape(rawValue).ifEmpty { null }
                 "TITLE" -> title = RfcText.unescape(rawValue).ifEmpty { null }
+                "NICKNAME" -> nickname = RfcText.unescape(rawValue).ifEmpty { null }
+                "BDAY" -> birthday = RfcText.unescape(rawValue).ifEmpty { null }
+                "URL" -> websites += LabeledValue(RfcText.unescape(rawValue), type, customLabel)
                 "NOTE" -> note = RfcText.unescape(rawValue).ifEmpty { null }
                 "X-PORTAGE-STARRED" -> starred = rawValue.trim() == "1"
                 "PHOTO" -> photoBase64 = validatedPhoto(rawValue)
                 else -> Unit // unknown property — ignore (forward compat)
             }
+        }
+
+        private fun decodeCustomLabel(encoded: String): String? {
+            if (encoded.length > MAX_CUSTOM_LABEL_ENCODED_CHARS) return null
+            return runCatching {
+                val bytes = Base64.getUrlDecoder().decode(encoded)
+                if (bytes.size > MAX_CUSTOM_LABEL_BYTES) return null
+                String(bytes, Charsets.UTF_8).takeIf {
+                    it.isNotBlank() &&
+                        it.codePointCount(0, it.length) <= MAX_CUSTOM_LABEL_CODE_POINTS
+                }
+            }.getOrNull()
         }
 
         private fun validatedPhoto(value: String): String? {
@@ -197,6 +255,9 @@ object VCard3 {
                 note = note,
                 starred = starred,
                 photoBase64 = photoBase64,
+                nickname = nickname,
+                birthday = birthday,
+                websites = websites.toList(),
             )
         }
     }

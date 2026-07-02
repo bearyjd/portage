@@ -17,6 +17,7 @@ import android.net.Uri
 import android.provider.CallLog.Calls
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Phone
+import android.provider.ContactsContract.CommonDataKinds.Website
 import android.provider.ContactsContract.Data
 import android.provider.ContactsContract.RawContacts
 import android.provider.MediaStore
@@ -93,6 +94,15 @@ class ProviderDeviceContractTest {
             phones = listOf(LabeledValue(CONTACT_PHONE, "CELL")),
             // Valid 1x1 PNG: exercise the real ContactsProvider photo row without large fixtures.
             photoBase64 = CONTACT_PHOTO,
+            nickname = "Portage fixture",
+            birthday = "--07-01",
+            websites = WEBSITE_FIXTURES.map { (type, _) ->
+                LabeledValue(
+                    value = "https://${type.lowercase()}.portage.example",
+                    type = type,
+                    customLabel = "Portage custom".takeIf { type == "CUSTOM" },
+                )
+            },
         )
         val payload = ByteArrayOutputStream().also { VCard3.write(listOf(record), it) }.toByteArray()
         val journalFile = File(context.cacheDir, "device-contract-contact-journal")
@@ -110,6 +120,27 @@ class ProviderDeviceContractTest {
         val imported = AndroidContactsStore(resolver).readAll().filter { it.displayName == CONTACT_NAME }
         assertThat(imported).hasSize(1)
         assertThat(imported.single().photoBase64).isNotNull()
+        assertThat(imported.single().nickname).isEqualTo("Portage fixture")
+        assertThat(imported.single().birthday).isEqualTo("--07-01")
+        assertThat(imported.single().websites).containsExactlyElementsIn(record.websites)
+        resolver.query(
+            Data.CONTENT_URI,
+            arrayOf(Website.URL, Website.TYPE, Website.LABEL),
+            "${Data.MIMETYPE} = ? AND ${Website.URL} LIKE ?",
+            arrayOf(Website.CONTENT_ITEM_TYPE, "https://%.portage.example"),
+            null,
+        )?.use { cursor ->
+            val actual = mutableMapOf<String, Pair<Int, String?>>()
+            while (cursor.moveToNext()) {
+                actual[cursor.getString(0)] = cursor.getInt(1) to cursor.getString(2)
+            }
+            WEBSITE_FIXTURES.forEach { (type, providerType) ->
+                val row = actual.getValue("https://${type.lowercase()}.portage.example")
+                assertThat(row.first).isEqualTo(providerType)
+                assertThat(row.second).isEqualTo("Portage custom".takeIf { type == "CUSTOM" })
+            }
+        }
+        Unit
     }
 
     @Test
@@ -357,5 +388,15 @@ class ProviderDeviceContractTest {
         const val USER_FILE_NAME = "portage-device-contract.bin"
         const val USER_FILE_TRUNCATED_NAME = "portage-device-contract-truncated.bin"
         const val USER_FILE_MIME = "application/octet-stream"
+        val WEBSITE_FIXTURES = listOf(
+            "CUSTOM" to Website.TYPE_CUSTOM,
+            "HOMEPAGE" to Website.TYPE_HOMEPAGE,
+            "BLOG" to Website.TYPE_BLOG,
+            "PROFILE" to Website.TYPE_PROFILE,
+            "HOME" to Website.TYPE_HOME,
+            "WORK" to Website.TYPE_WORK,
+            "FTP" to Website.TYPE_FTP,
+            "OTHER" to Website.TYPE_OTHER,
+        )
     }
 }
