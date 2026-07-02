@@ -168,6 +168,18 @@ class VCard3Test {
     }
 
     @Test
+    fun `parses standard comma-separated categories without splitting escaped commas`() {
+        val back = parse(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Grouped\r\n" +
+                "CATEGORIES:Friends,Work,Neighbors\\, close\r\nEND:VCARD\r\n",
+        )
+
+        assertThat(back.records.single().groupNames)
+            .containsExactly("Friends", "Work", "Neighbors, close")
+            .inOrder()
+    }
+
+    @Test
     fun `writes version 3 with CRLF line endings`() {
         val out = ByteArrayOutputStream()
         VCard3.write(listOf(ContactRecord(displayName = "X")), out)

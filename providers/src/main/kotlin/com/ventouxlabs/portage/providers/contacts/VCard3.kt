@@ -132,8 +132,8 @@ object VCard3 {
         return VCardParseResult(records, malformed)
     }
 
-    /** Split a compound value on unescaped `;` (component separators survive escaping). */
-    private fun splitComponents(value: String): List<String> {
+    /** Split a value on an unescaped delimiter (escaped separators survive for later unescaping). */
+    private fun splitEscaped(value: String, delimiter: Char): List<String> {
         val parts = mutableListOf<String>()
         val current = StringBuilder()
         var i = 0
@@ -144,7 +144,7 @@ object VCard3 {
                     current.append(c).append(value[i + 1])
                     i += 2
                 }
-                c == ';' -> {
+                c == delimiter -> {
                     parts += current.toString()
                     current.setLength(0)
                     i++
@@ -158,6 +158,9 @@ object VCard3 {
         parts += current.toString()
         return parts
     }
+
+    /** Split a structured property on its unescaped component separators. */
+    private fun splitComponents(value: String): List<String> = splitEscaped(value, ';')
 
     private class CardBuilder {
         var displayName: String? = null
@@ -215,9 +218,10 @@ object VCard3 {
                 "NICKNAME" -> nickname = RfcText.unescape(rawValue).ifEmpty { null }
                 "BDAY" -> birthday = RfcText.unescape(rawValue).ifEmpty { null }
                 "URL" -> websites += LabeledValue(RfcText.unescape(rawValue), type, customLabel)
-                "CATEGORIES" -> RfcText.unescape(rawValue)
-                    .takeIf(String::isNotBlank)
-                    ?.let(groupNames::add)
+                "CATEGORIES" -> splitEscaped(rawValue, ',')
+                    .map(RfcText::unescape)
+                    .filter(String::isNotBlank)
+                    .let(groupNames::addAll)
                 "NOTE" -> note = RfcText.unescape(rawValue).ifEmpty { null }
                 "X-PORTAGE-STARRED" -> starred = rawValue.trim() == "1"
                 "PHOTO" -> photoBase64 = validatedPhoto(rawValue)

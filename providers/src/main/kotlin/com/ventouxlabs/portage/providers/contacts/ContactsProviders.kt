@@ -114,5 +114,10 @@ fun ContactRecord.canonicalImportKey(): String = listOf(
     websites.map {
         "${it.value.trim().lowercase()}:${it.type.uppercase()}:${it.customLabel.orEmpty().trim()}"
     }.sorted().joinToString("|"),
-    groupNames.map { it.trim().lowercase() }.sorted().joinToString("|"),
+    groupNames.asSequence()
+        .map { it.trim().lowercase() }
+        .filter(String::isNotBlank)
+        .distinct()
+        .sorted()
+        .joinToString("|"),
 ).joinToString("\u001f")

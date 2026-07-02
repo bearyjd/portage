@@ -50,7 +50,10 @@ class FileContactImportJournalTest {
 
         assertThat(
             journal.contains(
-                ContactRecord(displayName = "grouped", groupNames = listOf("family", "work")),
+                ContactRecord(
+                    displayName = "grouped",
+                    groupNames = listOf(" family ", "", "work", "FAMILY"),
+                ),
             ),
         ).isTrue()
     }
