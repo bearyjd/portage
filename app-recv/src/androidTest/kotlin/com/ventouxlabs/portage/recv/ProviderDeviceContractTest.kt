@@ -17,6 +17,7 @@ import android.net.Uri
 import android.provider.CallLog.Calls
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Phone
+import android.provider.ContactsContract.CommonDataKinds.Website
 import android.provider.ContactsContract.Data
 import android.provider.ContactsContract.RawContacts
 import android.provider.MediaStore
@@ -117,6 +118,16 @@ class ProviderDeviceContractTest {
         assertThat(imported.single().birthday).isEqualTo("--07-01")
         assertThat(imported.single().websites)
             .containsExactly(LabeledValue("https://portage.example", "HOME"))
+        resolver.query(
+            Data.CONTENT_URI,
+            arrayOf(Website.TYPE),
+            "${Data.MIMETYPE} = ? AND ${Website.URL} = ?",
+            arrayOf(Website.CONTENT_ITEM_TYPE, "https://portage.example"),
+            null,
+        )?.use { cursor ->
+            assertThat(cursor.moveToFirst()).isTrue()
+            assertThat(cursor.getInt(0)).isEqualTo(Website.TYPE_HOME)
+        }
         Unit
     }
 

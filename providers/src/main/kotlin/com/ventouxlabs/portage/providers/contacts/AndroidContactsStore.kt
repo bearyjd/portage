@@ -101,7 +101,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
                         contact.birthday = data1?.ifBlank { null }
                     }
                     Website.CONTENT_ITEM_TYPE -> data1?.let {
-                        contact.websites += LabeledValue(it, contactTypeName(cursor.getInt(4)))
+                        contact.websites += LabeledValue(it, websiteTypeName(cursor.getInt(4)))
                     }
                     Photo.CONTENT_ITEM_TYPE -> cursor.getBlob(8)?.let { photo ->
                         if (contact.photoBase64 == null &&
@@ -178,7 +178,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         record.websites.forEach {
             ops += dataRow(Website.CONTENT_ITEM_TYPE)
                 .withValue(Website.URL, it.value)
-                .withValue(Website.TYPE, contactTypeValue(it.type))
+                .withValue(Website.TYPE, websiteTypeValue(it.type))
                 .build()
         }
         record.photoBase64?.let { encoded ->
@@ -240,5 +240,17 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         "HOME" -> Email.TYPE_HOME
         "WORK" -> Email.TYPE_WORK
         else -> Email.TYPE_OTHER
+    }
+
+    private fun websiteTypeName(type: Int): String = when (type) {
+        Website.TYPE_HOME -> "HOME"
+        Website.TYPE_WORK -> "WORK"
+        else -> "OTHER"
+    }
+
+    private fun websiteTypeValue(name: String): Int = when (name.uppercase()) {
+        "HOME" -> Website.TYPE_HOME
+        "WORK" -> Website.TYPE_WORK
+        else -> Website.TYPE_OTHER
     }
 }
