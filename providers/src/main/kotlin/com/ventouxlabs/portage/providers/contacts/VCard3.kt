@@ -57,6 +57,7 @@ object VCard3 {
                 .orEmpty()
             appendLine("URL;TYPE=${it.type}$custom:${RfcText.escape(it.value)}")
         }
+        record.groupNames.forEach { appendLine("CATEGORIES:${RfcText.escape(it)}") }
         record.note?.let { appendLine("NOTE:${RfcText.escape(it)}") }
         if (record.starred) appendLine("X-PORTAGE-STARRED:1")
         record.photoBase64?.let { appendLine("PHOTO;ENCODING=b;TYPE=${photoType(it)}:$it") }
@@ -173,6 +174,7 @@ object VCard3 {
         var nickname: String? = null
         var birthday: String? = null
         val websites = mutableListOf<LabeledValue>()
+        val groupNames = mutableListOf<String>()
 
         fun acceptProperty(line: String) {
             val colon = line.indexOf(':')
@@ -213,6 +215,9 @@ object VCard3 {
                 "NICKNAME" -> nickname = RfcText.unescape(rawValue).ifEmpty { null }
                 "BDAY" -> birthday = RfcText.unescape(rawValue).ifEmpty { null }
                 "URL" -> websites += LabeledValue(RfcText.unescape(rawValue), type, customLabel)
+                "CATEGORIES" -> RfcText.unescape(rawValue)
+                    .takeIf(String::isNotBlank)
+                    ?.let(groupNames::add)
                 "NOTE" -> note = RfcText.unescape(rawValue).ifEmpty { null }
                 "X-PORTAGE-STARRED" -> starred = rawValue.trim() == "1"
                 "PHOTO" -> photoBase64 = validatedPhoto(rawValue)
@@ -258,6 +263,7 @@ object VCard3 {
                 nickname = nickname,
                 birthday = birthday,
                 websites = websites.toList(),
+                groupNames = groupNames.distinct(),
             )
         }
     }

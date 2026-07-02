@@ -41,6 +41,8 @@ data class ContactRecord(
     /** Android's birthday value, normally ISO `yyyy-MM-dd` or yearless `--MM-dd`. */
     val birthday: String? = null,
     val websites: List<LabeledValue> = emptyList(),
+    /** User-visible group names; provider/account-specific group IDs are intentionally not carried. */
+    val groupNames: List<String> = emptyList(),
 )
 
 const val MAX_CONTACT_PHOTO_BYTES = 256 * 1024

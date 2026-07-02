@@ -11,9 +11,12 @@ package com.ventouxlabs.portage.providers.contacts
 
 import android.content.ContentProviderOperation
 import android.content.ContentResolver
+import android.content.ContentUris
+import android.content.ContentValues
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Email
 import android.provider.ContactsContract.CommonDataKinds.Event
+import android.provider.ContactsContract.CommonDataKinds.GroupMembership
 import android.provider.ContactsContract.CommonDataKinds.Nickname
 import android.provider.ContactsContract.CommonDataKinds.Note
 import android.provider.ContactsContract.CommonDataKinds.Organization
@@ -23,6 +26,7 @@ import android.provider.ContactsContract.CommonDataKinds.StructuredName
 import android.provider.ContactsContract.CommonDataKinds.StructuredPostal
 import android.provider.ContactsContract.CommonDataKinds.Website
 import android.provider.ContactsContract.Data
+import android.provider.ContactsContract.Groups
 import android.provider.ContactsContract.RawContacts
 import android.util.Base64
 
@@ -46,6 +50,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
 
     override fun readAll(): List<ContactRecord> {
         val builders = linkedMapOf<Long, MutableContact>()
+        val groupTitles = readGroupTitles()
         val projection = arrayOf(
             Data.RAW_CONTACT_ID, Data.DISPLAY_NAME_PRIMARY, Data.MIMETYPE,
             Data.DATA1, Data.DATA2, Data.DATA3, Data.DATA4,
@@ -55,7 +60,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
             StructuredName.CONTENT_ITEM_TYPE, Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE,
             StructuredPostal.CONTENT_ITEM_TYPE, Organization.CONTENT_ITEM_TYPE, Note.CONTENT_ITEM_TYPE,
             Photo.CONTENT_ITEM_TYPE, Nickname.CONTENT_ITEM_TYPE, Event.CONTENT_ITEM_TYPE,
-            Website.CONTENT_ITEM_TYPE,
+            Website.CONTENT_ITEM_TYPE, GroupMembership.CONTENT_ITEM_TYPE,
         )
         val selection = "${Data.MIMETYPE} IN (${mimes.joinToString(",") { "?" }})"
 
@@ -108,6 +113,10 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
                             customLabel = cursor.getString(5)?.takeIf { type == Website.TYPE_CUSTOM },
                         )
                     }
+                    GroupMembership.CONTENT_ITEM_TYPE -> data1?.toLongOrNull()
+                        ?.let(groupTitles::get)
+                        ?.takeIf(String::isNotBlank)
+                        ?.let(contact.groupNames::add)
                     Photo.CONTENT_ITEM_TYPE -> cursor.getBlob(8)?.let { photo ->
                         if (contact.photoBase64 == null &&
                             photo.size <= MAX_CONTACT_PHOTO_BYTES &&
@@ -124,6 +133,11 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
     }
 
     override fun insert(record: ContactRecord): Boolean {
+        val groupIds = record.groupNames
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinctBy(String::lowercase)
+            .mapNotNull(::findOrCreateLocalGroup)
         val ops = arrayListOf(
             // Null account = device-local contact BY DESIGN: portage is no-cloud, and a
             // GOS device typically has no sync account. Verify on-device that local
@@ -187,6 +201,11 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
                 .withValue(Website.LABEL, it.customLabel)
                 .build()
         }
+        groupIds.forEach { groupId ->
+            ops += dataRow(GroupMembership.CONTENT_ITEM_TYPE)
+                .withValue(GroupMembership.GROUP_ROW_ID, groupId)
+                .build()
+        }
         record.photoBase64?.let { encoded ->
             val photo = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull()
             if (photo != null && photo.size <= MAX_CONTACT_PHOTO_BYTES) {
@@ -212,13 +231,54 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         var nickname: String? = null,
         var birthday: String? = null,
         val websites: MutableList<LabeledValue> = mutableListOf(),
+        val groupNames: MutableList<String> = mutableListOf(),
     ) {
         fun toRecord() = ContactRecord(
             displayName, givenName, familyName,
             phones.toList(), emails.toList(), postals.toList(),
             organization, title, note, starred, photoBase64,
             nickname, birthday, websites.toList(),
+            groupNames.distinct(),
         )
+    }
+
+    private fun readGroupTitles(): Map<Long, String> {
+        val groups = mutableMapOf<Long, String>()
+        resolver.query(
+            Groups.CONTENT_URI,
+            arrayOf(Groups._ID, Groups.TITLE),
+            "${Groups.DELETED} = 0",
+            null,
+            null,
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                cursor.getString(1)?.takeIf(String::isNotBlank)?.let { groups[cursor.getLong(0)] = it }
+            }
+        }
+        return groups
+    }
+
+    /** Remap account-specific source IDs to one device-local group with the same visible title. */
+    private fun findOrCreateLocalGroup(title: String): Long? {
+        resolver.query(
+            Groups.CONTENT_URI,
+            arrayOf(Groups._ID),
+            "${Groups.TITLE} = ? AND ${Groups.DELETED} = 0 AND " +
+                "${Groups.ACCOUNT_NAME} IS NULL AND ${Groups.ACCOUNT_TYPE} IS NULL",
+            arrayOf(title),
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) return cursor.getLong(0)
+        }
+        val values = ContentValues().apply {
+            put(Groups.TITLE, title)
+            putNull(Groups.ACCOUNT_NAME)
+            putNull(Groups.ACCOUNT_TYPE)
+            put(Groups.GROUP_VISIBLE, 1)
+        }
+        return runCatching {
+            resolver.insert(Groups.CONTENT_URI, values)?.let(ContentUris::parseId)
+        }.getOrNull()
     }
 
     private fun phoneTypeName(type: Int): String = when (type) {

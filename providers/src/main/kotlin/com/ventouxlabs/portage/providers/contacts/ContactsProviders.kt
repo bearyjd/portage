@@ -108,4 +108,5 @@ private fun ContactRecord.dedupKey(): String = listOf(
     websites.map {
         "${it.value.trim().lowercase()}:${it.type.uppercase()}:${it.customLabel.orEmpty().trim()}"
     }.sorted().joinToString("|"),
+    groupNames.map { it.trim().lowercase() }.sorted().joinToString("|"),
 ).joinToString("\u001f")

@@ -135,7 +135,9 @@ size, sha256, display_name, group}`.
 > than mutated solely to change the starred bit or photo. Standard `NICKNAME`, `BDAY`, and typed
 > `URL` properties preserve the corresponding Android raw-contact rows. Website types map all
 > Android categories; `URL;TYPE=CUSTOM` uses a bounded Base64url `X-PORTAGE-LABEL` parameter to
-> preserve the provider's custom label.
+> preserve the provider's custom label. Repeated standard `CATEGORIES` fields carry visible group
+> names; receiver-side local group IDs are found or created by exact title because source account
+> and group IDs are device-specific.
 
 > The `wallpaper` kind (PRP-02) is the first binary-blob payload (a home/lock wallpaper
 > image, not structured text). Its item stream is a one-line JSON `WallpaperHeader`
