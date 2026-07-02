@@ -96,7 +96,13 @@ class ProviderDeviceContractTest {
             photoBase64 = CONTACT_PHOTO,
             nickname = "Portage fixture",
             birthday = "--07-01",
-            websites = listOf(LabeledValue("https://portage.example", "HOME")),
+            websites = WEBSITE_FIXTURES.map { (type, _) ->
+                LabeledValue(
+                    value = "https://${type.lowercase()}.portage.example",
+                    type = type,
+                    customLabel = "Portage custom".takeIf { type == "CUSTOM" },
+                )
+            },
         )
         val payload = ByteArrayOutputStream().also { VCard3.write(listOf(record), it) }.toByteArray()
         val journalFile = File(context.cacheDir, "device-contract-contact-journal")
@@ -116,17 +122,23 @@ class ProviderDeviceContractTest {
         assertThat(imported.single().photoBase64).isNotNull()
         assertThat(imported.single().nickname).isEqualTo("Portage fixture")
         assertThat(imported.single().birthday).isEqualTo("--07-01")
-        assertThat(imported.single().websites)
-            .containsExactly(LabeledValue("https://portage.example", "HOME"))
+        assertThat(imported.single().websites).containsExactlyElementsIn(record.websites)
         resolver.query(
             Data.CONTENT_URI,
-            arrayOf(Website.TYPE),
-            "${Data.MIMETYPE} = ? AND ${Website.URL} = ?",
-            arrayOf(Website.CONTENT_ITEM_TYPE, "https://portage.example"),
+            arrayOf(Website.URL, Website.TYPE, Website.LABEL),
+            "${Data.MIMETYPE} = ? AND ${Website.URL} LIKE ?",
+            arrayOf(Website.CONTENT_ITEM_TYPE, "https://%.portage.example"),
             null,
         )?.use { cursor ->
-            assertThat(cursor.moveToFirst()).isTrue()
-            assertThat(cursor.getInt(0)).isEqualTo(Website.TYPE_HOME)
+            val actual = mutableMapOf<String, Pair<Int, String?>>()
+            while (cursor.moveToNext()) {
+                actual[cursor.getString(0)] = cursor.getInt(1) to cursor.getString(2)
+            }
+            WEBSITE_FIXTURES.forEach { (type, providerType) ->
+                val row = actual.getValue("https://${type.lowercase()}.portage.example")
+                assertThat(row.first).isEqualTo(providerType)
+                assertThat(row.second).isEqualTo("Portage custom".takeIf { type == "CUSTOM" })
+            }
         }
         Unit
     }
@@ -376,5 +388,15 @@ class ProviderDeviceContractTest {
         const val USER_FILE_NAME = "portage-device-contract.bin"
         const val USER_FILE_TRUNCATED_NAME = "portage-device-contract-truncated.bin"
         const val USER_FILE_MIME = "application/octet-stream"
+        val WEBSITE_FIXTURES = listOf(
+            "CUSTOM" to Website.TYPE_CUSTOM,
+            "HOMEPAGE" to Website.TYPE_HOMEPAGE,
+            "BLOG" to Website.TYPE_BLOG,
+            "PROFILE" to Website.TYPE_PROFILE,
+            "HOME" to Website.TYPE_HOME,
+            "WORK" to Website.TYPE_WORK,
+            "FTP" to Website.TYPE_FTP,
+            "OTHER" to Website.TYPE_OTHER,
+        )
     }
 }

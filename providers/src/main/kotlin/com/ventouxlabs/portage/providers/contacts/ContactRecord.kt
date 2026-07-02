@@ -9,8 +9,15 @@
  */
 package com.ventouxlabs.portage.providers.contacts
 
-/** A typed value like `TEL;TYPE=CELL`. [type] is the uppercase vCard TYPE token. */
-data class LabeledValue(val value: String, val type: String)
+/**
+ * A typed value like `TEL;TYPE=CELL`. [type] is the uppercase vCard TYPE token.
+ * [customLabel] is used only when Android's provider type is CUSTOM.
+ */
+data class LabeledValue(
+    val value: String,
+    val type: String,
+    val customLabel: String? = null,
+)
 
 /**
  * One contact, as much of it as portage carries: name, phones, emails, postal addresses,

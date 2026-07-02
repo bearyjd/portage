@@ -119,6 +119,21 @@ class VCard3Test {
     }
 
     @Test
+    fun `round trips every Android website type and a custom label`() {
+        val types = listOf("HOMEPAGE", "BLOG", "PROFILE", "HOME", "WORK", "FTP", "OTHER")
+        val websites = types.map { LabeledValue("https://${it.lowercase()}.example", it) } +
+            LabeledValue("https://custom.example", "CUSTOM", "Family portal; private")
+        val record = ContactRecord(displayName = "All websites", websites = websites)
+
+        val out = ByteArrayOutputStream()
+        VCard3.write(listOf(record), out)
+        val back = VCard3.parse(ByteArrayInputStream(out.toByteArray()))
+
+        assertThat(out.toString(Charsets.UTF_8)).contains("X-PORTAGE-LABEL=")
+        assertThat(back.records).containsExactly(record)
+    }
+
+    @Test
     fun `writes version 3 with CRLF line endings`() {
         val out = ByteArrayOutputStream()
         VCard3.write(listOf(ContactRecord(displayName = "X")), out)

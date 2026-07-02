@@ -101,7 +101,12 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
                         contact.birthday = data1?.ifBlank { null }
                     }
                     Website.CONTENT_ITEM_TYPE -> data1?.let {
-                        contact.websites += LabeledValue(it, websiteTypeName(cursor.getInt(4)))
+                        val type = cursor.getInt(4)
+                        contact.websites += LabeledValue(
+                            value = it,
+                            type = websiteTypeName(type),
+                            customLabel = cursor.getString(5)?.takeIf { type == Website.TYPE_CUSTOM },
+                        )
                     }
                     Photo.CONTENT_ITEM_TYPE -> cursor.getBlob(8)?.let { photo ->
                         if (contact.photoBase64 == null &&
@@ -179,6 +184,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
             ops += dataRow(Website.CONTENT_ITEM_TYPE)
                 .withValue(Website.URL, it.value)
                 .withValue(Website.TYPE, websiteTypeValue(it.type))
+                .withValue(Website.LABEL, it.customLabel)
                 .build()
         }
         record.photoBase64?.let { encoded ->
@@ -243,14 +249,24 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
     }
 
     private fun websiteTypeName(type: Int): String = when (type) {
+        Website.TYPE_CUSTOM -> "CUSTOM"
+        Website.TYPE_HOMEPAGE -> "HOMEPAGE"
+        Website.TYPE_BLOG -> "BLOG"
+        Website.TYPE_PROFILE -> "PROFILE"
         Website.TYPE_HOME -> "HOME"
         Website.TYPE_WORK -> "WORK"
+        Website.TYPE_FTP -> "FTP"
         else -> "OTHER"
     }
 
     private fun websiteTypeValue(name: String): Int = when (name.uppercase()) {
+        "CUSTOM" -> Website.TYPE_CUSTOM
+        "HOMEPAGE" -> Website.TYPE_HOMEPAGE
+        "BLOG" -> Website.TYPE_BLOG
+        "PROFILE" -> Website.TYPE_PROFILE
         "HOME" -> Website.TYPE_HOME
         "WORK" -> Website.TYPE_WORK
+        "FTP" -> Website.TYPE_FTP
         else -> Website.TYPE_OTHER
     }
 }

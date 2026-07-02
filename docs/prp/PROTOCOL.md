@@ -133,7 +133,9 @@ size, sha256, display_name, group}`.
 > Standard inline `PHOTO;ENCODING=b` carries thumbnails up to 256 KiB each; sender-side retained
 > photo bytes are capped at 8 MiB per export. Existing matching contacts are deduplicated rather
 > than mutated solely to change the starred bit or photo. Standard `NICKNAME`, `BDAY`, and typed
-> `URL` properties preserve the corresponding Android raw-contact rows.
+> `URL` properties preserve the corresponding Android raw-contact rows. Website types map all
+> Android categories; `URL;TYPE=CUSTOM` uses a bounded Base64url `X-PORTAGE-LABEL` parameter to
+> preserve the provider's custom label.
 
 > The `wallpaper` kind (PRP-02) is the first binary-blob payload (a home/lock wallpaper
 > image, not structured text). Its item stream is a one-line JSON `WallpaperHeader`

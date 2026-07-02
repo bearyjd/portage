@@ -51,7 +51,12 @@ object VCard3 {
         record.title?.let { appendLine("TITLE:${RfcText.escape(it)}") }
         record.nickname?.let { appendLine("NICKNAME:${RfcText.escape(it)}") }
         record.birthday?.let { appendLine("BDAY:${RfcText.escape(it)}") }
-        record.websites.forEach { appendLine("URL;TYPE=${it.type}:${RfcText.escape(it.value)}") }
+        record.websites.forEach {
+            val custom = it.customLabel?.takeIf(String::isNotBlank)?.let { label ->
+                ";X-PORTAGE-LABEL=${Base64.getUrlEncoder().withoutPadding().encodeToString(label.toByteArray())}"
+            }.orEmpty()
+            appendLine("URL;TYPE=${it.type}$custom:${RfcText.escape(it.value)}")
+        }
         record.note?.let { appendLine("NOTE:${RfcText.escape(it)}") }
         if (record.starred) appendLine("X-PORTAGE-STARRED:1")
         record.photoBase64?.let { appendLine("PHOTO;ENCODING=b;TYPE=${photoType(it)}:$it") }
@@ -154,6 +159,10 @@ object VCard3 {
                 ?.substringBefore(',')
                 ?.uppercase()
                 ?: "OTHER"
+            val customLabel = nameAndParams.drop(1)
+                .firstOrNull { it.uppercase().startsWith("X-PORTAGE-LABEL=") }
+                ?.substringAfter('=')
+                ?.let(::decodeCustomLabel)
 
             when (name) {
                 "FN" -> displayName = RfcText.unescape(rawValue)
@@ -175,12 +184,20 @@ object VCard3 {
                 "TITLE" -> title = RfcText.unescape(rawValue).ifEmpty { null }
                 "NICKNAME" -> nickname = RfcText.unescape(rawValue).ifEmpty { null }
                 "BDAY" -> birthday = RfcText.unescape(rawValue).ifEmpty { null }
-                "URL" -> websites += LabeledValue(RfcText.unescape(rawValue), type)
+                "URL" -> websites += LabeledValue(RfcText.unescape(rawValue), type, customLabel)
                 "NOTE" -> note = RfcText.unescape(rawValue).ifEmpty { null }
                 "X-PORTAGE-STARRED" -> starred = rawValue.trim() == "1"
                 "PHOTO" -> photoBase64 = validatedPhoto(rawValue)
                 else -> Unit // unknown property — ignore (forward compat)
             }
+        }
+
+        private fun decodeCustomLabel(encoded: String): String? {
+            if (encoded.length > 256) return null
+            return runCatching {
+                String(Base64.getUrlDecoder().decode(encoded), Charsets.UTF_8)
+                    .takeIf { it.isNotBlank() && it.length <= 128 }
+            }.getOrNull()
         }
 
         private fun validatedPhoto(value: String): String? {
