@@ -52,9 +52,9 @@ object VCard3 {
         record.nickname?.let { appendLine("NICKNAME:${RfcText.escape(it)}") }
         record.birthday?.let { appendLine("BDAY:${RfcText.escape(it)}") }
         record.websites.forEach {
-            val custom = it.customLabel?.takeIf(String::isNotBlank)?.let { label ->
-                ";X-PORTAGE-LABEL=${Base64.getUrlEncoder().withoutPadding().encodeToString(label.toByteArray())}"
-            }.orEmpty()
+            val custom = it.customLabel?.let(::encodeCustomLabel)
+                ?.let { encoded -> ";X-PORTAGE-LABEL=$encoded" }
+                .orEmpty()
             appendLine("URL;TYPE=${it.type}$custom:${RfcText.escape(it.value)}")
         }
         record.note?.let { appendLine("NOTE:${RfcText.escape(it)}") }
@@ -73,6 +73,34 @@ object VCard3 {
                 ) "PNG" else "JPEG"
             }
             ?: "JPEG"
+
+    /**
+     * Keep the extension bounded in decoded and encoded form. Android does not impose a useful
+     * portable label limit, so oversize labels are truncated at Unicode code-point boundaries.
+     */
+    private fun encodeCustomLabel(label: String): String? {
+        if (label.isBlank()) return null
+        val bounded = StringBuilder()
+        var byteCount = 0
+        var codePoints = 0
+        var offset = 0
+        while (offset < label.length && codePoints < MAX_CUSTOM_LABEL_CODE_POINTS) {
+            val codePoint = label.codePointAt(offset)
+            val encoded = String(Character.toChars(codePoint)).toByteArray(Charsets.UTF_8)
+            if (byteCount + encoded.size > MAX_CUSTOM_LABEL_BYTES) break
+            bounded.appendCodePoint(codePoint)
+            byteCount += encoded.size
+            codePoints++
+            offset += Character.charCount(codePoint)
+        }
+        return bounded.toString().takeIf(String::isNotBlank)?.let {
+            Base64.getUrlEncoder().withoutPadding().encodeToString(it.toByteArray(Charsets.UTF_8))
+        }
+    }
+
+    private const val MAX_CUSTOM_LABEL_CODE_POINTS = 128
+    private const val MAX_CUSTOM_LABEL_BYTES = 192
+    private const val MAX_CUSTOM_LABEL_ENCODED_CHARS = 256
 
     private fun StringBuilder.appendLine(line: String) {
         append(RfcText.fold(line))
@@ -193,10 +221,14 @@ object VCard3 {
         }
 
         private fun decodeCustomLabel(encoded: String): String? {
-            if (encoded.length > 256) return null
+            if (encoded.length > MAX_CUSTOM_LABEL_ENCODED_CHARS) return null
             return runCatching {
-                String(Base64.getUrlDecoder().decode(encoded), Charsets.UTF_8)
-                    .takeIf { it.isNotBlank() && it.length <= 128 }
+                val bytes = Base64.getUrlDecoder().decode(encoded)
+                if (bytes.size > MAX_CUSTOM_LABEL_BYTES) return null
+                String(bytes, Charsets.UTF_8).takeIf {
+                    it.isNotBlank() &&
+                        it.codePointCount(0, it.length) <= MAX_CUSTOM_LABEL_CODE_POINTS
+                }
             }.getOrNull()
         }
 

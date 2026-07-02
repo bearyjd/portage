@@ -134,6 +134,24 @@ class VCard3Test {
     }
 
     @Test
+    fun `oversize custom website labels are bounded before serialization`() {
+        val original = "😀".repeat(100) + "x".repeat(200)
+        val record = ContactRecord(
+            displayName = "Bounded label",
+            websites = listOf(LabeledValue("https://custom.example", "CUSTOM", original)),
+        )
+
+        val out = ByteArrayOutputStream()
+        VCard3.write(listOf(record), out)
+        val back = VCard3.parse(ByteArrayInputStream(out.toByteArray())).records.single()
+        val restored = back.websites.single().customLabel!!
+
+        assertThat(restored).isEqualTo("😀".repeat(48))
+        assertThat(restored.codePointCount(0, restored.length)).isAtMost(128)
+        assertThat(restored.toByteArray(Charsets.UTF_8).size).isAtMost(192)
+    }
+
+    @Test
     fun `writes version 3 with CRLF line endings`() {
         val out = ByteArrayOutputStream()
         VCard3.write(listOf(ContactRecord(displayName = "X")), out)
