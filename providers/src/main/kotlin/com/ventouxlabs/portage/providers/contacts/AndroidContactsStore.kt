@@ -133,11 +133,16 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
     }
 
     override fun insert(record: ContactRecord): Boolean {
-        val groupIds = record.groupNames
+        val groupNames = record.groupNames
             .map(String::trim)
             .filter(String::isNotBlank)
             .distinctBy(String::lowercase)
-            .mapNotNull(::findOrCreateLocalGroup)
+        val groupIds = ArrayList<Long>(groupNames.size)
+        for (groupName in groupNames) {
+            // Membership is part of this record's import identity. Never report a partial contact
+            // as successful: the apply layer journals only true, so false leaves it retryable.
+            groupIds += findOrCreateLocalGroup(groupName) ?: return false
+        }
         val ops = arrayListOf(
             // Null account = device-local contact BY DESIGN: portage is no-cloud, and a
             // GOS device typically has no sync account. Verify on-device that local
