@@ -64,10 +64,12 @@ class ContactsApplyProvider(
         var applied = 0
         var alreadyPresent = 0
         var skipped = parsed.malformed
-        val existing = runCatching { store.readAll().mapTo(mutableSetOf(), ContactRecord::dedupKey) }
+        val existing = runCatching {
+            store.readAll().mapTo(mutableSetOf(), ContactRecord::canonicalImportKey)
+        }
             .getOrDefault(mutableSetOf())
         for (record in parsed.records) {
-            val key = record.dedupKey()
+            val key = record.canonicalImportKey()
             if (key in existing || runCatching { journal.contains(record) }.getOrDefault(false)) {
                 alreadyPresent++
             } else if (runCatching { store.insert(record) }.getOrDefault(false)) {
@@ -90,8 +92,12 @@ class ContactsApplyProvider(
     }
 }
 
-/** Stable exact-record key: formatting/order differences normalize, materially different data does not. */
-private fun ContactRecord.dedupKey(): String = listOf(
+/**
+ * Shared stable identity for provider read-back and retry journals. Formatting/order differences
+ * normalize; materially different transferred fields do not. Starred state and photos are omitted
+ * intentionally because importing a duplicate raw contact is not a safe way to update either.
+ */
+fun ContactRecord.canonicalImportKey(): String = listOf(
     displayName.trim().lowercase(),
     givenName.orEmpty().trim().lowercase(),
     familyName.orEmpty().trim().lowercase(),

@@ -11,6 +11,7 @@ package com.ventouxlabs.portage.recv.imports
 
 import com.ventouxlabs.portage.providers.contacts.ContactImportJournal
 import com.ventouxlabs.portage.providers.contacts.ContactRecord
+import com.ventouxlabs.portage.providers.contacts.canonicalImportKey
 import java.io.File
 import java.security.MessageDigest
 
@@ -41,19 +42,8 @@ class FileContactImportJournal(private val file: File) : ContactImportJournal {
     }
 
     private fun fingerprint(record: ContactRecord): String {
-        val canonical = listOf(
-            record.displayName,
-            record.givenName.orEmpty(),
-            record.familyName.orEmpty(),
-            record.phones.sortedBy { "${it.value}:${it.type}" }.joinToString(),
-            record.emails.sortedBy { "${it.value}:${it.type}" }.joinToString(),
-            record.postals.sortedBy { "${it.value}:${it.type}" }.joinToString(),
-            record.organization.orEmpty(),
-            record.title.orEmpty(),
-            record.note.orEmpty(),
-        ).joinToString("\u001f")
         return MessageDigest.getInstance("SHA-256")
-            .digest(canonical.toByteArray(Charsets.UTF_8))
+            .digest(record.canonicalImportKey().toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
     }
 
