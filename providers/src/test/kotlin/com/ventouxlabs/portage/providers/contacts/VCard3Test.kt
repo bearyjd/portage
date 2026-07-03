@@ -41,6 +41,7 @@ class VCard3Test {
             nickname = "Enchantress of Numbers",
             birthday = "1815-12-10",
             websites = listOf(LabeledValue("https://example.org/ada", "WORK")),
+            groupNames = listOf("Friends", "Analytical Society"),
         )
 
         val back = roundTrip(listOf(record))
@@ -149,6 +150,33 @@ class VCard3Test {
         assertThat(restored).isEqualTo("😀".repeat(48))
         assertThat(restored.codePointCount(0, restored.length)).isAtMost(128)
         assertThat(restored.toByteArray(Charsets.UTF_8).size).isAtMost(192)
+    }
+
+    @Test
+    fun `round trips repeated group categories with escaped punctuation`() {
+        val record = ContactRecord(
+            displayName = "Grouped",
+            groupNames = listOf("Friends, close", "Work; London"),
+        )
+
+        val out = ByteArrayOutputStream()
+        VCard3.write(listOf(record), out)
+        val back = VCard3.parse(ByteArrayInputStream(out.toByteArray()))
+
+        assertThat(out.toString(Charsets.UTF_8)).contains("CATEGORIES:Friends\\, close")
+        assertThat(back.records).containsExactly(record)
+    }
+
+    @Test
+    fun `parses standard comma-separated categories without splitting escaped commas`() {
+        val back = parse(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Grouped\r\n" +
+                "CATEGORIES:Friends,Work,Neighbors\\, close\r\nEND:VCARD\r\n",
+        )
+
+        assertThat(back.records.single().groupNames)
+            .containsExactly("Friends", "Work", "Neighbors, close")
+            .inOrder()
     }
 
     @Test

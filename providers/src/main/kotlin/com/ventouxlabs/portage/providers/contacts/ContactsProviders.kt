@@ -64,10 +64,12 @@ class ContactsApplyProvider(
         var applied = 0
         var alreadyPresent = 0
         var skipped = parsed.malformed
-        val existing = runCatching { store.readAll().mapTo(mutableSetOf(), ContactRecord::dedupKey) }
+        val existing = runCatching {
+            store.readAll().mapTo(mutableSetOf(), ContactRecord::canonicalImportKey)
+        }
             .getOrDefault(mutableSetOf())
         for (record in parsed.records) {
-            val key = record.dedupKey()
+            val key = record.canonicalImportKey()
             if (key in existing || runCatching { journal.contains(record) }.getOrDefault(false)) {
                 alreadyPresent++
             } else if (runCatching { store.insert(record) }.getOrDefault(false)) {
@@ -90,22 +92,48 @@ class ContactsApplyProvider(
     }
 }
 
-/** Stable exact-record key: formatting/order differences normalize, materially different data does not. */
-private fun ContactRecord.dedupKey(): String = listOf(
+/**
+ * Shared stable identity for provider read-back and retry journals. Formatting/order differences
+ * normalize; materially different transferred fields do not. Starred state and photos are omitted
+ * intentionally because importing a duplicate raw contact is not a safe way to update either.
+ */
+fun ContactRecord.canonicalImportKey(): String = listOf(
     displayName.trim().lowercase(),
     givenName.orEmpty().trim().lowercase(),
     familyName.orEmpty().trim().lowercase(),
     phones.map {
-        "${it.value.filter(Char::isLetterOrDigit).lowercase()}:${it.type.uppercase()}"
-    }.sorted().joinToString("|"),
-    emails.map { "${it.value.trim().lowercase()}:${it.type.uppercase()}" }.sorted().joinToString("|"),
-    postals.map { "${it.value.trim().lowercase()}:${it.type.uppercase()}" }.sorted().joinToString("|"),
+        canonicalParts(it.value.filter(Char::isLetterOrDigit).lowercase(), it.type.uppercase())
+    }.sorted().let(::canonicalParts),
+    emails.map {
+        canonicalParts(it.value.trim().lowercase(), it.type.uppercase())
+    }.sorted().let(::canonicalParts),
+    postals.map {
+        canonicalParts(it.value.trim().lowercase(), it.type.uppercase())
+    }.sorted().let(::canonicalParts),
     organization.orEmpty().trim().lowercase(),
     title.orEmpty().trim().lowercase(),
     note.orEmpty().trim(),
     nickname.orEmpty().trim().lowercase(),
     birthday.orEmpty().trim(),
     websites.map {
-        "${it.value.trim().lowercase()}:${it.type.uppercase()}:${it.customLabel.orEmpty().trim()}"
-    }.sorted().joinToString("|"),
-).joinToString("\u001f")
+        canonicalParts(
+            it.value.trim().lowercase(),
+            it.type.uppercase(),
+            it.customLabel.orEmpty().trim(),
+        )
+    }.sorted().let(::canonicalParts),
+    groupNames.asSequence()
+        .map { it.trim().lowercase() }
+        .filter(String::isNotBlank)
+        .distinct()
+        .sorted()
+        .toList()
+        .let(::canonicalParts),
+).let(::canonicalParts)
+
+/** Concatenated length prefixes preserve boundaries even when values contain delimiters. */
+private fun canonicalParts(vararg parts: String): String = canonicalParts(parts.asList())
+
+private fun canonicalParts(parts: List<String>): String = buildString {
+    parts.forEach { part -> append(part.length).append(':').append(part) }
+}

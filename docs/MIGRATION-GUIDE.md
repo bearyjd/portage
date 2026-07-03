@@ -120,7 +120,7 @@ Verify at minimum:
 
 | Category | Best path | What to expect |
 |---|---|---|
-| Contacts | **Portage** | vCard transfer into device-local contacts, including nicknames, birthdays, websites, the favorite/starred bit, and bounded contact thumbnails; exact retries and existing raw contacts are deduplicated. Full-resolution photos, account-specific groups, and app-specific raw-contact data are not portable. Account-backed contacts may instead reappear through their sync provider. |
+| Contacts | **Portage** | vCard transfer into device-local contacts, including nicknames, birthdays, websites, group memberships, the favorite/starred bit, and bounded contact thumbnails; exact retries and existing raw contacts are deduplicated. Group IDs and accounts are not portable, so Portage recreates device-local groups by visible name. Full-resolution photos and app-specific raw-contact data are not portable. Account-backed contacts may instead reappear through their sync provider. |
 | Calendar events | **Portage** | ICS event transfer. Account sync may be preferable for cloud calendars. Avoid restoring the same events through two tools. |
 | Call history | **Portage** | Phone provider rows are copied. Retries within one Portage transfer are idempotent; independent tools are not cross-deduplicated. |
 | SMS text messages | **Portage** | Requires a temporary default-SMS role on the receiver. |

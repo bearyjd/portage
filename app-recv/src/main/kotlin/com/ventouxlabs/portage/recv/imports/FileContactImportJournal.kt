@@ -11,6 +11,7 @@ package com.ventouxlabs.portage.recv.imports
 
 import com.ventouxlabs.portage.providers.contacts.ContactImportJournal
 import com.ventouxlabs.portage.providers.contacts.ContactRecord
+import com.ventouxlabs.portage.providers.contacts.canonicalImportKey
 import java.io.File
 import java.security.MessageDigest
 
@@ -24,7 +25,8 @@ class FileContactImportJournal(private val file: File) : ContactImportJournal {
     }
 
     @Synchronized
-    override fun contains(record: ContactRecord) = fingerprint(record) in fingerprints
+    override fun contains(record: ContactRecord) =
+        fingerprint(record) in fingerprints || legacyFingerprint(record) in fingerprints
 
     @Synchronized
     override fun record(record: ContactRecord) {
@@ -41,6 +43,14 @@ class FileContactImportJournal(private val file: File) : ContactImportJournal {
     }
 
     private fun fingerprint(record: ContactRecord): String {
+        return sha256(record.canonicalImportKey())
+    }
+
+    /**
+     * Compatibility with fingerprints written before the canonical provider/journal identity was
+     * shared. New records use only [fingerprint]; this check can disappear after a format migration.
+     */
+    private fun legacyFingerprint(record: ContactRecord): String {
         val canonical = listOf(
             record.displayName,
             record.givenName.orEmpty(),
@@ -52,10 +62,13 @@ class FileContactImportJournal(private val file: File) : ContactImportJournal {
             record.title.orEmpty(),
             record.note.orEmpty(),
         ).joinToString("\u001f")
-        return MessageDigest.getInstance("SHA-256")
-            .digest(canonical.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+        return sha256(canonical)
     }
+
+    private fun sha256(value: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
 
     private companion object {
         val FINGERPRINT = Regex("[0-9a-f]{64}")

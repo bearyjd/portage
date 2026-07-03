@@ -208,6 +208,45 @@ class ContactsProvidersTest {
     }
 
     @Test
+    fun `dedup preserves contacts with distinct group memberships`() = runTest {
+        val grouped = ada.copy(groupNames = listOf("Family"))
+        val store = FakeContactsStore(mutableListOf(ada))
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(grouped), it) }
+
+        val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(grouped)
+    }
+
+    @Test
+    fun `dedup normalizes blank duplicate case and whitespace group names`() = runTest {
+        val existing = ada.copy(groupNames = listOf("Family", "Work"))
+        val equivalent = ada.copy(groupNames = listOf(" work ", "", "FAMILY", "family"))
+        val store = FakeContactsStore(mutableListOf(existing))
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(equivalent), it) }
+
+        val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).isEmpty()
+        assertThat(outcome.detail).contains("already present 1")
+    }
+
+    @Test
+    fun `dedup does not conflate one delimited group with two groups`() = runTest {
+        val combined = ada.copy(groupNames = listOf("a|b"))
+        val separate = ada.copy(groupNames = listOf("a", "b"))
+        val store = FakeContactsStore(mutableListOf(combined))
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(separate), it) }
+
+        val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(separate)
+    }
+
+    @Test
     fun `nothing applied from a non-empty payload is a WRITE_ERROR`() = runTest {
         val store = FakeContactsStore(failInsertsFor = setOf("Ada", "Bob"))
         val payload = ByteArrayOutputStream().also { VCard3.write(listOf(ada, bob), it) }

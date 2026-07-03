@@ -19,6 +19,7 @@ import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Phone
 import android.provider.ContactsContract.CommonDataKinds.Website
 import android.provider.ContactsContract.Data
+import android.provider.ContactsContract.Groups
 import android.provider.ContactsContract.RawContacts
 import android.provider.MediaStore
 import android.provider.Telephony
@@ -103,6 +104,7 @@ class ProviderDeviceContractTest {
                     customLabel = "Portage custom".takeIf { type == "CUSTOM" },
                 )
             },
+            groupNames = listOf(CONTACT_GROUP),
         )
         val payload = ByteArrayOutputStream().also { VCard3.write(listOf(record), it) }.toByteArray()
         val journalFile = File(context.cacheDir, "device-contract-contact-journal")
@@ -123,6 +125,7 @@ class ProviderDeviceContractTest {
         assertThat(imported.single().nickname).isEqualTo("Portage fixture")
         assertThat(imported.single().birthday).isEqualTo("--07-01")
         assertThat(imported.single().websites).containsExactlyElementsIn(record.websites)
+        assertThat(imported.single().groupNames).containsExactly(CONTACT_GROUP)
         resolver.query(
             Data.CONTENT_URI,
             arrayOf(Website.URL, Website.TYPE, Website.LABEL),
@@ -278,6 +281,7 @@ class ProviderDeviceContractTest {
         rawIds.distinct().forEach {
             resolver.delete(ContentUris.withAppendedId(RawContacts.CONTENT_URI, it), null, null)
         }
+        resolver.delete(Groups.CONTENT_URI, "${Groups.TITLE} = ?", arrayOf(CONTACT_GROUP))
         resolver.delete(
             Calls.CONTENT_URI,
             "${Calls.NUMBER} = ? AND ${Calls.DATE} = ?",
@@ -377,6 +381,7 @@ class ProviderDeviceContractTest {
         const val CONTACT_NAME = "PORTAGE DEVICE CONTRACT"
         const val CONTACT_PHONE = "+1 555 000 9911"
         const val CONTACT_PHONE_SECOND = "+1 555 000 9914"
+        const val CONTACT_GROUP = "PORTAGE DEVICE CONTRACT GROUP"
         const val CONTACT_PHOTO =
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
         const val CALL_NUMBER = "+15550009912"
