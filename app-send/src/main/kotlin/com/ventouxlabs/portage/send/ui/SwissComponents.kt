@@ -10,7 +10,13 @@
 package com.ventouxlabs.portage.send.ui
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,10 +24,13 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.progressSemantics
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -32,8 +41,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -164,3 +175,76 @@ fun SwissTextAction(
         )
     }
 }
+
+/**
+ * Swiss progress rule — the 2dp / square / `outline`-track / `primary` reading of a progress bar,
+ * in two forms so the idiom has ONE home and its halves can't drift (portage #58).
+ * [SwissDeterminateRule] fills to a known [fraction]; [SwissIndeterminateRule] sweeps an accent
+ * segment across the track for unbounded waits.
+ */
+@Composable
+fun SwissDeterminateRule(fraction: Float, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .progressSemantics(fraction.coerceIn(0f, 1f))
+            .fillMaxWidth()
+            .height(2.dp)
+            .background(MaterialTheme.colorScheme.outline),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                .height(2.dp)
+                .background(MaterialTheme.colorScheme.primary),
+        )
+    }
+}
+
+/**
+ * The INDETERMINATE sibling: a thin accent segment sweeping across the neutral track for unbounded
+ * waits (a handshake, a cold-connect retry) so the step never looks frozen. The accent is a moving
+ * sliver rather than a full fill, so it whispers "working" instead of reading as loud as the primary
+ * CTA. The segment sweeps from fully off the left to fully off the right, so the loop restart happens
+ * off-screen (no jump); [clipToBounds] keeps it from bleeding into the gutter at the extremes.
+ */
+@Composable
+fun SwissIndeterminateRule(modifier: Modifier = Modifier) {
+    val sweep by rememberInfiniteTransition(label = "swissIndeterminate").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "sweep",
+    )
+    BoxWithConstraints(
+        modifier = modifier
+            .progressSemantics()
+            .fillMaxWidth()
+            .height(2.dp)
+            .clipToBounds()
+            .background(MaterialTheme.colorScheme.outline),
+    ) {
+        val trackPx = constraints.maxWidth.toFloat()
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(INDETERMINATE_SEGMENT)
+                .height(2.dp)
+                // Compositor-only translate (draw phase): no per-frame recomposition or relayout.
+                .graphicsLayer { translationX = sweepTranslation(trackPx, INDETERMINATE_SEGMENT, sweep) }
+                .background(MaterialTheme.colorScheme.primary),
+        )
+    }
+}
+
+/** Fraction of the track width occupied by the indeterminate sweep segment. */
+private const val INDETERMINATE_SEGMENT = 0.30f
+
+/**
+ * Pure translationX for the indeterminate sweep: maps [sweep] 0f→1f to a segment travelling from
+ * fully off the left (`-segment · trackPx`) to fully off the right (`trackPx`). Extracted as a pure
+ * function for a JVM unit test (portage #58).
+ */
+internal fun sweepTranslation(trackPx: Float, segment: Float, sweep: Float): Float =
+    trackPx * ((1f + segment) * sweep - segment)

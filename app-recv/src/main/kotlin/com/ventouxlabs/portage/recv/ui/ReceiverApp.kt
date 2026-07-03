@@ -417,6 +417,9 @@ private fun PendingBody(headline: String, caption: String) {
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Spacer(Modifier.height(s.lg))
+            // Live activity through the handshake window so the step never looks frozen (portage #58).
+            SwissIndeterminateRule()
         }
     }
 }
