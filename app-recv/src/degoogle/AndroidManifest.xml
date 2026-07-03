@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  portage-recv (importer) — GrapheneOS device-parity transfer
+  Copyright (C) 2026 Grepon Labs LLC. Licensed under AGPL-3.0.
+
+  DEGOOGLE-ONLY manifest (ADR-007 §6.3 #2). The Play/"lite" flavor must NOT declare the
+  Play-policy-restricted, high-scrutiny surfaces below — the SMS/MMS family + role components,
+  call-log write, and carried-APK install eligibility — so they live in the degoogle source set
+  and are ABSENT from the play merged manifest by construction (asserted in build.yml).
+
+  The component classes (SmsRoleComponents.kt) and the SMS/install apply code still compile into
+  both flavors; play simply never DECLARES these permissions/components, so it cannot be granted
+  the SMS role, cannot register the SMS components, and cannot commit an install session. Every
+  such path already degrades gracefully in play (role-not-held self-skip; caught install failure)
+  — a structural manifest drop, not a runtime no-op. A fuller move of the code into a degoogle
+  source set is deferred to the ADR-007 unification (§10 Phase 3); the lite UI feature-gating that
+  stops OFFERING these is a separate follow-up (ADR-007 §5 / §13).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Call log restore (Tier 0, WRITE-only by design — no READ_CALL_LOG; see CallLogProviders). -->
+    <uses-permission android:name="android.permission.WRITE_CALL_LOG" />
+
+    <!--
+      APK keystone Tier-0 fallback (ADR-006 D3/D6): the carried-app install routes through our own
+      PackageInstaller MODE_FULL_INSTALL session, whose commit fires the system install-confirm UI.
+      REQUEST_INSTALL_PACKAGES makes the app ELIGIBLE to commit such a session — the USER still
+      confirms each install (one tap per app); nothing installs silently here. Lite drops carried-APK
+      install entirely (store-page reinstall, which needs no install permission, still works).
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!--
+      SMS restore (DEVILS_ADVOCATE.md Q4): to be ELIGIBLE for the default-SMS role, the app must
+      declare the default-SMS permission family AND the four SMS components below. portage holds
+      ROLE_SMS only TRANSIENTLY (acquire → write restored messages → relinquish to the prior
+      holder, in a finally — see SmsRoleCoordinator; a persistent ledger backstops process death).
+      The components are inert; portage is not a messaging app.
+
+      Per-permission rationale (least-privilege intent):
+        SEND_SMS, RECEIVE_SMS, RECEIVE_MMS, RECEIVE_WAP_PUSH — the platform's default-SMS-app
+          eligibility set; without them portage cannot appear in the role picker.
+        READ_SMS — declared for eligibility completeness. portage-recv only WRITES restored rows
+          (never reads on this side), so READ_SMS is a hardware VERIFY_FIRST: confirm on a Pixel/GOS
+          device whether the role is grantable without it and, if so, DROP it (privacy-minimal).
+    -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_MMS" />
+    <uses-permission android:name="android.permission.RECEIVE_WAP_PUSH" />
+
+    <application>
+
+        <!-- === Default-SMS-role eligibility (inert; see SmsRoleComponents.kt) === -->
+
+        <!-- Incoming SMS. BROADCAST_SMS restricts the sender to the system. -->
+        <receiver
+            android:name=".sms.SmsDeliverReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_DELIVER" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Incoming MMS (WAP push). BROADCAST_WAP_PUSH restricts the sender to the system. -->
+        <receiver
+            android:name=".sms.MmsDeliverReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_WAP_PUSH">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.WAP_PUSH_DELIVER" />
+                <data android:mimeType="application/vnd.wap.mms-message" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Compose target for sms:/mms: send intents (portage closes immediately). -->
+        <activity
+            android:name=".sms.SmsComposeActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SENDTO" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+                <data android:scheme="mms" />
+                <data android:scheme="mmsto" />
+            </intent-filter>
+        </activity>
+
+        <!-- Quick-reply service. SEND_RESPOND_VIA_MESSAGE restricts the caller to the system. -->
+        <service
+            android:name=".sms.HeadlessSmsSendService"
+            android:exported="true"
+            android:permission="android.permission.SEND_RESPOND_VIA_MESSAGE">
+            <intent-filter>
+                <action android:name="android.intent.action.RESPOND_VIA_MESSAGE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+                <data android:scheme="mms" />
+                <data android:scheme="mmsto" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>
