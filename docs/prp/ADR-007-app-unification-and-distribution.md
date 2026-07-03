@@ -126,7 +126,13 @@ invariant is already violated by today's code. These are required, not optional:
    RECEIVE_SMS|RECEIVE_MMS|RECEIVE_WAP_PUSH|READ_CALL_LOG|WRITE_CALL_LOG`, the SMS component
    class names, and `REQUEST_INSTALL_PACKAGES`, asserted via `aapt dump permissions` +
    `xmltree` on the packaged lite APK. **Note:** recv-`play` ships SMS/call-log *today*
-   (verified in the built `playDebug` manifest) — this assert closes a live exposure.
+   (verified: `app-recv/src/main/AndroidManifest.xml` is the single, unflavored manifest, so
+   `WRITE_CALL_LOG`, the SMS family, `SmsComposeActivity`, and `REQUEST_INSTALL_PACKAGES` all
+   ride into the play APK) — this assert closes a **present** exposure. Because it is live now
+   and independent of unification, **do not gate the fix on Phase 3**: close it in a decoupled
+   near-term hardening PR (move those permissions + SMS components into an `app-recv/src/degoogle`
+   manifest and extend the existing play no-bridge assert to forbid this set), landing **before
+   any Play submission**. See §13 Preconditions.
 3. **Module-graph assert** — a Gradle task walking `:feature-send` and `:app` runtime/compile
    classpaths (`resolutionResult.allComponents`) that fails if any `ProjectComponentIdentifier`
    is `:adb-bridge`/`:wizard`; plus repurposing the per-flavor OSV lockfiles
@@ -239,9 +245,15 @@ verified body.
 - **Negative / accepted:** sender escalation guarantee downgraded from binary-absence to
   module + runtime gate (§6); a mandatory GOS re-verification walk from the id change (§9);
   bounded but real refactor cost (resource/manifest/Activity consolidation).
+- **Preconditions (settle before the dependent work; NOT deferrable to a later phase):**
+  1. **Freeze the applicationId before ANY external publication.** No F-Droid MR / Play
+     submission may ship under `.recv`/`.send` until the unified id (`com.ventouxlabs.portage`)
+     is frozen — unification mints a fresh package identity that existing `.recv`/`.send`
+     installs do **not** auto-migrate, so publishing first orphans early adopters. This gates
+     the R2-unblocked fdroiddata MR.
+  2. **Close the recv-`play` SMS/call-log/`REQUEST_INSTALL_PACKAGES` exposure now, decoupled**
+     (§6.3 #2) — it is live in today's shipped play flavor and must land as a standalone
+     hardening PR before any Play submission, independent of the multi-phase unification.
 - **Open:** decide per-permission whether lite needs `QUERY_ALL_PACKAGES` and `BLUETOOTH_CONNECT`
   (gate the lite permission set to a documented allowlist in CI); the lite feature-gating UX
-  (don't render Send/Receive options that lite can't fulfil); confirm external publication
-  status (an in-flight F-Droid MR / Play submission per project memory) before freezing ids,
-  since unification mints a fresh package identity that existing `.recv`/`.send` installs do
-  not auto-migrate.
+  (don't render Send/Receive options that lite can't fulfil).
