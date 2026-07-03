@@ -101,6 +101,12 @@ fun ContactRecord.canonicalImportKey(): String = listOf(
     displayName.trim().lowercase(),
     givenName.orEmpty().trim().lowercase(),
     familyName.orEmpty().trim().lowercase(),
+    namePrefix.orEmpty().trim().lowercase(),
+    middleName.orEmpty().trim().lowercase(),
+    nameSuffix.orEmpty().trim().lowercase(),
+    phoneticGivenName.orEmpty().trim().lowercase(),
+    phoneticMiddleName.orEmpty().trim().lowercase(),
+    phoneticFamilyName.orEmpty().trim().lowercase(),
     phones.map {
         canonicalParts(it.value.filter(Char::isLetterOrDigit).lowercase(), it.type.uppercase())
     }.sorted().let(::canonicalParts),

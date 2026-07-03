@@ -137,7 +137,9 @@ size, sha256, display_name, group}`.
 > Android categories; `URL;TYPE=CUSTOM` uses a bounded Base64url `X-PORTAGE-LABEL` parameter to
 > preserve the provider's custom label. Repeated standard `CATEGORIES` fields carry visible group
 > names; receiver-side local group IDs are found or created by exact title because source account
-> and group IDs are device-specific.
+> and group IDs are device-specific. The standard five-component `N` field preserves prefix,
+> given, middle, family, and suffix values; Android-compatible `X-PHONETIC-*-NAME` fields carry
+> phonetic given, middle, and family names.
 
 > The `wallpaper` kind (PRP-02) is the first binary-blob payload (a home/lock wallpaper
 > image, not structured text). Its item stream is a one-line JSON `WallpaperHeader`

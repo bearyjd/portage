@@ -42,6 +42,8 @@ class FileContactImportJournalTest {
             ),
         ).isFalse()
         assertThat(journal.contains(original.copy(groupNames = listOf("Family")))).isFalse()
+        assertThat(journal.contains(original.copy(middleName = "Different"))).isFalse()
+        assertThat(journal.contains(original.copy(phoneticFamilyName = "ディファレント"))).isFalse()
     }
 
     @Test

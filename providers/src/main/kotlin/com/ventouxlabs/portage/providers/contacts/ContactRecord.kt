@@ -43,6 +43,12 @@ data class ContactRecord(
     val websites: List<LabeledValue> = emptyList(),
     /** User-visible group names; provider/account-specific group IDs are intentionally not carried. */
     val groupNames: List<String> = emptyList(),
+    val namePrefix: String? = null,
+    val middleName: String? = null,
+    val nameSuffix: String? = null,
+    val phoneticGivenName: String? = null,
+    val phoneticMiddleName: String? = null,
+    val phoneticFamilyName: String? = null,
 )
 
 const val MAX_CONTACT_PHOTO_BYTES = 256 * 1024

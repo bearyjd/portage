@@ -39,10 +39,24 @@ object VCard3 {
         appendLine("BEGIN:VCARD")
         appendLine("VERSION:3.0")
         appendLine("FN:${RfcText.escape(record.displayName)}")
-        if (record.givenName != null || record.familyName != null) {
+        if (record.givenName != null || record.familyName != null ||
+            record.middleName != null || record.namePrefix != null || record.nameSuffix != null
+        ) {
             val family = RfcText.escape(record.familyName.orEmpty())
             val given = RfcText.escape(record.givenName.orEmpty())
-            appendLine("N:$family;$given;;;")
+            val middle = RfcText.escape(record.middleName.orEmpty())
+            val prefix = RfcText.escape(record.namePrefix.orEmpty())
+            val suffix = RfcText.escape(record.nameSuffix.orEmpty())
+            appendLine("N:$family;$given;$middle;$prefix;$suffix")
+        }
+        record.phoneticGivenName?.let {
+            appendLine("X-PHONETIC-FIRST-NAME:${RfcText.escape(it)}")
+        }
+        record.phoneticMiddleName?.let {
+            appendLine("X-PHONETIC-MIDDLE-NAME:${RfcText.escape(it)}")
+        }
+        record.phoneticFamilyName?.let {
+            appendLine("X-PHONETIC-LAST-NAME:${RfcText.escape(it)}")
         }
         record.phones.forEach { appendLine("TEL;TYPE=${it.type}:${RfcText.escape(it.value)}") }
         record.emails.forEach { appendLine("EMAIL;TYPE=${it.type}:${RfcText.escape(it.value)}") }
@@ -166,6 +180,12 @@ object VCard3 {
         var displayName: String? = null
         var givenName: String? = null
         var familyName: String? = null
+        var namePrefix: String? = null
+        var middleName: String? = null
+        var nameSuffix: String? = null
+        var phoneticGivenName: String? = null
+        var phoneticMiddleName: String? = null
+        var phoneticFamilyName: String? = null
         val phones = mutableListOf<LabeledValue>()
         val emails = mutableListOf<LabeledValue>()
         val postals = mutableListOf<LabeledValue>()
@@ -203,7 +223,16 @@ object VCard3 {
                     val parts = splitComponents(rawValue)
                     familyName = parts.getOrNull(0)?.let(RfcText::unescape)?.ifEmpty { null }
                     givenName = parts.getOrNull(1)?.let(RfcText::unescape)?.ifEmpty { null }
+                    middleName = parts.getOrNull(2)?.let(RfcText::unescape)?.ifEmpty { null }
+                    namePrefix = parts.getOrNull(3)?.let(RfcText::unescape)?.ifEmpty { null }
+                    nameSuffix = parts.getOrNull(4)?.let(RfcText::unescape)?.ifEmpty { null }
                 }
+                "X-PHONETIC-FIRST-NAME" ->
+                    phoneticGivenName = RfcText.unescape(rawValue).ifEmpty { null }
+                "X-PHONETIC-MIDDLE-NAME" ->
+                    phoneticMiddleName = RfcText.unescape(rawValue).ifEmpty { null }
+                "X-PHONETIC-LAST-NAME" ->
+                    phoneticFamilyName = RfcText.unescape(rawValue).ifEmpty { null }
                 "TEL" -> phones += LabeledValue(RfcText.unescape(rawValue), type)
                 "EMAIL" -> emails += LabeledValue(RfcText.unescape(rawValue), type)
                 "ADR" -> {
@@ -268,6 +297,12 @@ object VCard3 {
                 birthday = birthday,
                 websites = websites.toList(),
                 groupNames = groupNames.distinct(),
+                namePrefix = namePrefix,
+                middleName = middleName,
+                nameSuffix = nameSuffix,
+                phoneticGivenName = phoneticGivenName,
+                phoneticMiddleName = phoneticMiddleName,
+                phoneticFamilyName = phoneticFamilyName,
             )
         }
     }

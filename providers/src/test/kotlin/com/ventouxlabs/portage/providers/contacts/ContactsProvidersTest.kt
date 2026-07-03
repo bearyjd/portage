@@ -220,6 +220,24 @@ class ContactsProvidersTest {
     }
 
     @Test
+    fun `dedup preserves contacts with distinct structured name details`() = runTest {
+        val structured = ada.copy(
+            namePrefix = "Dr.",
+            middleName = "Quinn",
+            nameSuffix = "Jr.",
+            phoneticGivenName = "ジェーン",
+            phoneticFamilyName = "パブリック",
+        )
+        val store = FakeContactsStore(mutableListOf(ada))
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(structured), it) }
+
+        val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(structured)
+    }
+
+    @Test
     fun `dedup normalizes blank duplicate case and whitespace group names`() = runTest {
         val existing = ada.copy(groupNames = listOf("Family", "Work"))
         val equivalent = ada.copy(groupNames = listOf(" work ", "", "FAMILY", "family"))
