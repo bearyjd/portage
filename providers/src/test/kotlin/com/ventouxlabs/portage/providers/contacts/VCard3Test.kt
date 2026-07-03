@@ -32,6 +32,12 @@ class VCard3Test {
             displayName = "Ada Lovelace",
             givenName = "Ada",
             familyName = "Lovelace",
+            namePrefix = "Countess",
+            middleName = "Augusta",
+            nameSuffix = "OBE",
+            phoneticGivenName = "エイダ",
+            phoneticMiddleName = "オーガスタ",
+            phoneticFamilyName = "ラブレス",
             phones = listOf(LabeledValue("+15551234567", "CELL"), LabeledValue("+15559876543", "WORK")),
             emails = listOf(LabeledValue("ada@example.org", "HOME")),
             postals = listOf(LabeledValue("12 Analytical Way, London", "HOME")),
@@ -296,5 +302,19 @@ class VCard3Test {
         val record = back.records.single()
         assertThat(record.givenName).isEqualTo("Gi;ven")
         assertThat(record.familyName).isEqualTo("Fam;ily")
+    }
+
+    @Test
+    fun `parses all five standard structured name components`() {
+        val back = parse(
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Dr Jane Q Public Jr\r\n" +
+                "N:Public;Jane;Quinn;Dr.;Jr.\r\nEND:VCARD\r\n",
+        ).records.single()
+
+        assertThat(back.familyName).isEqualTo("Public")
+        assertThat(back.givenName).isEqualTo("Jane")
+        assertThat(back.middleName).isEqualTo("Quinn")
+        assertThat(back.namePrefix).isEqualTo("Dr.")
+        assertThat(back.nameSuffix).isEqualTo("Jr.")
     }
 }

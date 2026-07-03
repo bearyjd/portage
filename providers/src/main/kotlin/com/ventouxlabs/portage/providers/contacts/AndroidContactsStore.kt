@@ -55,6 +55,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
             Data.RAW_CONTACT_ID, Data.DISPLAY_NAME_PRIMARY, Data.MIMETYPE,
             Data.DATA1, Data.DATA2, Data.DATA3, Data.DATA4,
             ContactsContract.Contacts.STARRED, Data.DATA15,
+            Data.DATA5, Data.DATA6, Data.DATA7, Data.DATA8, Data.DATA9,
         )
         val mimes = arrayOf(
             StructuredName.CONTENT_ITEM_TYPE, Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE,
@@ -86,6 +87,12 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
                         contact.displayName = data1.orEmpty()
                         contact.givenName = cursor.getString(4)?.ifBlank { null }
                         contact.familyName = cursor.getString(5)?.ifBlank { null }
+                        contact.namePrefix = cursor.getString(6)?.ifBlank { null }
+                        contact.middleName = cursor.getString(9)?.ifBlank { null }
+                        contact.nameSuffix = cursor.getString(10)?.ifBlank { null }
+                        contact.phoneticGivenName = cursor.getString(11)?.ifBlank { null }
+                        contact.phoneticMiddleName = cursor.getString(12)?.ifBlank { null }
+                        contact.phoneticFamilyName = cursor.getString(13)?.ifBlank { null }
                     }
                     Phone.CONTENT_ITEM_TYPE -> data1?.let {
                         contact.phones += LabeledValue(it, phoneTypeName(cursor.getInt(4)))
@@ -162,6 +169,12 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
             .withValue(StructuredName.DISPLAY_NAME, record.displayName)
             .withValue(StructuredName.GIVEN_NAME, record.givenName)
             .withValue(StructuredName.FAMILY_NAME, record.familyName)
+            .withValue(StructuredName.PREFIX, record.namePrefix)
+            .withValue(StructuredName.MIDDLE_NAME, record.middleName)
+            .withValue(StructuredName.SUFFIX, record.nameSuffix)
+            .withValue(StructuredName.PHONETIC_GIVEN_NAME, record.phoneticGivenName)
+            .withValue(StructuredName.PHONETIC_MIDDLE_NAME, record.phoneticMiddleName)
+            .withValue(StructuredName.PHONETIC_FAMILY_NAME, record.phoneticFamilyName)
             .build()
         record.phones.forEach {
             ops += dataRow(Phone.CONTENT_ITEM_TYPE)
@@ -237,13 +250,35 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         var birthday: String? = null,
         val websites: MutableList<LabeledValue> = mutableListOf(),
         val groupNames: MutableList<String> = mutableListOf(),
+        var namePrefix: String? = null,
+        var middleName: String? = null,
+        var nameSuffix: String? = null,
+        var phoneticGivenName: String? = null,
+        var phoneticMiddleName: String? = null,
+        var phoneticFamilyName: String? = null,
     ) {
         fun toRecord() = ContactRecord(
-            displayName, givenName, familyName,
-            phones.toList(), emails.toList(), postals.toList(),
-            organization, title, note, starred, photoBase64,
-            nickname, birthday, websites.toList(),
-            groupNames.distinct(),
+            displayName = displayName,
+            givenName = givenName,
+            familyName = familyName,
+            phones = phones.toList(),
+            emails = emails.toList(),
+            postals = postals.toList(),
+            organization = organization,
+            title = title,
+            note = note,
+            starred = starred,
+            photoBase64 = photoBase64,
+            nickname = nickname,
+            birthday = birthday,
+            websites = websites.toList(),
+            groupNames = groupNames.distinct(),
+            namePrefix = namePrefix,
+            middleName = middleName,
+            nameSuffix = nameSuffix,
+            phoneticGivenName = phoneticGivenName,
+            phoneticMiddleName = phoneticMiddleName,
+            phoneticFamilyName = phoneticFamilyName,
         )
     }
 

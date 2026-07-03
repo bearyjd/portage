@@ -92,6 +92,14 @@ class ProviderDeviceContractTest {
     fun contactsApplyTwiceCreatesOneExactContact() = runBlocking {
         val record = ContactRecord(
             displayName = CONTACT_NAME,
+            givenName = "Portage",
+            familyName = "Contract",
+            namePrefix = "Dr.",
+            middleName = "Device",
+            nameSuffix = "Jr.",
+            phoneticGivenName = "ポーテージ",
+            phoneticMiddleName = "デバイス",
+            phoneticFamilyName = "コントラクト",
             phones = listOf(LabeledValue(CONTACT_PHONE, "CELL")),
             // Valid 1x1 PNG: exercise the real ContactsProvider photo row without large fixtures.
             photoBase64 = CONTACT_PHOTO,
@@ -122,6 +130,12 @@ class ProviderDeviceContractTest {
         val imported = AndroidContactsStore(resolver).readAll().filter { it.displayName == CONTACT_NAME }
         assertThat(imported).hasSize(1)
         assertThat(imported.single().photoBase64).isNotNull()
+        assertThat(imported.single().namePrefix).isEqualTo("Dr.")
+        assertThat(imported.single().middleName).isEqualTo("Device")
+        assertThat(imported.single().nameSuffix).isEqualTo("Jr.")
+        assertThat(imported.single().phoneticGivenName).isEqualTo("ポーテージ")
+        assertThat(imported.single().phoneticMiddleName).isEqualTo("デバイス")
+        assertThat(imported.single().phoneticFamilyName).isEqualTo("コントラクト")
         assertThat(imported.single().nickname).isEqualTo("Portage fixture")
         assertThat(imported.single().birthday).isEqualTo("--07-01")
         assertThat(imported.single().websites).containsExactlyElementsIn(record.websites)
