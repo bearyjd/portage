@@ -102,22 +102,38 @@ fun ContactRecord.canonicalImportKey(): String = listOf(
     givenName.orEmpty().trim().lowercase(),
     familyName.orEmpty().trim().lowercase(),
     phones.map {
-        "${it.value.filter(Char::isLetterOrDigit).lowercase()}:${it.type.uppercase()}"
-    }.sorted().joinToString("|"),
-    emails.map { "${it.value.trim().lowercase()}:${it.type.uppercase()}" }.sorted().joinToString("|"),
-    postals.map { "${it.value.trim().lowercase()}:${it.type.uppercase()}" }.sorted().joinToString("|"),
+        canonicalParts(it.value.filter(Char::isLetterOrDigit).lowercase(), it.type.uppercase())
+    }.sorted().let(::canonicalParts),
+    emails.map {
+        canonicalParts(it.value.trim().lowercase(), it.type.uppercase())
+    }.sorted().let(::canonicalParts),
+    postals.map {
+        canonicalParts(it.value.trim().lowercase(), it.type.uppercase())
+    }.sorted().let(::canonicalParts),
     organization.orEmpty().trim().lowercase(),
     title.orEmpty().trim().lowercase(),
     note.orEmpty().trim(),
     nickname.orEmpty().trim().lowercase(),
     birthday.orEmpty().trim(),
     websites.map {
-        "${it.value.trim().lowercase()}:${it.type.uppercase()}:${it.customLabel.orEmpty().trim()}"
-    }.sorted().joinToString("|"),
+        canonicalParts(
+            it.value.trim().lowercase(),
+            it.type.uppercase(),
+            it.customLabel.orEmpty().trim(),
+        )
+    }.sorted().let(::canonicalParts),
     groupNames.asSequence()
         .map { it.trim().lowercase() }
         .filter(String::isNotBlank)
         .distinct()
         .sorted()
-        .joinToString("|"),
-).joinToString("\u001f")
+        .toList()
+        .let(::canonicalParts),
+).let(::canonicalParts)
+
+/** Concatenated length prefixes preserve boundaries even when values contain delimiters. */
+private fun canonicalParts(vararg parts: String): String = canonicalParts(parts.asList())
+
+private fun canonicalParts(parts: List<String>): String = buildString {
+    parts.forEach { part -> append(part.length).append(':').append(part) }
+}

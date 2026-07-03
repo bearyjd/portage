@@ -15,6 +15,7 @@ import com.ventouxlabs.portage.providers.contacts.LabeledValue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.security.MessageDigest
 
 class FileContactImportJournalTest {
     @get:Rule
@@ -56,5 +57,41 @@ class FileContactImportJournalTest {
                 ),
             ),
         ).isTrue()
+    }
+
+    @Test
+    fun `journal recognizes fingerprints written by the legacy format`() {
+        val record = ContactRecord(
+            displayName = "Legacy",
+            phones = listOf(LabeledValue("+15551234", "CELL")),
+            note = "existing retry",
+        )
+        val canonical = listOf(
+            record.displayName,
+            record.givenName.orEmpty(),
+            record.familyName.orEmpty(),
+            record.phones.sortedBy { "${it.value}:${it.type}" }.joinToString(),
+            record.emails.sortedBy { "${it.value}:${it.type}" }.joinToString(),
+            record.postals.sortedBy { "${it.value}:${it.type}" }.joinToString(),
+            record.organization.orEmpty(),
+            record.title.orEmpty(),
+            record.note.orEmpty(),
+        ).joinToString("\u001f")
+        val legacy = MessageDigest.getInstance("SHA-256")
+            .digest(canonical.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        val file = temporaryFolder.newFile("contacts.sha256").apply { writeText("$legacy\n") }
+
+        assertThat(FileContactImportJournal(file).contains(record)).isTrue()
+    }
+
+    @Test
+    fun `journal does not conflate group names containing delimiters`() {
+        val journal = FileContactImportJournal(temporaryFolder.newFile("contacts.sha256"))
+        journal.record(ContactRecord(displayName = "Grouped", groupNames = listOf("a|b")))
+
+        assertThat(
+            journal.contains(ContactRecord(displayName = "Grouped", groupNames = listOf("a", "b"))),
+        ).isFalse()
     }
 }

@@ -234,6 +234,19 @@ class ContactsProvidersTest {
     }
 
     @Test
+    fun `dedup does not conflate one delimited group with two groups`() = runTest {
+        val combined = ada.copy(groupNames = listOf("a|b"))
+        val separate = ada.copy(groupNames = listOf("a", "b"))
+        val store = FakeContactsStore(mutableListOf(combined))
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(separate), it) }
+
+        val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(separate)
+    }
+
+    @Test
     fun `nothing applied from a non-empty payload is a WRITE_ERROR`() = runTest {
         val store = FakeContactsStore(failInsertsFor = setOf("Ada", "Bob"))
         val payload = ByteArrayOutputStream().also { VCard3.write(listOf(ada, bob), it) }
