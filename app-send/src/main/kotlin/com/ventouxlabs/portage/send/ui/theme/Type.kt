@@ -28,6 +28,10 @@ val PortageTypography = Typography(
         fontFamily = Grotesque, fontWeight = FontWeight.Bold,
         fontSize = 46.sp, lineHeight = 48.sp, letterSpacing = (-1.2).sp,
     ),
+    displayMedium = TextStyle(
+        fontFamily = Grotesque, fontWeight = FontWeight.Bold,
+        fontSize = 40.sp, lineHeight = 42.sp, letterSpacing = (-0.9).sp,
+    ),
     displaySmall = TextStyle(
         fontFamily = Grotesque, fontWeight = FontWeight.Bold,
         fontSize = 32.sp, lineHeight = 36.sp, letterSpacing = (-0.6).sp,
@@ -39,6 +43,10 @@ val PortageTypography = Typography(
     titleMedium = TextStyle(
         fontFamily = Grotesque, fontWeight = FontWeight.Medium,
         fontSize = 17.sp, lineHeight = 22.sp, letterSpacing = 0.sp,
+    ),
+    titleSmall = TextStyle(
+        fontFamily = Grotesque, fontWeight = FontWeight.Medium,
+        fontSize = 15.sp, lineHeight = 20.sp, letterSpacing = 0.1.sp,
     ),
     bodyLarge = TextStyle(
         fontFamily = Grotesque, fontWeight = FontWeight.Normal,

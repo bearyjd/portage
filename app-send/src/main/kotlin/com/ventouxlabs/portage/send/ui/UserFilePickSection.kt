@@ -14,11 +14,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,30 +48,43 @@ fun UserFilePickSection(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("FILES", style = MaterialTheme.typography.labelSmall)
                 Text(
-                    if (files.isEmpty()) "Choose photos, documents, or other files"
+                    text = "FILES",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = if (files.isEmpty()) "Choose photos, documents, or other files"
                     else "${files.size} selected · ${formatBytes(files.sumOf { it.byteLength })}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            TextButton(onClick = { launcher.launch(arrayOf("*/*")) }) { Text("Choose files") }
+            Spacer(Modifier.width(spacing.sm))
+            SwissTextAction(text = "Choose files", onClick = { launcher.launch(arrayOf("*/*")) })
         }
         files.forEach { file ->
             Row(
                 modifier = Modifier.fillMaxWidth().padding(vertical = spacing.xs),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(file.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
-                        "${file.mimeType} · ${formatBytes(file.byteLength)}",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = file.displayName,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "${file.mimeType} · ${formatBytes(file.byteLength)}",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                TextButton(onClick = { onRemove(file.pickId) }) { Text("Remove") }
+                Spacer(Modifier.width(spacing.sm))
+                SwissTextAction(text = "Remove", onClick = { onRemove(file.pickId) })
             }
         }
     }
