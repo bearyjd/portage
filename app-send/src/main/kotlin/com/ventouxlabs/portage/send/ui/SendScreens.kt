@@ -10,9 +10,7 @@
 package com.ventouxlabs.portage.send.ui
 
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -29,7 +27,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import com.ventouxlabs.portage.send.SendPhase
 import com.ventouxlabs.portage.send.SendProgress
 import com.ventouxlabs.portage.send.ui.theme.LocalSpacing
@@ -66,6 +63,9 @@ fun PendingScreen(
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.height(s.lg))
+        // Live activity while preparing exports / awaiting the receiver's picks (portage #58).
+        SwissIndeterminateRule()
     }
 }
 
@@ -112,19 +112,7 @@ fun SendingScreen(
             )
         }
         Spacer(Modifier.height(s.md))
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(2.dp)
-                .background(MaterialTheme.colorScheme.outline),
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(animated.coerceIn(0f, 1f))
-                    .height(2.dp)
-                    .background(MaterialTheme.colorScheme.primary),
-            )
-        }
+        SwissDeterminateRule(fraction = animated)
         Spacer(Modifier.height(s.lg))
         LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f, fill = false)) {
             items(items, key = { it.itemId }) { item ->

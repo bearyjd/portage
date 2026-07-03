@@ -12,16 +12,7 @@ package com.ventouxlabs.portage.recv.ui
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -45,13 +36,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ventouxlabs.portage.recv.ui.theme.LocalSpacing
 import com.ventouxlabs.portage.adbbridge.AdbBridge
@@ -164,46 +152,7 @@ private fun PendingStep(headline: String, caption: String) {
         Spacer(Modifier.height(s.lg))
         // Live activity for these unbounded waits (Probing/"Checking access" can sit ~a minute on a
         // cold-connect retry — F4) so the step never looks frozen.
-        IndeterminateRule()
-    }
-}
-
-/**
- * A 2dp track with an accent segment sweeping across it — the INDETERMINATE sibling of
- * TransferScreen's `DeterminateRule`, for unbounded waits. Same Swiss language (2dp, square,
- * neutral `outline` track); the accent is a thin moving sliver rather than a full-width fill, so it
- * whispers "working" instead of reading as loud as the primary CTA. The segment sweeps from fully
- * off the left to fully off the right, so the loop restart happens while it is off-screen (no jump);
- * [clipToBounds] keeps it from bleeding into the gutter at the extremes.
- */
-@Composable
-private fun IndeterminateRule() {
-    val sweep by rememberInfiniteTransition(label = "probe").animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "sweep",
-    )
-    val segment = 0.30f
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(2.dp)
-            .clipToBounds()
-            .background(MaterialTheme.colorScheme.outline),
-    ) {
-        val trackPx = constraints.maxWidth.toFloat()
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(segment)
-                .height(2.dp)
-                // Compositor-only translate (draw phase): no per-frame recomposition or relayout.
-                .graphicsLayer { translationX = trackPx * ((1f + segment) * sweep - segment) }
-                .background(MaterialTheme.colorScheme.primary),
-        )
+        SwissIndeterminateRule()
     }
 }
 

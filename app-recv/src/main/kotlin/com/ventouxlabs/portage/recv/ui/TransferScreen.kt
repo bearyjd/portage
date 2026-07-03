@@ -97,7 +97,7 @@ fun TransferringScreen(
             )
         }
         Spacer(Modifier.height(s.md))
-        DeterminateRule(fraction = animated)
+        SwissDeterminateRule(fraction = animated)
         Spacer(Modifier.height(s.lg))
         LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f, fill = false)) {
             items(items, key = { it.itemId }) { item ->
@@ -158,24 +158,6 @@ private fun phaseWord(phase: ItemPhase): String = when (phase) {
     ItemPhase.APPLYING -> "APPLYING"
     ItemPhase.DONE -> "DONE"
     ItemPhase.FAILED -> "FAILED"
-}
-
-/** A 2dp track that fills with the accent — the Swiss reading of a progress bar. */
-@Composable
-private fun DeterminateRule(fraction: Float) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(2.dp)
-            .background(MaterialTheme.colorScheme.outline),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(fraction.coerceIn(0f, 1f))
-                .height(2.dp)
-                .background(MaterialTheme.colorScheme.primary),
-        )
-    }
 }
 
 /**
