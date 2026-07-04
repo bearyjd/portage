@@ -162,6 +162,9 @@ fun SwissTextAction(
     )
     Row(
         modifier = modifier
+            // 48dp minimum touch target (WCAG 2.5.5) — the accent tint is the only press feedback,
+            // so the tappable area must be generous. Mirrors SwissPrimaryButton's min-height.
+            .heightIn(min = 48.dp)
             .clickableNoRipple(enabled = enabled, role = Role.Button, interaction = interaction, onClick = onClick)
             .alpha(if (enabled) 1f else 0.4f),
         verticalAlignment = Alignment.CenterVertically,
