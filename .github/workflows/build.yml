@@ -65,7 +65,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          find_manifest() { find "$1/build/intermediates" -path "*merged_manifest*$2*AndroidManifest.xml" | head -1; }
+          # Resolve the ONE merged manifest for a variant. Pin the SINGULAR 'merged_manifest' path
+          # component + the exact variant dir (AGP's current output), so a stale legacy plural
+          # 'merged_manifests/' dir on a warm checkout can't be picked; emit nothing (callers fail on
+          # empty) unless exactly one manifest matches.
+          find_manifest() {
+            local hits n
+            hits=$(find "$1/build/intermediates/merged_manifest/$2" -name AndroidManifest.xml 2>/dev/null)
+            n=$(printf '%s\n' "$hits" | grep -c . || true)
+            [ "$n" = 1 ] && printf '%s\n' "$hits"
+          }
           find_apk() { find "$1/build/outputs/apk/$2" -name '*.apk' | head -1; }
           # Strip XML comments before grepping: the recv main manifest's prose mentions
           # "WRITE_SECURE_SETTINGS" / "ADB bridge" and the merged manifest preserves comments, so a
