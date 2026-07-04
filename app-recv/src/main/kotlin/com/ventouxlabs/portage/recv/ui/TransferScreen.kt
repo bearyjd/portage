@@ -172,6 +172,8 @@ private fun phaseWord(phase: ItemPhase): String = when (phase) {
     ItemPhase.FAILED -> "FAILED"
 }
 
+// KEEP BYTE-IDENTICAL with app-send PairingScreen.formatBytes. No shared UI module exists yet;
+// the real dedup lands with the ADR-007 :feature-* extraction (deferred), not before.
 /** 1.5 KB / 3.4 MB / 1.2 GB — one decimal per tier; a glance value, not accounting. */
 internal fun formatBytes(bytes: Long): String = when {
     bytes >= 1_000_000_000 -> "%.1f GB".format(bytes / 1_000_000_000.0)
