@@ -55,17 +55,26 @@ jobs:
         #   1. portage-send (BOTH flavors) never declares secure-settings write, never carries the
         #      self-contained ADB bridge, and ships no bridge native libs — :adb-bridge has no edge into
         #      the sender at all.
-        #   2. portage-recv PLAY (Tier-0-only) is provably bridge-FREE: no WRITE_SECURE_SETTINGS, no
-        #      com.ventouxlabs.portage.adbbridge in the merged manifest, and no conscrypt/spake2 native
-        #      libs in the APK. This is the load-bearing Google-Play-policy invariant — the play binary
-        #      must exclude :adb-bridge at compile time, not merely no-op it.
+        #   2. portage-recv PLAY (Tier-0-only) is provably bridge-FREE AND lite-restricted: no
+        #      WRITE_SECURE_SETTINGS / adbbridge / conscrypt / spake2, AND no SMS/MMS/call-log/install
+        #      surface or .sms. role components in the merged manifest (ADR-007 §6.3 #2). The load-bearing
+        #      Google-Play-policy invariant — the play binary excludes these at build time, not no-ops them.
         #   3. portage-recv DEGOOGLE STILL carries the bridge (manifest WRITE_SECURE_SETTINGS + APK
         #      conscrypt/spake2) — the positive half that proves the patterns above are still meaningful
         #      AND that the source-set split works both ways (full on degoogle, none on play).
         run: |
           set -euo pipefail
 
-          find_manifest() { find "$1/build/intermediates" -path "*merged_manifest*$2*AndroidManifest.xml" | head -1; }
+          # Resolve the ONE merged manifest for a variant. Pin the SINGULAR 'merged_manifest' path
+          # component + the exact variant dir (AGP's current output), so a stale legacy plural
+          # 'merged_manifests/' dir on a warm checkout can't be picked; emit nothing (callers fail on
+          # empty) unless exactly one manifest matches.
+          find_manifest() {
+            local hits n
+            hits=$(find "$1/build/intermediates/merged_manifest/$2" -name AndroidManifest.xml 2>/dev/null)
+            n=$(printf '%s\n' "$hits" | grep -c . || true)
+            [ "$n" = 1 ] && printf '%s\n' "$hits"
+          }
           find_apk() { find "$1/build/outputs/apk/$2" -name '*.apk' | head -1; }
           # Strip XML comments before grepping: the recv main manifest's prose mentions
           # "WRITE_SECURE_SETTINGS" / "ADB bridge" and the merged manifest preserves comments, so a
@@ -74,6 +83,13 @@ jobs:
 
           escalation_re='WRITE_SECURE_SETTINGS|com\.ventouxlabs\.portage\.adbbridge'
           bridge_lib_re='conscrypt|spake2'
+          # DEGOOGLE-only surfaces (present in degoogle, ABSENT in play) — ADR-007 §6.3 #2. ONE source of
+          # truth drives BOTH the play-forbid and the degoogle-require loops below, so they stay symmetric:
+          # a drop from BOTH flavors (not just play) fails the degoogle positive control.
+          lite_required_toks='android\.permission\.READ_SMS android\.permission\.SEND_SMS android\.permission\.RECEIVE_SMS android\.permission\.RECEIVE_MMS android\.permission\.RECEIVE_WAP_PUSH android\.permission\.WRITE_CALL_LOG android\.permission\.REQUEST_INSTALL_PACKAGES com\.ventouxlabs\.portage\.recv\.sms\.'
+          # Also forbidden in PLAY as defense-in-depth, though portage declares it in NEITHER flavor
+          # (call log is WRITE-only by design): catches a future regression that leaks it into lite.
+          lite_forbidden_extra_toks='android\.permission\.READ_CALL_LOG'
 
           # --- 1. portage-send: both flavors clean (manifest + APK). ---
           for variant in degoogleDebug playDebug degoogleRelease playRelease; do
@@ -93,7 +109,7 @@ jobs:
             fi
           done
 
-          # --- 2. portage-recv PLAY: must be bridge-FREE (manifest + APK). ---
+          # --- 2. portage-recv PLAY: must be bridge-FREE AND lite-restricted (manifest + APK). ---
           for variant in playDebug playRelease; do
             recv_play_manifest=$(find_manifest app-recv "$variant")
             test -n "$recv_play_manifest" || { echo "::error::recv $variant merged manifest not found"; exit 1; }
@@ -101,6 +117,13 @@ jobs:
               echo "::error::portage-recv $variant merged manifest carries WRITE_SECURE_SETTINGS or the ADB bridge"
               exit 1
             fi
+            # ADR-007 §6.3 #2: lite must declare NO SMS/MMS/call-log/install surface or .sms. role component.
+            for tok in $lite_required_toks $lite_forbidden_extra_toks; do
+              if manifest_body "$recv_play_manifest" | grep -qE "$tok"; then
+                echo "::error::portage-recv PLAY ($variant) merged manifest declares a lite-forbidden surface: $tok"
+                exit 1
+              fi
+            done
           done
           for path in play/debug play/release; do
             recv_play_apk=$(find_apk app-recv "$path")
@@ -111,7 +134,8 @@ jobs:
             fi
           done
 
-          # --- 3. portage-recv DEGOOGLE: bridge present (proves the patterns + the split are meaningful). ---
+          # --- 3. portage-recv DEGOOGLE: bridge + lite-restricted surfaces PRESENT (positive control —
+          #        proves the source-set split works BOTH ways: full on degoogle, none on play). ---
           for variant in degoogleDebug degoogleRelease; do
             recv_degoogle_manifest=$(find_manifest app-recv "$variant")
             test -n "$recv_degoogle_manifest" || { echo "::error::recv $variant merged manifest not found"; exit 1; }
@@ -119,6 +143,14 @@ jobs:
               echo "::error::recv $variant merged manifest lacks WRITE_SECURE_SETTINGS"
               exit 1
             fi
+            # The degoogle manifest MUST still carry the FULL surface (ADR-007 §6.3 #2) — the SAME token set
+            # the play loop forbids, so a drop from BOTH flavors (not just play) fails here.
+            for tok in $lite_required_toks; do
+              if ! manifest_body "$recv_degoogle_manifest" | grep -qE "$tok"; then
+                echo "::error::recv DEGOOGLE ($variant) merged manifest lost an expected surface: $tok"
+                exit 1
+              fi
+            done
           done
           for path in degoogle/debug degoogle/release; do
             recv_degoogle_apk=$(find_apk app-recv "$path")

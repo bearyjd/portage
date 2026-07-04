@@ -10,7 +10,7 @@
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
-    <uses-permission android:name="android.permission.WRITE_CALL_LOG" />
+    <!-- WRITE_CALL_LOG is DEGOOGLE-ONLY (ADR-007 §6.3 #2) — see src/degoogle/AndroidManifest.xml. -->
     <!-- Camera scans the pairing QR (the out-of-band trust anchor). -->
     <uses-permission android:name="android.permission.CAMERA" />
     <!--
@@ -34,35 +34,14 @@
       the receiver skip apps already present (inventory dedup + APK AC-18 version check, ADR-006 D3).
     -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-    <!--
-      APK keystone Tier-0 fallback (ADR-006 D3/D6): the carried-app install routes through our own
-      PackageInstaller MODE_FULL_INSTALL session, whose commit fires the system install-confirm UI.
-      REQUEST_INSTALL_PACKAGES makes the app ELIGIBLE to commit such a session — the USER still
-      confirms each install in the system dialog (one tap per app); nothing installs silently here.
-      The silent (no-confirm) path is the DEFERRED P6 ADB-gate concern and uses NO extra manifest
-      permission (it would run shell-uid via :adb-bridge, not REQUEST_INSTALL_PACKAGES).
-    -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
-      SMS restore (DEVILS_ADVOCATE.md Q4): to be ELIGIBLE for the default-SMS role, the app must
-      declare the default-SMS permission family AND the four SMS components below. portage holds
-      ROLE_SMS only TRANSIENTLY (acquire → write restored messages → relinquish to the prior
-      holder, in a finally — see SmsRoleCoordinator; a persistent ledger backstops process death).
-      The components are inert; portage is not a messaging app.
-
-      Per-permission rationale (least-privilege intent):
-        SEND_SMS, RECEIVE_SMS, RECEIVE_MMS, RECEIVE_WAP_PUSH — the platform's default-SMS-app
-          eligibility set; without them portage cannot appear in the role picker.
-        READ_SMS — declared for eligibility completeness. portage-recv only WRITES restored rows
-          (never reads on this side), so READ_SMS is a hardware VERIFY_FIRST: confirm on a Pixel/GOS
-          device whether the role is grantable without it and, if so, DROP it (privacy-minimal).
+      DEGOOGLE-ONLY surfaces moved out of the shared manifest (ADR-007 §6.3 #2): REQUEST_INSTALL_PACKAGES
+      (carried-APK install eligibility) and the SMS/MMS permission family + role components now live in
+      app-recv/src/degoogle/AndroidManifest.xml, so the Play/"lite" merged manifest declares NONE of them.
+      Lite is Tier-0 only: store-page reinstall (no install permission) still works; carried-APK install
+      and SMS/MMS/call-log restore are excluded. build.yml asserts their absence in play, presence in degoogle.
     -->
-    <uses-permission android:name="android.permission.READ_SMS" />
-    <uses-permission android:name="android.permission.SEND_SMS" />
-    <uses-permission android:name="android.permission.RECEIVE_SMS" />
-    <uses-permission android:name="android.permission.RECEIVE_MMS" />
-    <uses-permission android:name="android.permission.RECEIVE_WAP_PUSH" />
 
     <!--
       Keep a long transfer alive when the screen sleeps (#85): the data phase (the live item stream)
@@ -128,57 +107,8 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- === Default-SMS-role eligibility (inert; see SmsRoleComponents.kt) === -->
-
-        <!-- Incoming SMS. BROADCAST_SMS restricts the sender to the system. -->
-        <receiver
-            android:name=".sms.SmsDeliverReceiver"
-            android:exported="true"
-            android:permission="android.permission.BROADCAST_SMS">
-            <intent-filter>
-                <action android:name="android.provider.Telephony.SMS_DELIVER" />
-            </intent-filter>
-        </receiver>
-
-        <!-- Incoming MMS (WAP push). BROADCAST_WAP_PUSH restricts the sender to the system. -->
-        <receiver
-            android:name=".sms.MmsDeliverReceiver"
-            android:exported="true"
-            android:permission="android.permission.BROADCAST_WAP_PUSH">
-            <intent-filter>
-                <action android:name="android.provider.Telephony.WAP_PUSH_DELIVER" />
-                <data android:mimeType="application/vnd.wap.mms-message" />
-            </intent-filter>
-        </receiver>
-
-        <!-- Compose target for sms:/mms: send intents (portage closes immediately). -->
-        <activity
-            android:name=".sms.SmsComposeActivity"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.SENDTO" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="sms" />
-                <data android:scheme="smsto" />
-                <data android:scheme="mms" />
-                <data android:scheme="mmsto" />
-            </intent-filter>
-        </activity>
-
-        <!-- Quick-reply service. SEND_RESPOND_VIA_MESSAGE restricts the caller to the system. -->
-        <service
-            android:name=".sms.HeadlessSmsSendService"
-            android:exported="true"
-            android:permission="android.permission.SEND_RESPOND_VIA_MESSAGE">
-            <intent-filter>
-                <action android:name="android.intent.action.RESPOND_VIA_MESSAGE" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="sms" />
-                <data android:scheme="smsto" />
-                <data android:scheme="mms" />
-                <data android:scheme="mmsto" />
-            </intent-filter>
-        </service>
+        <!-- Default-SMS-role components (SmsDeliverReceiver / MmsDeliverReceiver / SmsComposeActivity /
+             HeadlessSmsSendService) are DEGOOGLE-ONLY — see app-recv/src/degoogle/AndroidManifest.xml
+             (ADR-007 §6.3 #2). Absent from the Play/"lite" merged manifest by construction. -->
     </application>
 </manifest>
