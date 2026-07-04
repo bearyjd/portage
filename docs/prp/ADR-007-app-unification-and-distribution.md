@@ -1,10 +1,12 @@
 # ADR-007 — App Unification, Distribution Channels & Platform-Support Posture
 
-Status: **PROPOSED — pre-implementation; TWO core decisions OPEN (§13).** Design via brainstorm +
-a two-lens independent review (security-reviewer + architect, 2026-07-03); a later adversarial
-review (2026-07-03) re-opened the A-vs-C′ direction and the applicationId choice — see §13 Open
-Decisions. The mechanics (§6.3 controls, §7 wiring, §10 sequencing) are settled; the top-level
-"unify, clean id" is proposed, not frozen.
+Status: **ACCEPTED — pre-implementation.** Direction settled 2026-07-03: **Option A (unify into one
+app) with the clean id `com.ventouxlabs.portage`** (owner decision — §13). Design via brainstorm + a
+two-lens independent review (security-reviewer + architect) + an adversarial review (all 2026-07-03),
+whose defensible findings are folded in (§6.1/§6.3 #3 scoping, §6.3 #7 reset control, §10
+verify-before-retire, the Compose-launcher fix). Distribution note: **F-Droid / direct-APK is the
+primary channel; Google Play is deferred** — the hardened `play` (lite) flavor is kept ready for a
+later submission. The §10 implementation is unstarted and gated on owner go-ahead.
 Supersedes the *artifact-topology* half of ADR-003 §9 ("the ADB stack is kept out of a
 separate `portage-send` binary") — see §11. Extends ADR-001/ADR-003 (privilege) and ADR-006
 (APK keystone). **Re-opens** several ADR-001/ADR-003 hardware-verified "established facts"
@@ -60,12 +62,14 @@ components, `READ`/`WRITE_CALL_LOG`, and `REQUEST_INSTALL_PACKAGES`. Lite is Tie
 | C — keep two apps, extract a shared `:feature-ui` library | The genuine antithesis (strongest guarantee, zero re-verify, zero id change) — but it does **not** deliver the runtime role-chooser product goal. Rejected because the single-app UX is the point. |
 | **C′ — two apps + in-app cross-linking, BOTH on Play** | *(added on review — not yet weighed)* Both apps are Tier-0/Play-safe (the sender never escalates; recv-lite is Tier-0), so both CAN be published to Play with in-app "get the other half" links. Captures most of the one-product UX at **none** of the §6/§9/§13 cost. **OPEN DECISION #1 (§13)**. |
 
-> **⚠ Open decision #1 (owner, JD):** the rejection of C/C′ rests on §2's "broken funnel" claim. An
-> adversarial review flagged that the sender is *already* Play-safe and recv-lite is Tier-0, so two
-> apps do **not** intrinsically break the funnel — the residual is "two Play listings + a 'which app?'
-> step," a discoverability nicety, not a broken funnel. Weigh that explicitly against the escalation
-> downgrade (§6), the HW re-verify (§9), and the id-orphan risk (§13) before committing to A. This ADR
-> records A as the *proposed* direction pending that decision.
+> **✅ Decision #1 — A chosen (owner, JD, 2026-07-03).** The adversarial review correctly noted the
+> "broken funnel" is overstated (both apps are Play-safe, so C′ could publish both) — so A was **not**
+> chosen for the funnel. It was chosen because (a) the **single-app "one download, pick a role" UX is
+> the priority** for the target migrator, and (b) with **nothing yet published**, A's timing costs
+> collapse: no installed base to orphan (§13), and the §9 re-verify is near-zero incremental (the GOS
+> HW walk is pending first-time regardless). The one accepted residual is the §6 escalation downgrade
+> (sender binary carries the bridge), mitigated by the §6.3 controls. C′ remains the documented
+> fallback if the §6 downgrade is later judged unacceptable.
 
 ## 4. Platform-support posture (GrapheneOS-first)
 
@@ -229,17 +233,18 @@ ADR formally re-opens them (they are otherwise "don't re-litigate" in CLAUDE.md)
 - PackageInstaller install-confirm chain (ADR-006).
 - Null-account (device-local) contact writes visible in Contacts.
 
-This full GOS re-verification walk is an accepted cost of the clean identity, not an oversight.
-(Reuse-`.recv` would have avoided it.)
+Crucially, **portage is not yet published to any channel**, and the GOS HW E2E walk (reboot-recovery
+§7.5, silent-install #86, runbook §F) is **still pending first-time**. So changing the id does not
+*re-open completed* work — it means "run the verification you already owe, once, under the final id."
+The incremental cost of the id choice is therefore near-zero, and there is no installed base to orphan.
+The earlier "re-verification walk is a cost of the clean identity" framing overstated it for this
+pre-publication reality.
 
-> **⚠ Open decision #2 (owner, JD):** an adversarial review contests "branding over re-verify": the
-> `applicationId` is **never shown to users** (the app label is a separate `@string/app_name`), and
-> the re-opened behaviors are package-agnostic OS behavior (the self-grant already derives
-> `selfPackage = app.packageName`, `LibAdbDeviceGate.kt:185`), so a clean id buys an invisible string
-> while re-opening the project's HW long-pole. **Prefer reusing `com.ventouxlabs.portage.recv` (or
-> `…portage`) if it can be done without invalidating the package-keyed sign-offs** — that dominates on
-> every axis except maintainer aesthetics. If the clean id is kept, record the concrete branding value
-> that outweighs re-opening §9. Decision pending.
+> **✅ Decision #2 — clean id `com.ventouxlabs.portage` (owner, JD, 2026-07-03).** The adversarial
+> review argued reuse-`.recv` *only* to dodge the re-verify — and that cost is absent pre-publication
+> (above). With the re-verify neutral, the clean id wins on the remaining axes: a cleaner F-Droid
+> listing and no `.recv` suffix on a role-chooser app. The pending §7 HW walk is simply executed once
+> under `com.ventouxlabs.portage`.
 
 ## 10. Migration sequencing (CI green at every phase; HW re-verify isolated)
 
@@ -307,14 +312,16 @@ verified body.
   2. **Close the recv-`play` SMS/call-log/`REQUEST_INSTALL_PACKAGES` exposure now, decoupled**
      (§6.3 #2) — it is live in today's shipped play flavor and must land as a standalone
      hardening PR before any Play submission, independent of the multi-phase unification.
-- **OPEN DECISIONS (owner, JD — from the 2026-07-03 adversarial review; core direction NOT yet final):**
-  1. **A vs C′** — is the single-app product goal worth the §6 escalation downgrade + §9 re-verify +
-     id-orphan risk, given the "broken funnel" justification is contested? Evaluate C′ (two apps +
-     in-app cross-linking, both on Play) on its merits. (§3)
-  2. **Clean id vs reuse `.recv`** — reuse dominates unless a concrete, user-visible branding value
-     justifies re-opening the §9 HW walk; the id is never user-visible. (§9)
-  These two gate acceptance of the top-level decision; the §6.3 controls / §7 wiring / §10 sequencing
-  stand regardless of how they resolve.
+- **RESOLVED DECISIONS (owner, JD, 2026-07-03):**
+  1. **A (unify) chosen** over C′ — the single-app UX is the priority, and pre-publication timing makes
+     A cheap (§3). Accepted residual: the §6 escalation downgrade.
+  2. **Clean id `com.ventouxlabs.portage` chosen** — the reuse-`.recv` argument was purely re-verify
+     avoidance, which is neutral pre-publication (§9).
+- **Preconditions (still binding, now easily satisfiable pre-publication):**
+  1. **Freeze the id before ANY external publication** — done (`com.ventouxlabs.portage`); the
+     fdroiddata MR / any later Play submission must ship under the unified id, never `.recv`/`.send`.
+  2. **Close the recv-`play` SMS/call-log/install exposure** — **DONE** (merged as #107, the decoupled
+     §6.3 #2 hardening).
 - **Open (mechanics):** decide per-permission whether lite needs `QUERY_ALL_PACKAGES` and
   `BLUETOOTH_CONNECT` (gate the lite permission set to a documented allowlist in CI); the lite
   feature-gating UX (don't render Send/Receive options that lite can't fulfil).
