@@ -1,7 +1,10 @@
 # ADR-007 — App Unification, Distribution Channels & Platform-Support Posture
 
-Status: **PROPOSED — design-frozen, pre-implementation.** Design settled via brainstorm +
-a two-lens independent review (security-reviewer + architect, 2026-07-03) before any code.
+Status: **PROPOSED — pre-implementation; TWO core decisions OPEN (§13).** Design via brainstorm +
+a two-lens independent review (security-reviewer + architect, 2026-07-03); a later adversarial
+review (2026-07-03) re-opened the A-vs-C′ direction and the applicationId choice — see §13 Open
+Decisions. The mechanics (§6.3 controls, §7 wiring, §10 sequencing) are settled; the top-level
+"unify, clean id" is proposed, not frozen.
 Supersedes the *artifact-topology* half of ADR-003 §9 ("the ADB stack is kept out of a
 separate `portage-send` binary") — see §11. Extends ADR-001/ADR-003 (privilege) and ADR-006
 (APK keystone). **Re-opens** several ADR-001/ADR-003 hardware-verified "established facts"
@@ -55,6 +58,14 @@ components, `READ`/`WRITE_CALL_LOG`, and `REQUEST_INSTALL_PACKAGES`. Lite is Tie
 | **A — two feature libraries + thin `:app`** (chosen) | Only option that preserves a compile-time send firewall (`:feature-send` cannot see the bridge). Keeps per-module namespaces so R/resources don't churn. Lite APK stays *provably* bridge-free. |
 | B — one unified module | Rejected: send, recv, and `:adb-bridge` share one classpath; least-privilege degrades to a lint/grep convention. Weakest fit for the threat model. |
 | C — keep two apps, extract a shared `:feature-ui` library | The genuine antithesis (strongest guarantee, zero re-verify, zero id change) — but it does **not** deliver the runtime role-chooser product goal. Rejected because the single-app UX is the point. |
+| **C′ — two apps + in-app cross-linking, BOTH on Play** | *(added on review — not yet weighed)* Both apps are Tier-0/Play-safe (the sender never escalates; recv-lite is Tier-0), so both CAN be published to Play with in-app "get the other half" links. Captures most of the one-product UX at **none** of the §6/§9/§13 cost. **OPEN DECISION #1 (§13)**. |
+
+> **⚠ Open decision #1 (owner, JD):** the rejection of C/C′ rests on §2's "broken funnel" claim. An
+> adversarial review flagged that the sender is *already* Play-safe and recv-lite is Tier-0, so two
+> apps do **not** intrinsically break the funnel — the residual is "two Play listings + a 'which app?'
+> step," a discoverability nicety, not a broken funnel. Weigh that explicitly against the escalation
+> downgrade (§6), the HW re-verify (§9), and the id-orphan risk (§13) before committing to A. This ADR
+> records A as the *proposed* direction pending that decision.
 
 ## 4. Platform-support posture (GrapheneOS-first)
 
@@ -99,8 +110,12 @@ even in Send mode. The guarantee moves from *"the sender binary cannot escalate"
 two-part control:
 
 - **(a) Module boundary** — `:feature-send` has no compile edge to `:adb-bridge`/`:wizard`;
-  send-role code has no symbol path to escalation. This is the primary, machine-checkable wall
-  (§8), and it only holds while `:app` stays routing-only.
+  send-role code has no symbol path to escalation. This is machine-checkable **at `:feature-send`
+  granularity** (§8, §6.3 #3). NOTE the asymmetry: in the **degoogle** app the bridge IS legitimately
+  on `:app`'s runtime classpath (via `:feature-recv`'s `degoogleImplementation`), so the
+  `:app`-degoogle boundary is NOT machine-checked — it holds only by the routing-only discipline
+  (§6.3 #5). So (a) is a hard wall for `:feature-send` and a *convention* for `:app`-degoogle; it is
+  not one uniform automated guarantee, and this ADR should not be read as claiming one.
 - **(b) Lazy, receive-gated runtime construction** — the privilege wiring is built only when
   the Receive role is active, never in Send.
 
@@ -111,9 +126,14 @@ still requires the on-device human ceremony: enable Developer options + Wireless
 complete the SPAKE2 pairing, and only then can `connect()` proceed — it hard-gates on
 `Settings.Global adb_wifi_enabled` (`LocalAdbBridge.kt:78`). **No in-scope adversary and no
 THREAT_MODEL property (rows 1–13, §4) gains any capability from the merge.** What is genuinely
-lost is a *defense-in-depth / auditability* property: a decommissioned "old phone" now carries
-escalation bytecode it structurally could not before. That is a real reduction in assurance,
-consciously accepted here, and compensated by §6.3.
+lost is a *defense-in-depth / auditability* property, and it is sharper than "carries escalation
+bytecode": because ONE app now plays both roles, a phone that was a **receiver** in a prior migration
+retains its one-shot `WRITE_SECURE_SETTINGS` grant (ADR-001: persists across reboot, cleared only on
+uninstall) **and** its stored ADB identity key when it is later handed down, sold, or repurposed as a
+**sender**. Binary-absence previously protected that device even against the OUT-of-scope adversary
+(physical access / resale) — precisely the coverage a defense-in-depth property is kept for. That is a
+real reduction in assurance, consciously accepted here, and compensated by §6.3 (including the reset
+control #7).
 
 ### 6.3 Compensating controls (NON-NEGOTIABLE — ship with the merge, not after)
 Both reviewers were explicit: the merge silently deletes the current CI proofs and one stated
@@ -133,10 +153,16 @@ invariant is already violated by today's code. These are required, not optional:
    near-term hardening PR (move those permissions + SMS components into an `app-recv/src/degoogle`
    manifest and extend the existing play no-bridge assert to forbid this set), landing **before
    any Play submission**. See §13 Preconditions.
-3. **Module-graph assert** — a Gradle task walking `:feature-send` and `:app` runtime/compile
-   classpaths (`resolutionResult.allComponents`) that fails if any `ProjectComponentIdentifier`
-   is `:adb-bridge`/`:wizard`; plus repurposing the per-flavor OSV lockfiles
-   (`dependency-audit.yml`) to fail if the lite runtime graph resolves `libadb`/`spake2`/
+3. **Module-graph assert (correctly scoped).** A Gradle task using `resolutionResult.allComponents`
+   that fails if any `ProjectComponentIdentifier` is `:adb-bridge`/`:wizard` in EITHER (i)
+   `:feature-send`'s classpaths (ALL flavors — send never sees the bridge) OR (ii) `:app`'s **play**
+   runtime/compile classpaths. It must **NOT** assert this for `:app`'s **degoogle** classpath: the
+   bridge is *legitimately* there via `:feature-recv`'s `degoogleImplementation(:adb-bridge)`, so a
+   naive "walk `:app`" task would false-positive and fail the legitimate degoogle build. That leaves
+   the `:app`-degoogle boundary unguarded by the graph task, so back it with a hard rule that `:app`
+   holds zero non-routing code (§6.3 #5) — enforced by a containment grep asserting `:app` sources
+   reference no `:providers`/transfer symbols. Plus repurpose the per-flavor OSV lockfiles
+   (`dependency-audit.yml`) to fail if the **lite** runtime graph resolves `libadb`/`spake2`/
    `conscrypt`. Robust against renames; not a text grep.
 4. **Lazy, receive-gated privilege wiring + a test.** Today `MainActivity.kt:136` eagerly
    builds `providePrivilegeIntegration(context).wiring(context)`, which calls
@@ -151,6 +177,14 @@ invariant is already violated by today's code. These are required, not optional:
 6. **Physically move all SMS/call-log permissions and components out of every `main`
    manifest** (both features) into `degoogle` source sets — the drop must be structural, not a
    runtime no-op.
+7. **Grant + ADB-key reset on role-switch / decommission** (addresses §6.2's resold-device gap).
+   Because the unified app can move Receive → Send on the same device, add an explicit reset that
+   (best-effort, while the bridge is still granted) `pm revoke`s the one-shot `WRITE_SECURE_SETTINGS`
+   grant and deletes the stored ADB identity key + wizard state, offered on (i) entering Send mode on
+   a device that previously received, and (ii) a "reset portage / prepare to hand off this phone"
+   action. This restores most of the auditability the merge spends: a resold-without-uninstall phone
+   can be returned to a no-standing-grant state. (Uninstall still clears it; this covers the
+   resold-without-uninstall case binary-absence used to cover for free.)
 
 ## 7. Module architecture & build wiring
 
@@ -195,8 +229,17 @@ ADR formally re-opens them (they are otherwise "don't re-litigate" in CLAUDE.md)
 - PackageInstaller install-confirm chain (ADR-006).
 - Null-account (device-local) contact writes visible in Contacts.
 
-This full GOS re-verification walk is an accepted, budgeted cost of the clean identity, not an
-oversight. (Reuse-`.recv` would have avoided it; the team chose branding over the re-verify.)
+This full GOS re-verification walk is an accepted cost of the clean identity, not an oversight.
+(Reuse-`.recv` would have avoided it.)
+
+> **⚠ Open decision #2 (owner, JD):** an adversarial review contests "branding over re-verify": the
+> `applicationId` is **never shown to users** (the app label is a separate `@string/app_name`), and
+> the re-opened behaviors are package-agnostic OS behavior (the self-grant already derives
+> `selfPackage = app.packageName`, `LibAdbDeviceGate.kt:185`), so a clean id buys an invisible string
+> while re-opening the project's HW long-pole. **Prefer reusing `com.ventouxlabs.portage.recv` (or
+> `…portage`) if it can be done without invalidating the package-keyed sign-offs** — that dominates on
+> every axis except maintainer aesthetics. If the clean id is kept, record the concrete branding value
+> that outweighs re-opening §9. Decision pending.
 
 ## 10. Migration sequencing (CI green at every phase; HW re-verify isolated)
 
@@ -204,19 +247,29 @@ oversight. (Reuse-`.recv` would have avoided it; the team chose branding over th
 - **Phase 1 (CI green, no HW):** in-place refactor inside the existing apps — extract the
   Activity-scoped logic that must be re-homed into host-agnostic functions/composables:
   send's whole-session `FLAG_SECURE` + orphaned-grant sweep (`app-send/.../MainActivity.kt`),
-  recv's staging sweep + the SMS-role `registerForActivityResult` launcher which **must**
-  register before STARTED (`app-recv/.../MainActivity.kt`).
+  recv's staging sweep + the SMS-role `registerForActivityResult` launcher.
+  **Resolve the launcher-lifecycle hazard now, not in Phase 3:** a classic
+  `Activity.registerForActivityResult` MUST register before STARTED, but the routing-only `:app` →
+  role-chooser → *then* compose the recv feature means the recv host is created AFTER `MainActivity`
+  is already RESUMED — an Activity-level registration there throws `IllegalStateException`. So the
+  SMS-role launcher must use the **Compose `rememberLauncherForActivityResult`** (no before-STARTED
+  constraint) inside the recv feature (preferred — host-agnostic, matches the composable model), OR
+  be registered unconditionally in `:app` before any routing. This is a Phase-1 design decision, not
+  a detail deferrable to the receive-feature conversion.
 - **Phase 2 (CI green, light HW):** create `:app`; convert `:app-send` → `:feature-send`
   (delete its `WRITE_SECURE_SETTINGS tools:node="remove"` line — see §12); `:app` routes to
   Send only; `app-recv` untouched (its verified chain + id preserved for now). Swap the
   send-APK asserts for the `:feature-send` module-graph task + the `:app`-play bridge-free
   assert in the same PR. Re-verify is light (Tier-0 export, `FLAG_SECURE`, BT roster on GOS).
-- **Phase 3 (HW re-verify REQUIRED):** convert `:app-recv` → `:feature-recv` (carry the
-  dimension, `degoogleImplementation` bridge/wizard, the `PrivilegeIntegration` seam +
+- **Phase 3a (convert + VERIFY, `app-recv` still alive):** convert `:app-recv` → `:feature-recv`
+  (carry the dimension, `degoogleImplementation` bridge/wizard, the `PrivilegeIntegration` seam +
   `degoogle`/`play`/`testDegoogle`/`testPlay` source sets verbatim); fold Receive routing into
-  `:app`; move SMS/call-log to `:feature-recv/src/degoogle`; consolidate `<application>` attrs
-  / launcher / `app_name` / `Theme.Portage` into `:app`; retire `app-recv`; rewrite `build.yml`
-  to the final 2-APK asserts and update the OSV init script. Run the §9 re-verification walk.
+  `:app`; move SMS/call-log to `:feature-recv/src/degoogle`; consolidate `<application>` attrs /
+  launcher / `app_name` / `Theme.Portage` into `:app`. **Keep `app-recv` and its existing CI asserts
+  intact** as a known-good fallback. Run the §9 re-verification walk **against the new `:app` build**.
+- **Phase 3b (retire — ONLY after 3a passes on hardware):** retire `app-recv`; rewrite `build.yml`
+  to the final 2-APK asserts and update the OSV init script. Deliberately verify-BEFORE-retire: if the
+  §9 walk fails, 3a rolls back cheaply and the project is never left with no shippable receiver.
 
 ## 11. Relationship to ADR-003
 
@@ -254,6 +307,14 @@ verified body.
   2. **Close the recv-`play` SMS/call-log/`REQUEST_INSTALL_PACKAGES` exposure now, decoupled**
      (§6.3 #2) — it is live in today's shipped play flavor and must land as a standalone
      hardening PR before any Play submission, independent of the multi-phase unification.
-- **Open:** decide per-permission whether lite needs `QUERY_ALL_PACKAGES` and `BLUETOOTH_CONNECT`
-  (gate the lite permission set to a documented allowlist in CI); the lite feature-gating UX
-  (don't render Send/Receive options that lite can't fulfil).
+- **OPEN DECISIONS (owner, JD — from the 2026-07-03 adversarial review; core direction NOT yet final):**
+  1. **A vs C′** — is the single-app product goal worth the §6 escalation downgrade + §9 re-verify +
+     id-orphan risk, given the "broken funnel" justification is contested? Evaluate C′ (two apps +
+     in-app cross-linking, both on Play) on its merits. (§3)
+  2. **Clean id vs reuse `.recv`** — reuse dominates unless a concrete, user-visible branding value
+     justifies re-opening the §9 HW walk; the id is never user-visible. (§9)
+  These two gate acceptance of the top-level decision; the §6.3 controls / §7 wiring / §10 sequencing
+  stand regardless of how they resolve.
+- **Open (mechanics):** decide per-permission whether lite needs `QUERY_ALL_PACKAGES` and
+  `BLUETOOTH_CONNECT` (gate the lite permission set to a documented allowlist in CI); the lite
+  feature-gating UX (don't render Send/Receive options that lite can't fulfil).
