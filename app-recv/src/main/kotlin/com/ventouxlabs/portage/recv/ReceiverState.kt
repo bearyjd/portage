@@ -25,6 +25,8 @@ data class ItemProgress(
     val displayName: String,
     val phase: ItemPhase = ItemPhase.PENDING,
     val detail: String? = null,
+    val bytesReceived: Long = 0,
+    val totalBytes: Long = 0,
 )
 
 /**

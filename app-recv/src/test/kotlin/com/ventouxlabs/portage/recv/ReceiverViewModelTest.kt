@@ -39,6 +39,7 @@ import com.ventouxlabs.portage.providers.sms.SmsRoleGateway
 import com.ventouxlabs.portage.providers.sms.SmsStore
 import com.ventouxlabs.portage.recv.sms.SmsRoleCoordinator
 import com.ventouxlabs.portage.recv.sms.SmsRoleStrand
+import com.ventouxlabs.portage.recv.transfer.ItemStreamReceiver
 import com.ventouxlabs.portage.transport.PairingCodec
 import com.ventouxlabs.portage.transport.SecureChannel
 import com.google.common.truth.Truth.assertThat
@@ -276,6 +277,24 @@ class ReceiverViewModelTest {
     }
 
     @Test
+    fun `item progress surfaces the live received-byte ticks per row`() = runTest(dispatcher) {
+        val vm = viewModel()
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        vm.onConfirm() // state == Transferring, items PENDING; transfer coroutine queued (not advanced)
+        // Feed the per-chunk stream event the receiver already emits (v1 dropped it) and assert the
+        // row now carries it — the byte-surfacing this change exists to add.
+        vm.onReceiveEvent(ItemStreamReceiver.Event.ItemProgressed(contactsMeta.itemId, 5L, contactsMeta.size))
+        val mid = vm.state.value as ReceiverState.Transferring
+        val row = mid.items.first { it.itemId == contactsMeta.itemId }
+        assertThat(row.bytesReceived).isEqualTo(5L)
+        assertThat(row.totalBytes).isEqualTo(contactsMeta.size)
+        advanceUntilIdle() // drain the queued transfer so runTest sees no dangling job
+    }
+
+    @Test
     fun `confirm streams, applies, and reports real done counts`() = runTest(dispatcher) {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
         val calls = FakeApply(ItemKind.CALL_LOG)
@@ -291,6 +310,11 @@ class ReceiverViewModelTest {
             .containsExactly("Contacts", "Call history").inOrder()
         assertThat(transferring.items.map { it.phase })
             .containsExactly(ItemPhase.PENDING, ItemPhase.PENDING)
+        // Per-item byte progress (portage U2): totalBytes is seeded from the manifest up front;
+        // bytesReceived then ticks up live via the ItemProgressed stream event (surfaced per row).
+        assertThat(transferring.items.map { it.totalBytes })
+            .containsExactly(contactsMeta.size, callsMeta.size).inOrder()
+        assertThat(transferring.items.map { it.bytesReceived }).containsExactly(0L, 0L)
         advanceUntilIdle()
 
         assertThat(channel.sent.filterIsInstance<ProtocolMessage.Select>().single().want)

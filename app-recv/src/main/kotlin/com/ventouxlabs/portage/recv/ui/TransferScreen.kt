@@ -128,18 +128,30 @@ private fun ItemProgressRow(item: ItemProgress) {
                 text = item.displayName,
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
             )
-            Text(
-                text = phaseWord(item.phase),
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontWeight = if (failed) FontWeight.Bold else FontWeight.Normal,
-                ),
-                color = if (failed) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = phaseWord(item.phase),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = if (failed) FontWeight.Bold else FontWeight.Normal,
+                    ),
+                    color = if (failed) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                if (item.phase == ItemPhase.RECEIVING && item.totalBytes > 0) {
+                    Text(
+                        text = "${formatBytes(item.bytesReceived)} / ${formatBytes(item.totalBytes)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
         item.detail?.let {
             Text(
@@ -158,6 +170,14 @@ private fun phaseWord(phase: ItemPhase): String = when (phase) {
     ItemPhase.APPLYING -> "APPLYING"
     ItemPhase.DONE -> "DONE"
     ItemPhase.FAILED -> "FAILED"
+}
+
+/** 1.5 KB / 3.4 MB / 1.2 GB — one decimal per tier; a glance value, not accounting. */
+internal fun formatBytes(bytes: Long): String = when {
+    bytes >= 1_000_000_000 -> "%.1f GB".format(bytes / 1_000_000_000.0)
+    bytes >= 1_000_000 -> "%.1f MB".format(bytes / 1_000_000.0)
+    bytes >= 1_000 -> "%.1f KB".format(bytes / 1_000.0)
+    else -> "$bytes B"
 }
 
 /**

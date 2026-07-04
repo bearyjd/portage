@@ -27,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import com.ventouxlabs.portage.send.SendPhase
 import com.ventouxlabs.portage.send.SendProgress
 import com.ventouxlabs.portage.send.ui.theme.LocalSpacing
@@ -142,18 +143,30 @@ private fun SendProgressRow(item: SendProgress) {
                 text = item.displayName,
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
             )
-            Text(
-                text = phaseWord(item.phase),
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontWeight = if (failed) FontWeight.Bold else FontWeight.Normal,
-                ),
-                color = if (failed) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = phaseWord(item.phase),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = if (failed) FontWeight.Bold else FontWeight.Normal,
+                    ),
+                    color = if (failed) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                if (item.phase == SendPhase.SENDING && item.totalBytes > 0) {
+                    Text(
+                        text = "${formatBytes(item.bytesSent)} / ${formatBytes(item.totalBytes)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
         item.detail?.let {
             Text(
