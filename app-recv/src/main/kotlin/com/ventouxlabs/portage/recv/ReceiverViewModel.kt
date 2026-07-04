@@ -258,7 +258,7 @@ class ReceiverViewModel(
         // transfer must be able to restore records the user deleted in the meantime.
         applyRegistry.beginTransfer()
         _state.value = ReceiverState.Transferring(
-            items = selected.map { ItemProgress(it.itemId, it.displayName) },
+            items = selected.map { ItemProgress(it.itemId, it.displayName, totalBytes = it.size) },
         )
         val needsSmsRole = selected.any { it.kind == ItemKind.SMS || it.kind == ItemKind.MMS }
         viewModelScope.launch {
@@ -361,12 +361,15 @@ class ReceiverViewModel(
     }
 
     /** Map stream events onto the per-item progress rows. */
-    private fun onReceiveEvent(event: ItemStreamReceiver.Event) {
+    internal fun onReceiveEvent(event: ItemStreamReceiver.Event) {
         when (event) {
             is ItemStreamReceiver.Event.ItemStarted ->
                 updateItem(event.itemId) { it.copy(phase = ItemPhase.RECEIVING) }
 
-            is ItemStreamReceiver.Event.ItemProgressed -> Unit // byte ticks not surfaced per-row in v1
+            is ItemStreamReceiver.Event.ItemProgressed ->
+                updateItem(event.itemId) {
+                    it.copy(bytesReceived = event.bytesReceived, totalBytes = event.totalBytes)
+                }
 
             is ItemStreamReceiver.Event.ItemApplying -> Unit // applyStaged flips APPLYING itself
 
