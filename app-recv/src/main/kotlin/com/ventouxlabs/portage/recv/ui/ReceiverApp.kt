@@ -202,6 +202,7 @@ private fun StateBody(
                 apkInstallPrompts = current.apkInstallPrompts,
                 restoredPermissions = current.restoredPermissions,
                 optInPermissions = current.optInPermissions,
+                failedItems = current.failedItems,
                 onInstall = { action -> launchInstall(context, action) },
                 onInstallApk = { prompt ->
                     if (!commitApkInstall(context, prompt)) onApkInstallFailed()

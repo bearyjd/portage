@@ -10,6 +10,7 @@
 package com.ventouxlabs.portage.recv
 
 import com.ventouxlabs.portage.model.ItemKind
+import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.providers.bluetooth.RePairEntry
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.relay.RelayRestorePrompt
@@ -48,6 +49,14 @@ data class RestoredPermissions(val packageName: String, val permissions: List<St
  * are raw names (the UI maps them to friendly labels). Identified by [packageName] (see [RestoredPermissions]).
  */
 data class OptInPermissions(val packageName: String, val permissions: List<String>)
+
+/** One non-OK item from the transfer, carrying its display name alongside the wire result. */
+data class FailedItem(
+    val itemId: Int,
+    val displayName: String,
+    val status: ItemStatus,
+    val detail: String?,
+)
 
 /** The receiver's single screen state (portage-prp-prompt.md §7). */
 sealed interface ReceiverState {
@@ -105,6 +114,11 @@ sealed interface ReceiverState {
          * silent install only; empty otherwise). Nothing here is granted until the user acts on it.
          */
         val optInPermissions: List<OptInPermissions> = emptyList(),
+        /**
+         * Non-OK items from the transfer, in receive order, with their display names attached.
+         * Split by [isTerminal] for the Done-screen sections (U3a).
+         */
+        val failedItems: List<FailedItem> = emptyList(),
     ) : ReceiverState
 
     /** Fail-closed terminal state with a user-facing reason. */

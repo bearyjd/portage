@@ -48,6 +48,8 @@ import com.ventouxlabs.portage.providers.inventory.InstallStore
 import com.ventouxlabs.portage.providers.permission.PermissionAllowlist
 import com.ventouxlabs.portage.providers.relay.RelayApp
 import com.ventouxlabs.portage.providers.relay.RelayRestorePrompt
+import com.ventouxlabs.portage.model.ItemStatus
+import com.ventouxlabs.portage.recv.FailedItem
 import com.ventouxlabs.portage.recv.ItemPhase
 import com.ventouxlabs.portage.recv.ItemProgress
 import com.ventouxlabs.portage.recv.OptInPermissions
@@ -202,6 +204,7 @@ fun DoneScreen(
     apkInstallPrompts: List<ApkInstallPrompt> = emptyList(),
     restoredPermissions: List<RestoredPermissions> = emptyList(),
     optInPermissions: List<OptInPermissions> = emptyList(),
+    failedItems: List<FailedItem> = emptyList(),
     onInstall: (InstallAction) -> Unit = {},
     onInstallApk: (ApkInstallPrompt) -> Unit = {},
     onGrantOptIn: (packageName: String, permissions: List<String>) -> Unit = { _, _ -> },
@@ -213,7 +216,7 @@ fun DoneScreen(
     val s = LocalSpacing.current
     if (installActions.isEmpty() && repairEntries.isEmpty() &&
         relayPrompts.isEmpty() && apkInstallPrompts.isEmpty() && restoredPermissions.isEmpty() &&
-        optInPermissions.isEmpty()
+        optInPermissions.isEmpty() && failedItems.isEmpty()
     ) {
         Column(
             modifier = modifier
@@ -229,6 +232,7 @@ fun DoneScreen(
             )
             Spacer(Modifier.height(s.xl))
             SwissPrimaryButton(text = "Done", onClick = onDone, fullWidth = true)
+
         }
         return
     }
@@ -246,6 +250,7 @@ fun DoneScreen(
                     skipped = skipped,
                     backupActionLabel = backupActionLabel,
                     onOpenBackup = onOpenBackup,
+                    hasFailedItems = failedItems.isNotEmpty(),
                 )
             }
             if (apkInstallPrompts.isNotEmpty()) {
@@ -374,6 +379,54 @@ fun DoneScreen(
                     )
                 }
             }
+            val tryAgainItems = failedItems.filter { !isTerminal(it.status) }
+            val leftBehindItems = failedItems.filter { isTerminal(it.status) }
+            if (tryAgainItems.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(s.lg))
+                    Text(
+                        text = "TRY AGAIN · ${tryAgainItems.size} ${if (tryAgainItems.size == 1) "ITEM" else "ITEMS"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = s.sm),
+                    )
+                    HairlineDivider()
+                }
+                items(tryAgainItems, key = { "again:${it.itemId}" }) { item ->
+                    FailedItemRow(item = item)
+                }
+                item {
+                    Spacer(Modifier.height(s.md))
+                    Text(
+                        text = "Sending these again usually works — start another transfer from your old phone.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (leftBehindItems.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(s.lg))
+                    Text(
+                        text = "LEFT BEHIND · ${leftBehindItems.size} ${if (leftBehindItems.size == 1) "ITEM" else "ITEMS"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = s.sm),
+                    )
+                    HairlineDivider()
+                }
+                items(leftBehindItems, key = { "behind:${it.itemId}" }) { item ->
+                    FailedItemRow(item = item)
+                }
+                item {
+                    Spacer(Modifier.height(s.md))
+                    Text(
+                        text = "Sending these again won't change the answer — each row says why.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
         Column(
             modifier = Modifier
@@ -395,6 +448,7 @@ private fun DoneSummary(
     skipped: Int,
     backupActionLabel: String = "Open backup settings",
     onOpenBackup: (() -> Unit)? = null,
+    hasFailedItems: Boolean = false,
 ) {
     val s = LocalSpacing.current
     Column {
@@ -417,7 +471,19 @@ private fun DoneSummary(
                 modifier = Modifier.padding(bottom = s.sm),
             )
         }
-        if (skipped > 0) {
+        // When hasFailedItems, the TRY AGAIN / LEFT BEHIND section headers carry the breakdown —
+        // showing a lumped "N left behind" would double-label and disagree with the section counts.
+        // Suppress it in that case; only the zero-moved empty-state line still renders.
+        // (Defensive case "Nothing was picked to carry" is unreachable: ReceiverViewModel.start()
+        // returns early when nothing is selected, so Done is never reached with 0 results.)
+        if (hasFailedItems && moved == 0) {
+            Spacer(Modifier.height(s.sm))
+            Text(
+                text = "Nothing made it over this time — the rows below say why.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else if (!hasFailedItems && skipped > 0) {
             Spacer(Modifier.height(s.sm))
             Text(
                 text = "$skipped left behind",
@@ -459,6 +525,50 @@ private fun RestoredPermissionsRow(restored: RestoredPermissions) {
             text = restored.permissions.joinToString(", ") { friendlyPermissionName(it) },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** One failed item: display name + human reason + optional wire detail, with the verdict word right-aligned. */
+@Composable
+private fun FailedItemRow(item: FailedItem) {
+    val s = LocalSpacing.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = s.sm),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top,
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = s.md)) {
+            Text(
+                text = item.displayName,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            statusReason(item.status)?.let { reason ->
+                Spacer(Modifier.height(s.xs))
+                Text(
+                    text = reason,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            item.detail?.let { detail ->
+                Spacer(Modifier.height(s.xs))
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            text = statusWord(item.status),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
         )
     }
 }
@@ -835,4 +945,28 @@ private fun relayAppLabel(app: RelayApp): String = when (app) {
     RelayApp.MOLLY -> "Molly"
     RelayApp.AEGIS -> "Aegis"
     RelayApp.OTHER -> "App backup"
+}
+
+internal fun statusWord(status: ItemStatus): String = when (status) {
+    ItemStatus.OK -> "MOVED"
+    ItemStatus.SKIPPED -> "SKIPPED"
+    ItemStatus.HASH_MISMATCH -> "DAMAGED"
+    ItemStatus.WRITE_ERROR -> "NOT SAVED"
+    ItemStatus.UNKNOWN_KIND -> "UNKNOWN"
+    ItemStatus.OVERSIZE -> "TOO BIG"
+}
+
+internal fun statusReason(status: ItemStatus): String? = when (status) {
+    ItemStatus.OK -> null
+    ItemStatus.SKIPPED -> "This phone chose to leave it."
+    ItemStatus.HASH_MISMATCH -> "Didn't arrive intact — sending it again usually fixes this."
+    ItemStatus.WRITE_ERROR -> "This phone couldn't save it — worth sending again."
+    ItemStatus.UNKNOWN_KIND ->
+        "This phone's portage doesn't know this kind of item — update portage here, then send again."
+    ItemStatus.OVERSIZE -> "Too big to carry — this phone caps what one item can bring."
+}
+
+internal fun isTerminal(status: ItemStatus): Boolean = when (status) {
+    ItemStatus.OK, ItemStatus.HASH_MISMATCH, ItemStatus.WRITE_ERROR -> false
+    ItemStatus.SKIPPED, ItemStatus.UNKNOWN_KIND, ItemStatus.OVERSIZE -> true
 }

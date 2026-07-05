@@ -312,6 +312,12 @@ class ReceiverViewModel(
                 }
                 ensureActive() // a reset() mid-run must not be overwritten by Done
                 val moved = results.count { it.status == ItemStatus.OK }
+                val nameById = (_state.value as? ReceiverState.Transferring)
+                    ?.items?.associate { it.itemId to it.displayName }
+                    ?: emptyMap()
+                val failedItems = results
+                    .filter { it.status != ItemStatus.OK }
+                    .map { r -> FailedItem(r.itemId, nameById[r.itemId] ?: "#${r.itemId}", r.status, r.detail) }
                 _state.value = ReceiverState.Done(
                     moved = moved,
                     skipped = results.size - moved,
@@ -321,6 +327,7 @@ class ReceiverViewModel(
                     apkInstallPrompts = _apkInstallPrompts.value,
                     restoredPermissions = _restoredPermissions.value,
                     optInPermissions = _optInPermissions.value,
+                    failedItems = failedItems,
                 )
                 channel?.close()
                 channel = null
