@@ -34,6 +34,7 @@ import com.ventouxlabs.portage.transport.NoiseSecureChannelFactory
 import com.ventouxlabs.portage.transport.PairingCodec
 import com.ventouxlabs.portage.transport.PairingCodecImpl
 import com.ventouxlabs.portage.transport.SecureChannel
+import com.ventouxlabs.portage.transport.withDataPhaseDeadline
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -43,7 +44,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.net.ServerSocket
 import java.security.SecureRandom
@@ -295,14 +295,14 @@ class SenderViewModel(
                 val ch = channelFactory.acceptAsSender(payload).also { channel = it }
                 _state.value = SenderState.Linked
 
-                // Cap the WHOLE data phase, not just each read. withTimeoutOrNull (NOT withTimeout)
-                // returns null on ITS OWN timeout, so a stalled peer becomes a visible Failed rather
-                // than a re-thrown cancellation; an external reset() instead cancels transferJob, whose
-                // CancellationException propagates to the catch below (never null). Effective ceiling is
-                // dataPhaseTimeoutMs PLUS up to one per-read soTimeout — coroutine cancellation can't
-                // interrupt a parked native read, so the read unblocks via the socket soTimeout and the
-                // elapsed budget then converts it to null. See [DATA_PHASE_TIMEOUT_MS].
-                val results = withTimeoutOrNull(dataPhaseTimeoutMs) {
+                // Cap the WHOLE data phase, not just each read. withDataPhaseDeadline returns null
+                // on ITS OWN deadline ONLY, so a stalled peer becomes a visible Failed rather than
+                // a re-thrown cancellation; an external reset() instead cancels transferJob, whose
+                // CancellationException propagates to the catch below (never null). Its watchdog
+                // closes the channel at the deadline (#56) — that unblocks even a read parked in
+                // native code, so the cap fires at ~dataPhaseTimeoutMs instead of the old
+                // budget-plus-one-soTimeout slack. See [DATA_PHASE_TIMEOUT_MS].
+                val results = withDataPhaseDeadline(ch, dataPhaseTimeoutMs) {
                     engine.run(ch, built) { event -> onEngineEvent(built, event) }
                 }
                 if (results == null) {

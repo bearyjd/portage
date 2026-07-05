@@ -36,6 +36,7 @@ import com.ventouxlabs.portage.transport.NoiseSecureChannelFactory
 import com.ventouxlabs.portage.transport.PairingCodec
 import com.ventouxlabs.portage.transport.PairingCodecImpl
 import com.ventouxlabs.portage.transport.SecureChannel
+import com.ventouxlabs.portage.transport.withDataPhaseDeadline
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,7 +45,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.InputStream
 
@@ -267,17 +267,18 @@ class ReceiverViewModel(
                 // Hold the process alive + CPU awake for the whole item stream (#85): released in the
                 // finally below on EVERY exit (done / fail / timeout / reset). Idempotent.
                 transferKeepAlive.start()
-                // Cap the WHOLE data phase, not just each read. withTimeoutOrNull (NOT withTimeout)
-                // returns null on ITS OWN timeout, so a stalled peer becomes a visible Failed rather
-                // than a re-thrown cancellation. null strictly means "this budget elapsed": the block
+                // Cap the WHOLE data phase, not just each read. withDataPhaseDeadline returns null
+                // on ITS OWN deadline ONLY, so a stalled peer becomes a visible Failed rather than
+                // a re-thrown cancellation. null strictly means "this budget elapsed": the block
                 // always returns a non-null List, and a concurrent reset() here CLOSES THE CHANNEL
-                // (the receiver has no transferJob to cancel) — which surfaces as a transport error in
-                // catch(t), never as null. Effective ceiling is dataPhaseTimeoutMs PLUS up to one
-                // per-read soTimeout: coroutine cancellation can't interrupt a parked native read, so
-                // the read unblocks via the socket soTimeout, then the elapsed budget converts it to
-                // null and the block's finally clauses (staging sweep / SMS-role relinquish) run before
-                // we fail. See [DATA_PHASE_TIMEOUT_MS].
-                val results = withTimeoutOrNull(dataPhaseTimeoutMs) {
+                // (the receiver has no transferJob to cancel) — which surfaces as a transport error
+                // in catch(t), never as null (the helper rethrows pre-deadline errors untouched).
+                // Its watchdog closes the channel at the deadline (#56), unblocking even a read
+                // parked in native code, so the cap fires at ~dataPhaseTimeoutMs instead of the old
+                // budget-plus-one-soTimeout slack; the block's finally clauses (staging sweep /
+                // SMS-role relinquish) still run on the unwind before we fail. See
+                // [DATA_PHASE_TIMEOUT_MS].
+                val results = withDataPhaseDeadline(ch, dataPhaseTimeoutMs) {
                     withSmsRoleIfNeeded(needsSmsRole) {
                         ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
                         ItemStreamReceiver(
@@ -326,12 +327,15 @@ class ReceiverViewModel(
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
-                // reset() cancels and closes the channel underneath this coroutine; the
-                // resulting IO error must not flip the user's Home back to Failed.
+                // reset() closes the channel underneath this coroutine (the receiver stores no
+                // transferJob, so it cannot cancel the coroutine — only the sender does that).
+                // ensureActive() guards only a true external cancel; a reset()-induced IO error
+                // falls through to fail(), which may overwrite the Idle reset() just set. This
+                // is a pre-existing, accepted LOW: the window is narrow and it fails closed.
                 ensureActive()
                 fail(t.message ?: "Transfer failed")
             } finally {
-                // Always release the keep-alive — done, fail, timeout, or a reset() cancellation
+                // Always release the keep-alive — done, fail, timeout, or reset() close
                 // unwinding through here. Idempotent.
                 transferKeepAlive.stop()
             }
