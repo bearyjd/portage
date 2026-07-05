@@ -144,7 +144,7 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
         val resolver = context.contentResolver
         val soundStore = AndroidSoundStore(context)
         val providers = listOf(
-            ContactsExportProvider(AndroidContactsStore(resolver)),
+            ContactsExportProvider(AndroidContactsStore(resolver, soundStore)),
             CalendarExportProvider(AndroidCalendarStore(resolver)),
             CallLogExportProvider(AndroidCallLogStore(resolver)),
             SmsExportProvider(AndroidSmsStore(resolver)),

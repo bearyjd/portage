@@ -148,7 +148,7 @@ private class ReceiverViewModelFactory(
                 ApplyProviderRegistry(
                 listOf(
                     ContactsApplyProvider(
-                        AndroidContactsStore(resolver),
+                        AndroidContactsStore(resolver, soundStore),
                         FileContactImportJournal(File(context.filesDir, "contact-imports.sha256")),
                     ),
                     CalendarApplyProvider(AndroidCalendarStore(resolver)),

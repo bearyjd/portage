@@ -62,8 +62,8 @@ as SMS role / `pm grant`) · **CEILING** = signature/system/root, out of reach.
 
 | Lever | What it closes | Tier | Effort | Notes |
 |---|---|---|---|---|
-| **Settings allowlist catch-up** | ~6–7 keys already classified **SAFE** in the source-of-truth doc but never compiled: accessibility magnification / captioning / large-pointer, keyboard text behavior (auto-replace/caps/punctuate), auto-time / auto-time-zone | T0 + BRIDGE (existing) | **S** | Pure catalog rows + validators, guardrail-test-bounded. No protocol change. The doc itself says "the PRP under-scoped Tier 0 here — promote these." Cheapest closer. |
-| **Per-contact custom ringtone** | `ContactsContract…CUSTOM_RINGTONE` (URI column) rides the existing contacts provider | T0 | **S** | Implementation check first: does the vCard round-trip already carry it? If not, small add. |
+| **Settings allowlist catch-up** — ✅ SHIPPED | 8 keys already classified **SAFE** in the source-of-truth doc but never compiled: accessibility magnification / captioning / large-pointer, keyboard text behavior (auto-replace/caps/punctuate), auto-time / auto-time-zone | T0 + BRIDGE (existing) | **S** | Pure catalog rows + validators, guardrail-test-bounded. No protocol change. Landed in `SettingsAllowlist.kt`. |
+| **Per-contact custom ringtone** — ✅ SHIPPED (built-in only) | `ContactsContract…CUSTOM_RINGTONE` rides the existing contacts provider | T0 | **S** | Turned out NOT to be a plain vCard field: a raw `content://` URI never crosses devices (same rule as the excluded `ringtone` settings key). Carries the built-in's TITLE only, re-resolved via the existing `SoundStore.resolveBuiltin` machinery (PRP-04) — mirrors `SoundSelectionApplyProvider`. A user-uploaded custom ringtone FILE is explicitly not carried (would need the heavier per-contact `SOUND_FILE`-style file-transfer machinery — treated as a separate, bigger follow-up, not folded in here). Unverified on hardware: the post-insert `Contacts.CUSTOM_RINGTONE` update assumes raw-contact aggregation is synchronous for a fresh local (no-account) contact. |
 
 ### B. New capability, real northstar movement, spike-gated
 

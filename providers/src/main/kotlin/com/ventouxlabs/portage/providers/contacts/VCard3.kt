@@ -74,6 +74,7 @@ object VCard3 {
         record.groupNames.forEach { appendLine("CATEGORIES:${RfcText.escape(it)}") }
         record.note?.let { appendLine("NOTE:${RfcText.escape(it)}") }
         if (record.starred) appendLine("X-PORTAGE-STARRED:1")
+        record.ringtoneTitle?.let { appendLine("X-PORTAGE-RINGTONE-TITLE:${RfcText.escape(it)}") }
         record.photoBase64?.let { appendLine("PHOTO;ENCODING=b;TYPE=${photoType(it)}:$it") }
         appendLine("END:VCARD")
     }
@@ -193,6 +194,7 @@ object VCard3 {
         var title: String? = null
         var note: String? = null
         var starred: Boolean = false
+        var ringtoneTitle: String? = null
         var photoBase64: String? = null
         var nickname: String? = null
         var birthday: String? = null
@@ -253,6 +255,7 @@ object VCard3 {
                     .let(groupNames::addAll)
                 "NOTE" -> note = RfcText.unescape(rawValue).ifEmpty { null }
                 "X-PORTAGE-STARRED" -> starred = rawValue.trim() == "1"
+                "X-PORTAGE-RINGTONE-TITLE" -> ringtoneTitle = RfcText.unescape(rawValue).ifEmpty { null }
                 "PHOTO" -> photoBase64 = validatedPhoto(rawValue)
                 else -> Unit // unknown property — ignore (forward compat)
             }
@@ -303,6 +306,7 @@ object VCard3 {
                 phoneticGivenName = phoneticGivenName,
                 phoneticMiddleName = phoneticMiddleName,
                 phoneticFamilyName = phoneticFamilyName,
+                ringtoneTitle = ringtoneTitle,
             )
         }
     }

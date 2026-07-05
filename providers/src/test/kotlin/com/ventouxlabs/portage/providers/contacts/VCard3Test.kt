@@ -82,6 +82,27 @@ class VCard3Test {
     }
 
     @Test
+    fun `round trips a custom ringtone title through the portage extension`() {
+        val record = ContactRecord(displayName = "Loud", ringtoneTitle = "Argon")
+
+        val out = ByteArrayOutputStream()
+        VCard3.write(listOf(record), out)
+        val text = out.toString(Charsets.UTF_8)
+        val back = VCard3.parse(ByteArrayInputStream(out.toByteArray()))
+
+        assertThat(text).contains("X-PORTAGE-RINGTONE-TITLE:Argon\r\n")
+        assertThat(back.records).containsExactly(record)
+    }
+
+    @Test
+    fun `contacts without a custom ringtone omit the portage ringtone extension`() {
+        val out = ByteArrayOutputStream()
+        VCard3.write(listOf(ContactRecord(displayName = "Plain")), out)
+
+        assertThat(out.toString(Charsets.UTF_8)).doesNotContain("X-PORTAGE-RINGTONE-TITLE")
+    }
+
+    @Test
     fun `round trips a bounded contact photo`() {
         val photo = Base64.getEncoder().encodeToString(
             byteArrayOf(0xff.toByte(), 0xd8.toByte(), 1, 2, 3, 0xff.toByte(), 0xd9.toByte()),
