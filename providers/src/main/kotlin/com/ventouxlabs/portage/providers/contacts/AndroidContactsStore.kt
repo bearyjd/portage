@@ -13,6 +13,7 @@ import android.content.ContentProviderOperation
 import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.ContentValues
+import android.net.Uri
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Email
 import android.provider.ContactsContract.CommonDataKinds.Event
@@ -29,6 +30,7 @@ import android.provider.ContactsContract.Data
 import android.provider.ContactsContract.Groups
 import android.provider.ContactsContract.RawContacts
 import android.util.Base64
+import android.util.Log
 import com.ventouxlabs.portage.providers.sound.SoundRole
 import com.ventouxlabs.portage.providers.sound.SoundStore
 
@@ -50,6 +52,7 @@ class AndroidContactsStore(
 
     private companion object {
         const val MAX_TOTAL_PHOTO_BYTES = 8 * 1024 * 1024
+        const val TAG = "PortageContacts"
     }
 
     override fun count(): Int =
@@ -259,10 +262,14 @@ class AndroidContactsStore(
      * has no insertable `CUSTOM_RINGTONE` column, so this is a separate post-insert update against
      * the aggregate `Contacts` row once the just-inserted raw contact has aggregated into one.
      */
-    private fun applyRingtone(rawContactUri: android.net.Uri?, title: String) {
+    private fun applyRingtone(rawContactUri: Uri?, title: String) {
         val store = soundStore ?: return
         val rawContactId = rawContactUri?.let(ContentUris::parseId) ?: return
-        val localUri = store.resolveBuiltin(SoundRole.RINGTONE, title) ?: return
+        val localUri = store.resolveBuiltin(SoundRole.RINGTONE, title)
+        if (localUri == null) {
+            Log.w(TAG, "no built-in ringtone match on this device for title \"$title\"")
+            return
+        }
         val contactId = runCatching {
             resolver.query(
                 RawContacts.CONTENT_URI,
@@ -271,17 +278,24 @@ class AndroidContactsStore(
                 arrayOf(rawContactId.toString()),
                 null,
             )?.use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
-        }.getOrNull() ?: return
+        }.getOrNull()
+        if (contactId == null) {
+            Log.w(TAG, "raw contact $rawContactId had no CONTACT_ID yet; ringtone not applied")
+            return
+        }
         val values = ContentValues().apply {
             put(ContactsContract.Contacts.CUSTOM_RINGTONE, localUri)
         }
-        runCatching {
+        val updatedRows = runCatching {
             resolver.update(
                 ContentUris.withAppendedId(ContactsContract.Contacts.CONTENT_URI, contactId),
                 values,
                 null,
                 null,
             )
+        }.getOrNull()
+        if (updatedRows != 1) {
+            Log.w(TAG, "ringtone update for contact $contactId affected $updatedRows rows, expected 1")
         }
     }
 
