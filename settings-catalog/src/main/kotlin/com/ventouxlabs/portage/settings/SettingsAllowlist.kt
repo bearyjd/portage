@@ -69,6 +69,12 @@ object SettingsAllowlist {
             "Cosmetic a11y.", Validator.IntEnum(setOf(0, 1))),
         SettingKey("enabled_accessibility_services", SECURE, DEVICE_SPECIFIC, NA,
             "TRAP: re-grants powerful a11y access to possibly-absent service components."),
+        SettingKey("accessibility_display_magnification_enabled", SECURE, SAFE, T1_GRANT,
+            "Genuine accessibility need; cosmetic risk low.", Validator.IntEnum(setOf(0, 1))),
+        SettingKey("accessibility_captioning_enabled", SECURE, SAFE, T1_GRANT,
+            "Caption preference toggle.", Validator.IntEnum(setOf(0, 1))),
+        SettingKey("accessibility_large_pointer_icon", SECURE, SAFE, T1_GRANT,
+            "Cosmetic a11y.", Validator.IntEnum(setOf(0, 1))),
 
         // --- Input / locale ---
         // TIME_12_24 is stored as the STRING "12"/"24" on AOSP, not an int — confirm in
@@ -78,6 +84,12 @@ object SettingsAllowlist {
         SettingKey("default_input_method", SECURE, RISKY, T1_GRANT,
             "TRAP: IME component; only valid if that keyboard is installed. Apply post-install.",
             Validator.StringPattern("""[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+""")),
+        SettingKey("auto_replace", SYSTEM, SAFE, T0_SYSTEM,
+            "Legacy text-behavior toggle.", Validator.IntEnum(setOf(0, 1))),
+        SettingKey("auto_caps", SYSTEM, SAFE, T0_SYSTEM,
+            "Legacy text-behavior toggle.", Validator.IntEnum(setOf(0, 1))),
+        SettingKey("auto_punctuate", SYSTEM, SAFE, T0_SYSTEM,
+            "Legacy text-behavior toggle.", Validator.IntEnum(setOf(0, 1))),
 
         // --- Animation ---
         SettingKey("window_animation_scale", GLOBAL, SAFE, T1_GRANT,
@@ -88,6 +100,12 @@ object SettingsAllowlist {
             "Cosmetic.", Validator.FloatRange(0f, 1f)),
         SettingKey("adb_enabled", GLOBAL, DEVICE_SPECIFIC, NA,
             "TRAP: security state; never auto-enable debugging on a fresh device."),
+
+        // --- Time ---
+        SettingKey("auto_time", GLOBAL, SAFE, T1_GRANT,
+            "Behavioral preference (use network time).", Validator.IntEnum(setOf(0, 1))),
+        SettingKey("auto_time_zone", GLOBAL, SAFE, T1_GRANT,
+            "Behavioral preference (use network time zone).", Validator.IntEnum(setOf(0, 1))),
 
         // --- Identity ---
         SettingKey("device_name", GLOBAL, SAFE, T1_GRANT,

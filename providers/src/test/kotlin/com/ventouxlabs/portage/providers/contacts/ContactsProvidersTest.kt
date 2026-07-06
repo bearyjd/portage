@@ -178,6 +178,20 @@ class ContactsProvidersTest {
     }
 
     @Test
+    fun `dedup does not duplicate an existing contact solely to change ringtone title`() = runTest {
+        val ringtoned = favorite.copy(starred = false, ringtoneTitle = "Argon")
+        val silent = favorite.copy(starred = false, ringtoneTitle = null)
+        val store = FakeContactsStore(mutableListOf(silent))
+        val payload = ByteArrayOutputStream().also { VCard3.write(listOf(ringtoned), it) }
+
+        val outcome = ContactsApplyProvider(store).apply(ByteArrayInputStream(payload.toByteArray()))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).isEmpty()
+        assertThat(outcome.detail).contains("already present 1")
+    }
+
+    @Test
     fun `dedup does not duplicate an existing contact solely to add a photo`() = runTest {
         val photo = Base64.getEncoder().encodeToString(byteArrayOf(1, 2, 3))
         val pictured = ada.copy(photoBase64 = photo)

@@ -49,6 +49,13 @@ data class ContactRecord(
     val phoneticGivenName: String? = null,
     val phoneticMiddleName: String? = null,
     val phoneticFamilyName: String? = null,
+    /**
+     * The contact's custom ringtone, carried as its portable built-in TITLE (never a raw
+     * `content://` URI — those don't survive the wire, same rule as the excluded `ringtone`
+     * settings key / PRP-04). Only re-resolves on import if the target device has a built-in
+     * sound of the same title; a user-uploaded custom ringtone file is not carried.
+     */
+    val ringtoneTitle: String? = null,
 )
 
 const val MAX_CONTACT_PHOTO_BYTES = 256 * 1024

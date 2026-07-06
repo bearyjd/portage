@@ -94,8 +94,9 @@ class ContactsApplyProvider(
 
 /**
  * Shared stable identity for provider read-back and retry journals. Formatting/order differences
- * normalize; materially different transferred fields do not. Starred state and photos are omitted
- * intentionally because importing a duplicate raw contact is not a safe way to update either.
+ * normalize; materially different transferred fields do not. Starred state, photos, and the
+ * resolved ringtone title are omitted intentionally because importing a duplicate raw contact is
+ * not a safe way to update any of them.
  */
 fun ContactRecord.canonicalImportKey(): String = listOf(
     displayName.trim().lowercase(),

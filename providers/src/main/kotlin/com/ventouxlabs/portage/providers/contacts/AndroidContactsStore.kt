@@ -13,6 +13,7 @@ import android.content.ContentProviderOperation
 import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.ContentValues
+import android.net.Uri
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Email
 import android.provider.ContactsContract.CommonDataKinds.Event
@@ -29,16 +30,29 @@ import android.provider.ContactsContract.Data
 import android.provider.ContactsContract.Groups
 import android.provider.ContactsContract.RawContacts
 import android.util.Base64
+import android.util.Log
+import com.ventouxlabs.portage.providers.sound.SoundRole
+import com.ventouxlabs.portage.providers.sound.SoundStore
 
 /**
  * Thin ContactsContract adapter behind [ContactsStore]. Deliberately mechanical — all
  * carry/parse logic lives in the JVM-tested [VCard3]/[ContactsProviders] layer. Reads
  * propagate [SecurityException] (providers degrade); writes return false on any failure.
+ *
+ * [soundStore], when supplied, resolves the per-contact custom ringtone by portable TITLE only
+ * (mirrors [com.ventouxlabs.portage.providers.sound.AndroidSoundStore.resolveBuiltin] / PRP-04):
+ * a raw `content://` URI never crosses devices, so a title match against the target's own
+ * built-in catalog is the only thing ever written. No match ⇒ the contact keeps the device
+ * default ringtone; this never fails the contact insert itself.
  */
-class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStore {
+class AndroidContactsStore(
+    private val resolver: ContentResolver,
+    private val soundStore: SoundStore? = null,
+) : ContactsStore {
 
     private companion object {
         const val MAX_TOTAL_PHOTO_BYTES = 8 * 1024 * 1024
+        const val TAG = "PortageContacts"
     }
 
     override fun count(): Int =
@@ -56,6 +70,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
             Data.DATA1, Data.DATA2, Data.DATA3, Data.DATA4,
             ContactsContract.Contacts.STARRED, Data.DATA15,
             Data.DATA5, Data.DATA6, Data.DATA7, Data.DATA8, Data.DATA9,
+            ContactsContract.Contacts.CUSTOM_RINGTONE,
         )
         val mimes = arrayOf(
             StructuredName.CONTENT_ITEM_TYPE, Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE,
@@ -79,6 +94,8 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
                     MutableContact(
                         displayName = cursor.getString(1).orEmpty(),
                         starred = cursor.getInt(7) == 1,
+                        // Portable identity only — the raw URI itself is never carried (see class doc).
+                        ringtoneTitle = cursor.getString(14)?.let { uri -> soundStore?.titleOf(uri) },
                     )
                 }
                 val data1 = cursor.getString(3)
@@ -231,7 +248,55 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
             }
         }
 
-        return runCatching { resolver.applyBatch(ContactsContract.AUTHORITY, ops) }.isSuccess
+        val results = runCatching { resolver.applyBatch(ContactsContract.AUTHORITY, ops) }.getOrNull()
+            ?: return false
+        // Best-effort only: an unresolvable/failed ringtone must not fail an otherwise-successful
+        // contact insert, so its outcome is deliberately not folded into the return value.
+        record.ringtoneTitle?.let { title -> applyRingtone(results.firstOrNull()?.uri, title) }
+        return true
+    }
+
+    /**
+     * Resolves [title] against THIS device's own built-in ringtone catalog and writes only the
+     * resulting LOCAL uri — never a value derived from the sender (see class doc). `RawContacts`
+     * has no insertable `CUSTOM_RINGTONE` column, so this is a separate post-insert update against
+     * the aggregate `Contacts` row once the just-inserted raw contact has aggregated into one.
+     */
+    private fun applyRingtone(rawContactUri: Uri?, title: String) {
+        val store = soundStore ?: return
+        val rawContactId = rawContactUri?.let(ContentUris::parseId) ?: return
+        val localUri = store.resolveBuiltin(SoundRole.RINGTONE, title)
+        if (localUri == null) {
+            Log.w(TAG, "no built-in ringtone match on this device for title \"$title\"")
+            return
+        }
+        val contactId = runCatching {
+            resolver.query(
+                RawContacts.CONTENT_URI,
+                arrayOf(RawContacts.CONTACT_ID),
+                "${RawContacts._ID} = ?",
+                arrayOf(rawContactId.toString()),
+                null,
+            )?.use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null }
+        }.getOrNull()
+        if (contactId == null) {
+            Log.w(TAG, "raw contact $rawContactId had no CONTACT_ID yet; ringtone not applied")
+            return
+        }
+        val values = ContentValues().apply {
+            put(ContactsContract.Contacts.CUSTOM_RINGTONE, localUri)
+        }
+        val updatedRows = runCatching {
+            resolver.update(
+                ContentUris.withAppendedId(ContactsContract.Contacts.CONTENT_URI, contactId),
+                values,
+                null,
+                null,
+            )
+        }.getOrNull()
+        if (updatedRows != 1) {
+            Log.w(TAG, "ringtone update for contact $contactId affected $updatedRows rows, expected 1")
+        }
     }
 
     private class MutableContact(
@@ -245,6 +310,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
         var title: String? = null,
         var note: String? = null,
         var starred: Boolean = false,
+        var ringtoneTitle: String? = null,
         var photoBase64: String? = null,
         var nickname: String? = null,
         var birthday: String? = null,
@@ -268,6 +334,7 @@ class AndroidContactsStore(private val resolver: ContentResolver) : ContactsStor
             title = title,
             note = note,
             starred = starred,
+            ringtoneTitle = ringtoneTitle,
             photoBase64 = photoBase64,
             nickname = nickname,
             birthday = birthday,
