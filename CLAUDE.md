@@ -48,7 +48,10 @@ See `.github/workflows/build.yml`.
   3.1.1, Apache-2.0 elected, via JitPack), self-connects to adbd over localhost TLS, and
   runs shell-uid ops. **`AdbBridge` is the only allowed entry point to privileged
   operations. No module other than `:adb-bridge` may speak the ADB wire protocol.** Raw
-  `shell()` call sites outside `:adb-bridge`/`:wizard` are review blockers. The in-app
+  `shell()` may be called ONLY from within `:adb-bridge` itself, enforced by CI (see "Known
+  CI-gate rule" below), not just review — `:wizard` is a privileged consumer of `AdbBridge`
+  but MUST go through its typed operations (`pair`/`connect`/`probeCapabilities`/
+  `disconnect`) only, never raw `shell()`. The in-app
   `PrivilegeWizard` (`:wizard` + `WizardScreen` in app-recv) owns the bootstrap flow and
   MUST disconnect right after the capability probe — never hold shell uid open.
   LADB (tytydraco/LADB) is acknowledged prior art for the *architecture* (it bundles the
@@ -119,3 +122,83 @@ benign (`SenderViewModel` ~L186).
 JDK 17, Android SDK (compileSdk from `gradle/libs.versions.toml`, currently 36 = GOS
 Android 16). The Gradle wrapper is committed and its 9.5.1 distribution checksum is
 pinned; always build with `./gradlew`. minSdk 31 (Pixel 6+).
+
+Verified module-scoped commands (do NOT run full `./gradlew build`/`assemble` unless the task
+needs it — prefer the smallest scoped command):
+- Single-module unit tests: `./gradlew :<module>:test` (pure-JVM modules: `core-model`,
+  `settings-catalog`) or `./gradlew :<module>:testDebugUnitTest` (Android-library/app modules:
+  `core-transport`, `adb-bridge`, `wizard`, `providers`).
+- App modules are flavor-scoped: `./gradlew :app-send:testDegoogleDebugUnitTest
+  :app-send:testPlayDebugUnitTest` / same for `app-recv`. There is no flavor-agnostic
+  `testDebugUnitTest` target on `app-send`/`app-recv`.
+- Full CI-equivalent unit-test sweep (mirrors `.github/workflows/build.yml`):
+  `./gradlew :settings-catalog:test :core-model:test :core-transport:testDebugUnitTest
+  :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest
+  :app-recv:testDegoogleDebugUnitTest :app-recv:testPlayDebugUnitTest
+  :app-send:testDegoogleDebugUnitTest :app-send:testPlayDebugUnitTest`.
+- Device-only instrumentation test (`app-recv`'s `ProviderDeviceContractTest`, real
+  `ContentResolver` writes): `scripts/device-contract.sh` — requires an attached/authorized `adb`
+  device, installs the debug APK + test APK, temporarily takes the SMS role, and restores it via a
+  trap on exit. Never run outside this script (it's destructive-but-self-cleaning, not idempotent
+  standalone).
+- No Robolectric is configured anywhere in the repo — `ContentResolver`-touching code is either
+  unit-tested behind a hand-written `Store` seam (see "Provider authoring" below) with no real
+  Android framework involved, or left to `ProviderDeviceContractTest` (hardware-only). There is no
+  JVM-only partial-confidence path for real `ContentResolver` behavior.
+
+## Provider authoring (undocumented-until-now convention — 12 existing providers follow this)
+
+Every data domain (contacts, calendar, call log, SMS, MMS, settings, wallpaper, sound, bluetooth,
+app-backup-relay, user files, app inventory/APK) follows the same unnamed three-part shape. When
+adding a new domain, replicate it:
+
+1. **`XyzStore` interface** — the only seam allowed to touch Android APIs directly
+   (`ContentResolver`, `PackageManager`, etc.). Never call Android APIs from the export/apply
+   provider itself.
+2. **`AndroidXyzStore`** — the real implementation of that interface, isolated so tests can swap
+   in an in-memory fake (see `MemoryContactsStore` in `LoopbackTransferSmokeTest.kt` for the
+   pattern) instead of touching real content providers.
+3. **`XyzExportProvider` / `XyzApplyProvider`** — pure Kotlin, operate only against the `Store`
+   interface. Two conventions are copy-pasted across every existing provider and MUST be
+   replicated (there is no shared base class enforcing them — `ExportProvider`/`ApplyProvider`
+   are bare interfaces):
+   - `available()` is always `runCatching { store.count() > 0 }.getOrDefault(false)` —
+     permission-denied and genuinely-empty collapse to the same "unavailable" result by design.
+   - `apply()` returns `ItemStatus.WRITE_ERROR` if and only if the input was non-empty but **zero**
+     records made it into the store (permission denial mid-apply, corrupt payload, etc.); partial
+     success is still `ItemStatus.OK`. See `ContactsProviders.kt` / `CallLogProviders.kt` for the
+     reference shape.
+
+**Wiring a new `ItemKind` end-to-end is a manual 4-point checklist — nothing fails at compile time
+if you miss one, it silently degrades to `ItemStatus.UNKNOWN_KIND` at transfer time:**
+1. Add the enum entry in `core-model/src/main/kotlin/com/ventouxlabs/portage/model/Manifest.kt`
+   (`ItemKind`), append-only, with a `wire` string and `Tier`.
+2. Register the export instance in the `listOf(...)` in
+   `app-send/src/main/kotlin/com/ventouxlabs/portage/send/MainActivity.kt`.
+3. Register the apply instance in the `ApplyProviderRegistry(listOf(...))` in
+   `app-recv/src/main/kotlin/com/ventouxlabs/portage/recv/MainActivity.kt`.
+4. Add any new `uses-permission` to `app-send/src/main/AndroidManifest.xml`; if the domain is
+   settings-shaped, add the corresponding entries to `settings-catalog`'s `SettingsAllowlist`
+   (cross-referenced against `docs/prp/settings_allowlist.md`).
+
+Flavor gating (degoogle vs play) for privilege-dependent features is expressed by Gradle
+source-set, not code branches: a `providers/`-level seam interface (e.g. `ApkSilentInstaller`,
+`TierOneGrant`, `RuntimePermissionGranter`) gets a real implementation under
+`app-recv/src/degoogle/...` and a no-op/unavailable stub under `app-recv/src/play/...`. Never add
+a Tier-1/privileged code path directly under `src/main` — it will leak into the play flavor and
+break the CI no-bridge assert.
+
+See `.agent_native/agent_roadmap.md` for the prioritized backlog of gaps in this area (a
+completeness test for the 4-point checklist above, a canonical multi-kind end-to-end test harness,
+and a recorded-session replay fixture format for reproducing bug reports without hardware).
+
+## Known CI-gate rule
+
+`.github/workflows/build.yml`'s "raw `AdbBridge.shell()` stays inside the privilege modules" grep
+step scans `app-recv app-send providers core-model core-transport settings-catalog wizard` —
+`:wizard` IS included in the scanned (forbidden) set, deliberately: raw `.shell()` is
+`:adb-bridge`-only everywhere, including `:wizard`, which must use only `AdbBridge`'s typed ops
+(`pair`/`connect`/`probeCapabilities`/`disconnect`). This file and `AdbBridge.kt`'s comments agree
+with the CI grep's scope — a raw `.shell()` call added anywhere outside `:adb-bridge` (`:wizard`
+included) fails CI, not just review. (Formerly a doc/CI mismatch — resolved per
+`.agent_native/agent_roadmap.md` item #2; keep all three in sync if this rule ever changes.)

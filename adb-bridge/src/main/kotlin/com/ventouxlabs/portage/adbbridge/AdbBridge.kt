@@ -26,8 +26,12 @@ package com.ventouxlabs.portage.adbbridge
  *
  * Raw [shell] exists because this module owns the whole stack (the old Shizuku UserService
  * allowlist boundary is gone — there is no second process to defend). Discipline instead lives
- * at the call-site rule: code outside :adb-bridge and :wizard calling [shell] directly is a
- * review blocker; use the typed operations.
+ * at the call-site rule, enforced by CI (`.github/workflows/build.yml`, "raw AdbBridge.shell()
+ * stays inside the privilege modules"): raw [shell] may be called ONLY from within :adb-bridge
+ * itself. :wizard is a privileged consumer of this interface but MUST go through the typed
+ * operations below (`pair`/`connect`/`probeCapabilities`/`disconnect`) — never raw [shell]. The
+ * CI grep scans :wizard's sources too, so a raw shell() call added there fails the build, not
+ * just review; any other module calling [shell] directly is likewise a review blocker.
  */
 interface AdbBridge {
 
