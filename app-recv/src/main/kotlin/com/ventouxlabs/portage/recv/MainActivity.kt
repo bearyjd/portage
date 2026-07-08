@@ -18,37 +18,61 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import com.ventouxlabs.portage.providers.ApplyProvider
 import com.ventouxlabs.portage.providers.ApplyProviderRegistry
 import com.ventouxlabs.portage.providers.apk.ApkApplyProvider
+import com.ventouxlabs.portage.providers.apk.ApkInstallAction
+import com.ventouxlabs.portage.providers.apk.ApkSilentInstaller
+import com.ventouxlabs.portage.providers.apk.ApkTargetConfig
+import com.ventouxlabs.portage.providers.apk.InstalledPackageVersions
+import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
+import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
 import com.ventouxlabs.portage.providers.inventory.AppRecord
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.bluetooth.BtPairingsApplyProvider
 import com.ventouxlabs.portage.providers.calendar.AndroidCalendarStore
 import com.ventouxlabs.portage.providers.calendar.CalendarApplyProvider
+import com.ventouxlabs.portage.providers.calendar.CalendarStore
 import com.ventouxlabs.portage.providers.calllog.AndroidCallLogStore
 import com.ventouxlabs.portage.providers.calllog.CallLogApplyProvider
+import com.ventouxlabs.portage.providers.calllog.CallLogImportJournal
+import com.ventouxlabs.portage.providers.calllog.CallLogStore
 import com.ventouxlabs.portage.providers.contacts.AndroidContactsStore
+import com.ventouxlabs.portage.providers.contacts.ContactImportJournal
 import com.ventouxlabs.portage.providers.contacts.ContactsApplyProvider
+import com.ventouxlabs.portage.providers.contacts.ContactsStore
 import com.ventouxlabs.portage.providers.inventory.AndroidInventorySource
 import com.ventouxlabs.portage.providers.inventory.AppInventoryApplyProvider
+import com.ventouxlabs.portage.providers.inventory.InventorySource
 import com.ventouxlabs.portage.providers.mms.AndroidMmsStore
 import com.ventouxlabs.portage.providers.mms.MmsApplyProvider
+import com.ventouxlabs.portage.providers.mms.MmsStore
 import com.ventouxlabs.portage.providers.relay.AppBackupRelayApplyProvider
+import com.ventouxlabs.portage.providers.relay.RelayHeader
 import com.ventouxlabs.portage.recv.relay.AndroidRelayHandoff
 import com.ventouxlabs.portage.providers.settings.AndroidSecureGlobalSettingsStore
 import com.ventouxlabs.portage.providers.settings.AndroidSystemSettingsStore
+import com.ventouxlabs.portage.providers.settings.SecureGlobalSettingsStore
 import com.ventouxlabs.portage.providers.settings.SettingsApplyProvider
+import com.ventouxlabs.portage.providers.settings.SystemSettingsStore
+import com.ventouxlabs.portage.providers.settings.TierOneGrant
 import com.ventouxlabs.portage.providers.sms.AndroidSmsRoleGateway
 import com.ventouxlabs.portage.providers.sms.AndroidSmsStore
 import com.ventouxlabs.portage.providers.sms.SmsApplyProvider
+import com.ventouxlabs.portage.providers.sms.SmsRoleGateway
+import com.ventouxlabs.portage.providers.sms.SmsStore
 import com.ventouxlabs.portage.providers.sound.AndroidSoundStore
 import com.ventouxlabs.portage.providers.sound.SoundFileApplyProvider
 import com.ventouxlabs.portage.providers.sound.SoundFileRemap
 import com.ventouxlabs.portage.providers.sound.SoundSelectionApplyProvider
+import com.ventouxlabs.portage.providers.sound.SoundStore
 import com.ventouxlabs.portage.providers.wallpaper.AndroidWallpaperStore
 import com.ventouxlabs.portage.providers.wallpaper.WallpaperApplyProvider
+import com.ventouxlabs.portage.providers.wallpaper.WallpaperStore
 import com.ventouxlabs.portage.providers.userfile.UserFileApplyProvider
+import com.ventouxlabs.portage.providers.userfile.UserFileHeader
 import com.ventouxlabs.portage.recv.files.AndroidUserFileStore
+import java.io.InputStream
 import com.ventouxlabs.portage.recv.install.PackageInstallerApkInstaller
 import com.ventouxlabs.portage.recv.install.androidApkTargetConfig
 import com.ventouxlabs.portage.recv.install.androidInstalledPackageVersions
@@ -146,33 +170,29 @@ private class ReceiverViewModelFactory(
                 val soundStore = AndroidSoundStore(context)
                 val soundFileRemap = SoundFileRemap()
                 ApplyProviderRegistry(
-                listOf(
-                    ContactsApplyProvider(
-                        AndroidContactsStore(resolver, soundStore),
-                        FileContactImportJournal(File(context.filesDir, "contact-imports.sha256")),
-                    ),
-                    CalendarApplyProvider(AndroidCalendarStore(resolver)),
-                    CallLogApplyProvider(
-                        AndroidCallLogStore(resolver),
-                        FileCallLogImportJournal(File(context.filesDir, "call-log-imports.sha256")),
-                    ),
-                    // SMS/MMS writes only while portage transiently holds ROLE_SMS — the ViewModel
-                    // acquires it (SmsRoleCoordinator) around the transfer when either is selected,
-                    // and the gateway's isSelfDefault gate self-skips outside that window.
-                    SmsApplyProvider(AndroidSmsStore(resolver), AndroidSmsRoleGateway(context)),
-                    MmsApplyProvider(AndroidMmsStore(resolver), AndroidSmsRoleGateway(context)),
-                    AppInventoryApplyProvider(AndroidInventorySource(context.packageManager), sinks.onInstallActions),
-                    // APK keystone (ADR-006): stage each carried app's split set, reconcile against this
-                    // device, then install. The silent (privileged) seam is the P6 stdin-streaming
-                    // installer (AdbApkInstaller → pm install-write -S .. - over the bridge); when
-                    // SILENT_INSTALL is probed present the install is silent, otherwise hasSilentInstall
-                    // is false and the apply provider takes the Tier-0 PackageInstaller fallback emitted
-                    // below. The capability set is read at transfer start from the wizard (Ready → caps,
-                    // else emptySet). C1/D2 discipline: this :providers provider holds NO :adb-bridge
-                    // edge — every Android/privilege concern is injected here from :app-recv.
-                    ApkApplyProvider(
-                        stagingDir = apkStagingDir,
-                        targetConfig = androidApkTargetConfig(context),
+                    buildApplyProviders(
+                        contactsStore = AndroidContactsStore(resolver, soundStore),
+                        contactImportJournal = FileContactImportJournal(File(context.filesDir, "contact-imports.sha256")),
+                        calendarStore = AndroidCalendarStore(resolver),
+                        callLogStore = AndroidCallLogStore(resolver),
+                        callLogImportJournal = FileCallLogImportJournal(File(context.filesDir, "call-log-imports.sha256")),
+                        // SMS/MMS writes only while portage transiently holds ROLE_SMS — the ViewModel
+                        // acquires it (SmsRoleCoordinator) around the transfer when either is selected,
+                        // and the gateway's isSelfDefault gate self-skips outside that window.
+                        smsStore = AndroidSmsStore(resolver),
+                        smsRoleGateway = AndroidSmsRoleGateway(context),
+                        mmsStore = AndroidMmsStore(resolver),
+                        inventorySource = AndroidInventorySource(context.packageManager),
+                        // APK keystone (ADR-006): stage each carried app's split set, reconcile against this
+                        // device, then install. The silent (privileged) seam is the P6 stdin-streaming
+                        // installer (AdbApkInstaller → pm install-write -S .. - over the bridge); when
+                        // SILENT_INSTALL is probed present the install is silent, otherwise hasSilentInstall
+                        // is false and the apply provider takes the Tier-0 PackageInstaller fallback emitted
+                        // below. The capability set is read at transfer start from the wizard (Ready → caps,
+                        // else emptySet). C1/D2 discipline: this :providers provider holds NO :adb-bridge
+                        // edge — every Android/privilege concern is injected here from :app-recv.
+                        apkStagingDir = apkStagingDir,
+                        apkTargetConfig = androidApkTargetConfig(context),
                         installedVersions = androidInstalledPackageVersions(context),
                         // Flavor-supplied silent (privileged) install seam. degoogle: AdbApkInstaller,
                         // which self-guards via AdbBridge.connect() (NoEndpoint when Wireless Debugging is
@@ -188,11 +208,6 @@ private class ReceiverViewModelFactory(
                         // grant ever runs. On the Tier-0 fallback neither runs in either flavor.
                         permissionGranter = wiring.permissionGranter,
                         targetDeclaredPermissions = wiring.targetDeclaredPermissions,
-                        // Display-only: feed the Done screen's "restored Network, Sensors" summary.
-                        onPermissionsRestored = sinks.onPermissionsRestored,
-                        // Data-only: feed the Done screen's opt-in dangerous-perm review (Phase 5d).
-                        // Nothing is granted from this callback — the user confirms each on Done.
-                        onOptInPermissions = sinks.onOptInPermissions,
                         onApkInstall = { action ->
                             // Synchronous: seal the PackageInstaller session over the staged bytes BEFORE
                             // the provider wipes them, then surface the one-tap confirm row.
@@ -204,50 +219,40 @@ private class ReceiverViewModelFactory(
                             InstallAction.from(AppRecord(packageName, 0L, null, label))
                                 ?.let { sinks.onInstallActions(listOf(it)) }
                         },
-                    ),
-                    // Tier-0 SYSTEM keys write today. Tier-1 SECURE/GLOBAL keys go live once the
-                    // one-shot WRITE_SECURE_SETTINGS grant lands — normally installed by the
-                    // privilege wizard's probe (ADR-003); this lazy TierOneGrant adapter is the
-                    // in-apply fallback when the bridge happens to still be connected. With no
-                    // grant and no live bridge, Tier-1 keys self-skip.
-                    SettingsApplyProvider(
-                        AndroidSystemSettingsStore(context),
-                        AndroidSecureGlobalSettingsStore(context),
+                        // Tier-0 SYSTEM keys write today. Tier-1 SECURE/GLOBAL keys go live once the
+                        // one-shot WRITE_SECURE_SETTINGS grant lands — normally installed by the
+                        // privilege wizard's probe (ADR-003); this lazy TierOneGrant adapter is the
+                        // in-apply fallback when the bridge happens to still be connected. With no
+                        // grant and no live bridge, Tier-1 keys self-skip.
+                        systemSettingsStore = AndroidSystemSettingsStore(context),
+                        secureGlobalSettingsStore = AndroidSecureGlobalSettingsStore(context),
                         // degoogle: the AdbBridge WRITE_SECURE_SETTINGS self-grant fallback; play:
                         // TierOneGrant.Unavailable, so Tier-1 keys self-skip.
                         tierOneGrant = wiring.tierOneGrant,
+                        // Tier 0: sets home/lock wallpaper via the normal SET_WALLPAPER permission.
+                        // The provider's bounds-only decode gate rejects decompression bombs before
+                        // any bitmap is allocated (PRP-02 §7).
+                        wallpaperStore = AndroidWallpaperStore(context),
+                        // Tier 0: registers custom default sound files in MediaStore before the
+                        // selection snapshot remaps ringtone/notification/alarm by role, then sets
+                        // default ringtone/notification/alarm via the "modify system settings" special
+                        // access. Built-ins are re-resolved to LOCAL URIs; custom files resolve only
+                        // through the transfer-scoped remap.
+                        soundStore = soundStore,
+                        soundFileRemap = soundFileRemap,
+                        // Tier 0: COURIER for a user-exported, app-encrypted backup (Signal/Molly/Aegis;
+                        // PRP-06). portage relays the OPAQUE file the user picked — it NEVER decrypts,
+                        // parses, or imports it, and never holds the passphrase. The apply path validates
+                        // the typed header (derive-never-trust the advisory package/note), streams the
+                        // opaque bytes to a user-visible location via [AndroidRelayHandoff], and surfaces
+                        // a guided "open this in <app>" reminder. No app data is written by portage.
+                        relayHandoff = AndroidRelayHandoff(context)::write,
+                        // Explicit SAF-selected user files land in the public Downloads/Portage
+                        // collection through MediaStore; no broad storage permission or path is trusted.
+                        userFileWrite = AndroidUserFileStore(context)::write,
+                        sinks = sinks,
                     ),
-                    // Tier 0: sets home/lock wallpaper via the normal SET_WALLPAPER permission.
-                    // The provider's bounds-only decode gate rejects decompression bombs before
-                    // any bitmap is allocated (PRP-02 §7).
-                    WallpaperApplyProvider(AndroidWallpaperStore(context)),
-                    // Tier 0: registers custom default sound files in MediaStore before the
-                    // selection snapshot remaps ringtone/notification/alarm by role.
-                    SoundFileApplyProvider(soundStore, soundFileRemap),
-                    // Tier 0: sets default ringtone/notification/alarm via the "modify system
-                    // settings" special access (Settings.System.canWrite). Built-ins are re-resolved
-                    // to LOCAL URIs; custom files resolve only through the transfer-scoped remap.
-                    SoundSelectionApplyProvider(soundStore, soundFileRemap),
-                    // Tier 0: the bonded-Bluetooth roster (PRP-07 public-API approach). Phase 1
-                    // SURFACES the list as a "re-pair each here" checklist and applies nothing —
-                    // it never calls createBond (deferred to Phase 2) and carries no link keys
-                    // (non-transferable). No platform dependency, so it cannot bond by construction.
-                    BtPairingsApplyProvider(sinks.onRepairEntries),
-                    // Tier 0: COURIER for a user-exported, app-encrypted backup (Signal/Molly/Aegis;
-                    // PRP-06). portage relays the OPAQUE file the user picked — it NEVER decrypts,
-                    // parses, or imports it, and never holds the passphrase. The apply path validates
-                    // the typed header (derive-never-trust the advisory package/note), streams the
-                    // opaque bytes to a user-visible location via [AndroidRelayHandoff], and surfaces
-                    // a guided "open this in <app>" reminder. No app data is written by portage.
-                    AppBackupRelayApplyProvider(
-                        onPrompt = sinks.onRelayPrompt,
-                        handoff = AndroidRelayHandoff(context)::write,
-                    ),
-                    // Explicit SAF-selected user files land in the public Downloads/Portage
-                    // collection through MediaStore; no broad storage permission or path is trusted.
-                    UserFileApplyProvider(writeFile = AndroidUserFileStore(context)::write),
-                ),
-            )
+                )
         }
         @Suppress("UNCHECKED_CAST")
         return ReceiverViewModel(
@@ -268,3 +273,91 @@ private class ReceiverViewModelFactory(
         ) as T
     }
 }
+
+/**
+ * Builds the compiled Tier-0 apply-provider list — one entry per registered `ItemKind`. Pulled out
+ * of [ReceiverViewModelFactory.create] as a pure function of Store-seam interfaces and callbacks
+ * (never `Context`/`ContentResolver` directly) so it can run in a plain JVM unit test with fakes, no
+ * Android framework involved — the SAME construction path production uses, so a forgotten
+ * registration fails [ApplyRegistrationCompletenessTest] instead of silently degrading to
+ * `ItemStatus.UNKNOWN_KIND` at transfer time (.agent_native/agent_roadmap.md item #1).
+ */
+internal fun buildApplyProviders(
+    contactsStore: ContactsStore,
+    calendarStore: CalendarStore,
+    callLogStore: CallLogStore,
+    smsStore: SmsStore,
+    smsRoleGateway: SmsRoleGateway,
+    mmsStore: MmsStore,
+    inventorySource: InventorySource,
+    apkStagingDir: File,
+    apkTargetConfig: () -> ApkTargetConfig,
+    systemSettingsStore: SystemSettingsStore,
+    secureGlobalSettingsStore: SecureGlobalSettingsStore,
+    wallpaperStore: WallpaperStore,
+    soundStore: SoundStore,
+    soundFileRemap: SoundFileRemap,
+    relayHandoff: (RelayHeader, InputStream, Long, Int) -> Boolean,
+    userFileWrite: (UserFileHeader, InputStream) -> Boolean,
+    sinks: DoneSinks,
+    onApkInstall: (ApkInstallAction) -> Unit,
+    onStoreFallback: (packageName: String, label: String) -> Unit,
+    contactImportJournal: ContactImportJournal = ContactImportJournal.None,
+    callLogImportJournal: CallLogImportJournal = CallLogImportJournal.None,
+    installedVersions: InstalledPackageVersions = InstalledPackageVersions.None,
+    silentInstaller: ApkSilentInstaller = ApkSilentInstaller.Deferred,
+    hasSilentInstall: () -> Boolean = { false },
+    permissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
+    targetDeclaredPermissions: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
+    tierOneGrant: TierOneGrant = TierOneGrant.Unavailable,
+): List<ApplyProvider> = listOf(
+    ContactsApplyProvider(contactsStore, contactImportJournal),
+    CalendarApplyProvider(calendarStore),
+    CallLogApplyProvider(callLogStore, callLogImportJournal),
+    // SMS/MMS writes only while portage transiently holds ROLE_SMS — the ViewModel acquires it
+    // (SmsRoleCoordinator) around the transfer when either is selected, and the gateway's
+    // isSelfDefault gate self-skips outside that window.
+    SmsApplyProvider(smsStore, smsRoleGateway),
+    MmsApplyProvider(mmsStore, smsRoleGateway),
+    AppInventoryApplyProvider(inventorySource, sinks.onInstallActions),
+    ApkApplyProvider(
+        stagingDir = apkStagingDir,
+        targetConfig = apkTargetConfig,
+        installedVersions = installedVersions,
+        silentInstaller = silentInstaller,
+        hasSilentInstall = hasSilentInstall,
+        permissionGranter = permissionGranter,
+        targetDeclaredPermissions = targetDeclaredPermissions,
+        // Display-only: feed the Done screen's "restored Network, Sensors" summary.
+        onPermissionsRestored = sinks.onPermissionsRestored,
+        // Data-only: feed the Done screen's opt-in dangerous-perm review (Phase 5d). Nothing is
+        // granted from this callback — the user confirms each on Done.
+        onOptInPermissions = sinks.onOptInPermissions,
+        onApkInstall = onApkInstall,
+        onStoreFallback = onStoreFallback,
+    ),
+    SettingsApplyProvider(systemSettingsStore, secureGlobalSettingsStore, tierOneGrant),
+    // Tier 0: sets home/lock wallpaper via the normal SET_WALLPAPER permission. The provider's
+    // bounds-only decode gate rejects decompression bombs before any bitmap is allocated
+    // (PRP-02 §7).
+    WallpaperApplyProvider(wallpaperStore),
+    // Tier 0: registers custom default sound files in MediaStore before the selection snapshot
+    // remaps ringtone/notification/alarm by role.
+    SoundFileApplyProvider(soundStore, soundFileRemap),
+    // Tier 0: sets default ringtone/notification/alarm via the "modify system settings" special
+    // access (Settings.System.canWrite). Built-ins are re-resolved to LOCAL URIs; custom files
+    // resolve only through the transfer-scoped remap.
+    SoundSelectionApplyProvider(soundStore, soundFileRemap),
+    // Tier 0: the bonded-Bluetooth roster (PRP-07 public-API approach). Phase 1 SURFACES the list
+    // as a "re-pair each here" checklist and applies nothing — it never calls createBond (deferred
+    // to Phase 2) and carries no link keys (non-transferable). No platform dependency, so it cannot
+    // bond by construction.
+    BtPairingsApplyProvider(sinks.onRepairEntries),
+    // Tier 0: COURIER for a user-exported, app-encrypted backup (Signal/Molly/Aegis; PRP-06).
+    // portage relays the OPAQUE file the user picked — it NEVER decrypts, parses, or imports it,
+    // and never holds the passphrase.
+    AppBackupRelayApplyProvider(onPrompt = sinks.onRelayPrompt, handoff = relayHandoff),
+    // Explicit SAF-selected user files land in the public Downloads/Portage collection through
+    // MediaStore; no broad storage permission or path is trusted.
+    UserFileApplyProvider(writeFile = userFileWrite),
+)

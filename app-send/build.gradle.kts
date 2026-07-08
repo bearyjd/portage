@@ -97,4 +97,8 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Test-only: SecureGlobalSettingsStore's Namespace type, needed to implement a fake for
+    // ExportRegistrationCompletenessTest. providers already depends on settings-catalog; this is
+    // not a new production edge (testImplementation never reaches the shipped APK).
+    testImplementation(project(":settings-catalog"))
 }

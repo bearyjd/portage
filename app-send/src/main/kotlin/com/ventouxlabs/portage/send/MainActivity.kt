@@ -22,28 +22,40 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import com.ventouxlabs.portage.providers.ExportProvider
 import com.ventouxlabs.portage.providers.bluetooth.AndroidBluetoothStore
+import com.ventouxlabs.portage.providers.bluetooth.BluetoothStore
 import com.ventouxlabs.portage.providers.bluetooth.BtPairingsExportProvider
 import com.ventouxlabs.portage.providers.calendar.AndroidCalendarStore
 import com.ventouxlabs.portage.providers.calendar.CalendarExportProvider
+import com.ventouxlabs.portage.providers.calendar.CalendarStore
 import com.ventouxlabs.portage.providers.calllog.AndroidCallLogStore
 import com.ventouxlabs.portage.providers.calllog.CallLogExportProvider
+import com.ventouxlabs.portage.providers.calllog.CallLogStore
 import com.ventouxlabs.portage.providers.contacts.AndroidContactsStore
 import com.ventouxlabs.portage.providers.contacts.ContactsExportProvider
+import com.ventouxlabs.portage.providers.contacts.ContactsStore
 import com.ventouxlabs.portage.providers.inventory.AndroidInventorySource
 import com.ventouxlabs.portage.providers.inventory.AppInventoryExportProvider
+import com.ventouxlabs.portage.providers.inventory.InventorySource
 import com.ventouxlabs.portage.providers.mms.AndroidMmsStore
 import com.ventouxlabs.portage.providers.mms.MmsExportProvider
+import com.ventouxlabs.portage.providers.mms.MmsStore
 import com.ventouxlabs.portage.providers.settings.AndroidSecureGlobalSettingsStore
 import com.ventouxlabs.portage.providers.settings.AndroidSystemSettingsStore
+import com.ventouxlabs.portage.providers.settings.SecureGlobalSettingsStore
 import com.ventouxlabs.portage.providers.settings.SettingsExportProvider
+import com.ventouxlabs.portage.providers.settings.SystemSettingsStore
 import com.ventouxlabs.portage.providers.sms.AndroidSmsStore
 import com.ventouxlabs.portage.providers.sms.SmsExportProvider
+import com.ventouxlabs.portage.providers.sms.SmsStore
 import com.ventouxlabs.portage.providers.sound.AndroidSoundStore
 import com.ventouxlabs.portage.providers.sound.SoundSelectionExportProvider
+import com.ventouxlabs.portage.providers.sound.SoundStore
 import com.ventouxlabs.portage.providers.sound.soundFileExportProviders
 import com.ventouxlabs.portage.providers.wallpaper.AndroidWallpaperStore
 import com.ventouxlabs.portage.providers.wallpaper.WallpaperExportProvider
+import com.ventouxlabs.portage.providers.wallpaper.WallpaperStore
 import com.ventouxlabs.portage.providers.wallpaper.WallpaperSurface
 import com.ventouxlabs.portage.send.apk.AndroidInstalledAppSource
 import com.ventouxlabs.portage.send.ui.DeviceSummary
@@ -143,37 +155,18 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         val resolver = context.contentResolver
         val soundStore = AndroidSoundStore(context)
-        val providers = listOf(
-            ContactsExportProvider(AndroidContactsStore(resolver, soundStore)),
-            CalendarExportProvider(AndroidCalendarStore(resolver)),
-            CallLogExportProvider(AndroidCallLogStore(resolver)),
-            SmsExportProvider(AndroidSmsStore(resolver)),
-            MmsExportProvider(AndroidMmsStore(resolver)),
-            AppInventoryExportProvider(AndroidInventorySource(context.packageManager)),
-            // Reads SAFE keys across both namespaces (reads need no grant on either seam).
-            SettingsExportProvider(
-                AndroidSystemSettingsStore(context),
-                AndroidSecureGlobalSettingsStore(context),
-            ),
-            // Active wallpaper bytes: one provider per surface so ManifestBuilder assigns each
-            // its own item id and the receiver applies them independently (PRP-02 §4-5). The LOCK
-            // provider's available() returns false when lock mirrors home, so only one WALLPAPER
-            // item is emitted in the mirror case.
-            WallpaperExportProvider(AndroidWallpaperStore(context), WallpaperSurface.HOME),
-            WallpaperExportProvider(AndroidWallpaperStore(context), WallpaperSurface.LOCK),
-            // Custom default-sound files must stage before the selection snapshot so the receiver
-            // can register them locally and then remap ringtone/notification/alarm by role.
-            *soundFileExportProviders(soundStore).toTypedArray(),
-            // Default ringtone/notification/alarm selections as a tiny text snapshot (PRP-04).
-            // Built-ins re-resolve by title; custom-file roles resolve through the sound.file remap.
-            SoundSelectionExportProvider(soundStore),
-            // The bonded Bluetooth roster (name + MAC + type/class) via the PUBLIC, NON-PRIVILEGED
-            // BluetoothAdapter.getBondedDevices() API, guarded by the normal BLUETOOTH_CONNECT
-            // runtime permission (PRP-07 public-API approach — NO ADB bridge, NO escalation). Phase
-            // 1 transfers the LIST ONLY; the receiver shows a "re-pair each here" checklist. No link
-            // keys are carried (non-transferable) and the roster is never logged. available() is
-            // false when BT is off or the permission was denied, so the item self-omits gracefully.
-            BtPairingsExportProvider(AndroidBluetoothStore(context)),
+        val providers = buildExportProviders(
+            contactsStore = AndroidContactsStore(resolver, soundStore),
+            calendarStore = AndroidCalendarStore(resolver),
+            callLogStore = AndroidCallLogStore(resolver),
+            smsStore = AndroidSmsStore(resolver),
+            mmsStore = AndroidMmsStore(resolver),
+            inventorySource = AndroidInventorySource(context.packageManager),
+            systemSettingsStore = AndroidSystemSettingsStore(context),
+            secureGlobalSettingsStore = AndroidSecureGlobalSettingsStore(context),
+            wallpaperStore = AndroidWallpaperStore(context),
+            soundStore = soundStore,
+            bluetoothStore = AndroidBluetoothStore(context),
         )
         @Suppress("UNCHECKED_CAST")
         return SenderViewModel(
@@ -194,5 +187,61 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
         ) as T
     }
 }
+
+/**
+ * Builds the compiled Tier-0 export-provider list — one entry per exported `ItemKind`. Pulled out
+ * of [SenderViewModelFactory.create] as a pure function of Store-seam interfaces (never `Context`/
+ * `ContentResolver` directly) so it can run in a plain JVM unit test with fakes, no Android
+ * framework involved — the SAME construction path production uses, so a forgotten registration
+ * fails `ExportRegistrationCompletenessTest` instead of silently degrading at transfer time
+ * (.agent_native/agent_roadmap.md item #1).
+ *
+ * `APK`, `APP_BACKUP_RELAY`, and `USER_FILE` are apply-only exceptions here on purpose: they are
+ * never produced by this fixed export-provider list — APK items come from the user's app-carry
+ * selection ([AndroidInstalledAppSource]), APP_BACKUP_RELAY from a user-picked relay file, and
+ * USER_FILE from an explicit SAF pick. All three are still exhaustively registered on the apply
+ * side (see `app-recv`'s `ApplyRegistrationCompletenessTest`).
+ */
+internal fun buildExportProviders(
+    contactsStore: ContactsStore,
+    calendarStore: CalendarStore,
+    callLogStore: CallLogStore,
+    smsStore: SmsStore,
+    mmsStore: MmsStore,
+    inventorySource: InventorySource,
+    systemSettingsStore: SystemSettingsStore,
+    secureGlobalSettingsStore: SecureGlobalSettingsStore,
+    wallpaperStore: WallpaperStore,
+    soundStore: SoundStore,
+    bluetoothStore: BluetoothStore,
+): List<ExportProvider> = listOf(
+    ContactsExportProvider(contactsStore),
+    CalendarExportProvider(calendarStore),
+    CallLogExportProvider(callLogStore),
+    SmsExportProvider(smsStore),
+    MmsExportProvider(mmsStore),
+    AppInventoryExportProvider(inventorySource),
+    // Reads SAFE keys across both namespaces (reads need no grant on either seam).
+    SettingsExportProvider(systemSettingsStore, secureGlobalSettingsStore),
+    // Active wallpaper bytes: one provider per surface so ManifestBuilder assigns each its own
+    // item id and the receiver applies them independently (PRP-02 §4-5). The LOCK provider's
+    // available() returns false when lock mirrors home, so only one WALLPAPER item is emitted in
+    // the mirror case.
+    WallpaperExportProvider(wallpaperStore, WallpaperSurface.HOME),
+    WallpaperExportProvider(wallpaperStore, WallpaperSurface.LOCK),
+    // Custom default-sound files must stage before the selection snapshot so the receiver can
+    // register them locally and then remap ringtone/notification/alarm by role.
+    *soundFileExportProviders(soundStore).toTypedArray(),
+    // Default ringtone/notification/alarm selections as a tiny text snapshot (PRP-04). Built-ins
+    // re-resolve by title; custom-file roles resolve through the sound.file remap.
+    SoundSelectionExportProvider(soundStore),
+    // The bonded Bluetooth roster (name + MAC + type/class) via the PUBLIC, NON-PRIVILEGED
+    // BluetoothAdapter.getBondedDevices() API, guarded by the normal BLUETOOTH_CONNECT runtime
+    // permission (PRP-07 public-API approach — NO ADB bridge, NO escalation). Phase 1 transfers
+    // the LIST ONLY; the receiver shows a "re-pair each here" checklist. No link keys are carried
+    // (non-transferable) and the roster is never logged. available() is false when BT is off or
+    // the permission was denied, so the item self-omits gracefully.
+    BtPairingsExportProvider(bluetoothStore),
+)
 
 private const val STAGING_DIR = "portage-staging"
