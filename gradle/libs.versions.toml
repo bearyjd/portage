@@ -13,9 +13,9 @@ compileSdk = "36"             # Android 16 = verified target device (ADR-001); r
 targetSdk = "36"
 # AndroidX
 coreKtx = "1.18.0"
-lifecycle = "2.10.0"
+lifecycle = "2.11.0"
 activityCompose = "1.13.0"
-composeBom = "2026.05.01"     # verify latest
+composeBom = "2026.06.01"     # verify latest
 # Kotlin libraries
 coroutines = "1.11.0"
 serialization = "1.11.0"
