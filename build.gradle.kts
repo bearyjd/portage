@@ -6,7 +6,7 @@
 buildscript {
     dependencies {
         // SYNC: keep this version equal to `kotlin` in gradle/libs.versions.toml.
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.0")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.10")
     }
 }
 plugins {
