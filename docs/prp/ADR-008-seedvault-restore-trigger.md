@@ -235,3 +235,53 @@ recorded boundary. Cost of having written it first: one document.
   sender's surface.
 - **PRP-06** (app-backup relay): adjacent but distinct — PRP-06 ferries a user-exported opaque file;
   this triggers a restore and ferries nothing. Both are "courier, not absorber."
+
+---
+
+## 11. Addendum — #119 spike outcome (2026-07-31, GOS A17)
+
+This ADR was written before the spike, deliberately. The spike has since run and returned **GO**
+(`docs/prp/features/SPIKE-RESULTS-2026-07-31.md`). It **confirmed** the boundary above rather than
+reshaping it; the changes below are tightenings, not reversals.
+
+**Confirmed:**
+
+- `com.android.shell` holds `android.permission.BACKUP: granted=true` on GOS Android 17 — the
+  feasibility assumption in §1 holds.
+- `bmgr restore <token> <pkg>` reaches Seedvault's transport and genuinely runs, reporting a
+  per-package verdict rather than silently no-opping.
+- **The bare `restore <package>` form is rejected by the platform outright.** The two-argument form
+  §1 chose is the only one available, which also means §3.6's prohibited whole-set restore cannot be
+  reached by a careless argument slip.
+
+**Closes an open item from §9** — the output grammar is now known:
+
+```
+restoreStarting: <n> packages
+onUpdate: <index> = <package>
+restoreFinished: <code>      # 0 = TRANSPORT_OK
+done
+```
+
+Per §6 this is still **untrusted text**: bound it, strip control characters, and treat any
+unparseable form as failure rather than success. Do not infer success from the absence of an error.
+
+**NEW gap this ADR must close before #120 implements (added to §9):**
+
+- **Token selection is unspecified.** `bmgr list sets` returned *two* restore sets on the test
+  device, including one belonging to a **different phone** (a Pixel 9 Pro Fold) alongside the local
+  one. That multi-set case is portage's actual use case — old phone → new phone — so "which backup
+  set" is a real user-facing choice, not an implementation detail.
+
+  portage MUST NOT guess a token. Restoring from the wrong set would write another device's app data
+  over the user's, which is a data-loss shape this ADR has no business enabling silently. The
+  consent step in §4 must therefore name the set being restored from, and a multi-set device must
+  surface the choice explicitly.
+
+- **Framework backup state:** the restore was exercised with Backup Manager toggled on. Whether a
+  restore is possible while the framework's backup scheduling is disabled was not isolated. #120
+  must not assume it is.
+
+**Still unexercised** (see spike §1.5): a third-party app's data, restoring into an app installed in
+the same session, and the honest-failure paths of §5 (Seedvault absent / not the active transport /
+no set) — the test device had a working Seedvault, so those branches were never taken.
