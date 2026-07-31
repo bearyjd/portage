@@ -12,6 +12,7 @@ package com.ventouxlabs.portage.recv.roles
 import com.ventouxlabs.portage.adbbridge.AdbBridge
 import com.ventouxlabs.portage.providers.roles.RestorableRole
 import com.ventouxlabs.portage.providers.roles.RoleRestorer
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * degoogle-only adapter: restores a captured default-app role through the bridge (#122).
@@ -25,10 +26,22 @@ import com.ventouxlabs.portage.providers.roles.RoleRestorer
  * CONSENT: this performs a real role change with NO system confirm dialog. It must only ever be
  * called from an explicit per-role user action. The apply provider deliberately restores nothing.
  *
- * PRIVILEGE DISCIPLINE: the bridge is process-scoped and shared (`AdbBridges.local`); this adapter
- * does not connect or disconnect it, matching the other degoogle adapters.
+ * PRIVILEGE DISCIPLINE — connect-if-needed, then ALWAYS disconnect. This matches
+ * [com.ventouxlabs.portage.recv.install.AdbRuntimePermissionGranter] and
+ * [com.ventouxlabs.portage.recv.install.AdbApkInstaller]; the wizard disconnects right after its
+ * capability probe (ADR-003), so by the time the user taps SET on the Done screen NOTHING is
+ * holding the bridge open. An earlier version of this class omitted the connect and was therefore
+ * a dead button — the op always returned `BridgeUnavailable`.
+ *
+ * The [attemptTimeoutMs] ceiling is NOT optional now that this connects: `connect()` can block
+ * indefinitely when Wireless Debugging is off (#70), and a reboot silently turns it off
+ * (`SPIKE-RESULTS-2026-07-31.md` §8.3), which makes that a routine state rather than an edge case.
+ * On timeout the restore reports UNAVAILABLE and the row stays offered — never a false success.
  */
-class AdbRoleRestorer(private val bridge: AdbBridge) : RoleRestorer {
+class AdbRoleRestorer(
+    private val bridge: AdbBridge,
+    private val attemptTimeoutMs: Long = ATTEMPT_TIMEOUT_MS,
+) : RoleRestorer {
 
     override suspend fun restore(role: RestorableRole, packageName: String): RoleRestorer.Outcome {
         val target = when (role) {
@@ -36,13 +49,37 @@ class AdbRoleRestorer(private val bridge: AdbBridge) : RoleRestorer {
             RestorableRole.DIALER -> AdbBridge.RoleTarget.DIALER
             RestorableRole.HOME -> AdbBridge.RoleTarget.HOME
         }
-        return when (bridge.setRoleHolder(target, packageName)) {
-            is AdbBridge.OpResult.Ok -> RoleRestorer.Outcome.RESTORED
-            // The bridge answered but the platform refused — most often role qualification (the
-            // target app does not declare the role's components). Distinct from UNAVAILABLE so the
-            // UI can say "that app can't be the default" rather than "setup isn't ready".
-            is AdbBridge.OpResult.Failed -> RoleRestorer.Outcome.REJECTED
-            is AdbBridge.OpResult.BridgeUnavailable -> RoleRestorer.Outcome.UNAVAILABLE
+        return try {
+            withTimeoutOrNull(attemptTimeoutMs) {
+                if (!bridge.isConnected()) {
+                    when (bridge.connect()) {
+                        is AdbBridge.ConnectionResult.Connected -> Unit // proceed
+                        // No live bridge (commonly: Wireless Debugging off after a reboot).
+                        else -> return@withTimeoutOrNull RoleRestorer.Outcome.UNAVAILABLE
+                    }
+                }
+                when (bridge.setRoleHolder(target, packageName)) {
+                    is AdbBridge.OpResult.Ok -> RoleRestorer.Outcome.RESTORED
+                    // The bridge answered but the platform refused — most often role qualification
+                    // (the target app does not declare the role's components). Distinct from
+                    // UNAVAILABLE so the UI can say "that app can't be the default" rather than
+                    // "setup isn't ready".
+                    is AdbBridge.OpResult.Failed -> RoleRestorer.Outcome.REJECTED
+                    is AdbBridge.OpResult.BridgeUnavailable -> RoleRestorer.Outcome.UNAVAILABLE
+                }
+            } ?: RoleRestorer.Outcome.UNAVAILABLE // timed out → not restored, row stays offered
+        } finally {
+            // Never hold shell uid open (ADR-003). The bridge reconnects with the persisted key.
+            bridge.disconnect()
         }
+    }
+
+    private companion object {
+        /**
+         * One tap's ceiling, matching the permission granter's. Covers connect + one `cmd role`
+         * round-trip with room to spare; short enough that a wedged connect cannot hang the
+         * Done screen.
+         */
+        const val ATTEMPT_TIMEOUT_MS = 90_000L
     }
 }

@@ -579,6 +579,15 @@ class ReceiverViewModel(
         _apkInstallPrompts.value = emptyList()
         _restoredPermissions.value = emptyList()
         _optInPermissions.value = emptyList()
+        // Default-app role flows (#122) MUST be cleared here like every other Done-scoped flow.
+        // Leaving them is not cosmetic: the Done state is built from these values, and
+        // [restoreRole]'s belt validates against that live Done — so a candidate retained from a
+        // PREVIOUS transfer would still validate, and "a caller cannot restore a role the transfer
+        // never carried" would be false across a reset. The append in the sink also uses
+        // distinctBy { it.role }, which keeps the FIRST occurrence, so a retained stale candidate
+        // would SHADOW the next transfer's legitimate one for that role.
+        _roleCandidates.value = emptyList()
+        _restoredRoles.value = emptyList()
         _state.value = ReceiverState.Idle
         // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
         refreshSmsRoleStrand()

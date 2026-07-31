@@ -128,9 +128,16 @@ interface AdbBridge {
      * role argument selects WHICH system capability is handed to a package; if it could be carried
      * as free text, a hostile-but-authenticated sender could aim this verb at a role portage never
      * intended to restore (ASSISTANT, CALL_REDIRECTION, SMS…). Restricting it to a compiled-in set
-     * makes that unrepresentable instead of merely validated. [packageName] is still untrusted and
-     * is bounded twice: the caller intersects it with the verified manifest, and [ShellArgs] rejects
-     * shell metacharacters here.
+     * makes that unrepresentable instead of merely validated.
+     *
+     * [packageName] is still untrusted. Be precise about what guards it, because the two layers
+     * cover DIFFERENT things and neither is a spare for the other:
+     *  - [ShellArgs] here rejects control characters and quotes shell metacharacters — but its
+     *    SAFE_ARG allowlist INCLUDES `-`, so it would pass `--user` through as a bare argument. It
+     *    is not a defence against flag injection.
+     *  - The CALLER's package-name grammar is what stops that: a full match on dot-separated
+     *    `[A-Za-z0-9_]` segments admits no leading dash, no separator, no metacharacter. The caller
+     *    also intersects the name with the verified manifest and with what is actually installed.
      *
      * NOTE: the shell path applies the change with NO user-confirm dialog — the platform will not
      * ask on portage's behalf. Callers MUST gate this behind explicit opt-in consent.
