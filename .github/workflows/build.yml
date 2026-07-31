@@ -161,8 +161,12 @@ jobs:
             fi
           done
       - name: Assert raw AdbBridge.shell() stays inside the privilege modules
-        # ADR-003 §1 call-site rule, made durable: only :adb-bridge (and :wizard via typed ops)
-        # may touch the raw shell. Typed operations are the public surface everywhere else.
+        # ADR-003 §1 call-site rule, made durable: raw .shell() may be called ONLY from within
+        # :adb-bridge itself. :wizard IS intentionally included in the scanned (forbidden) module
+        # list below — it is a privileged consumer of AdbBridge but must go through the typed
+        # operations (pair/connect/probeCapabilities/disconnect) only, never raw shell(). Keep
+        # :wizard in this list; removing it would silently widen the privilege boundary. CLAUDE.md
+        # and AdbBridge.kt's comments describe this same rule — keep all three in sync.
         run: |
           set -euo pipefail
           if grep -rn '\.shell(' --include='*.kt' app-recv app-send providers core-model core-transport settings-catalog wizard | grep -vE '/(test|androidTest)[A-Za-z]*/'; then
