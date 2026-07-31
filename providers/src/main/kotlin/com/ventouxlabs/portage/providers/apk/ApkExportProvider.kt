@@ -21,9 +21,9 @@ import java.io.OutputStream
  * class stays Android-type-free and `:providers` keeps its `:core-model` + `:settings-catalog`-only
  * dependency set (ADR-006 D2). [capturedPermissions] defaults empty; Phase 5 fills it (ADR-006 D5).
  *
- * NOTE: the codec + provider are built and tested, but the app-send `PackageManager`/Compose wiring
- * that produces instances of this provider is NOT part of this slice — `ItemKind.APK` has no producer
- * until that follow-up. The green tests here prove the provider itself, not the end-to-end flow.
+ * Producer: `apkExportProviders(selectedApps())` in app-send (`apk/AppPicks.kt`), wired into the
+ * manifest build at `SenderViewModel.onStartTransfer` — one provider per user-SELECTED installed app,
+ * so `ItemKind.APK` only ships what the sender explicitly picked.
  *
  * [available] is false (a DEFINED skip, ADR-006 AC-19) unless a BASE file is present AND every declared
  * file's length is > 0 — a partial set or an unreadable split must never ship a broken half-container.
@@ -87,9 +87,9 @@ data class ApkSplitTags(
  * otherwise → abi. This is advisory; misclassification only affects the sender-side tag, never the install
  * plan.
  *
- * NOTE: NOT yet wired from app-send — the `PackageManager`/Compose seam that calls this to build
- * [ApkFileEntry] tags is the next slice (Phase 2, ADR-006 D6). This function is built and tested here
- * so the codec slice is complete and independently reviewable.
+ * Called on BOTH sides, deliberately: the sender tags each file in [installedAppApkProviders],
+ * and the receiver RE-derives the same tags from the validated [ApkFileEntry.name] in [ApkApplyProvider]
+ * rather than trusting the sender's wire tags (ADR-006 D3).
  */
 fun deriveTags(splitFileName: String): ApkSplitTags {
     val name = splitFileName.removeSuffix(".apk")

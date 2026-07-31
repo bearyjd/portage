@@ -274,9 +274,9 @@ data class RelayRestorePrompt(
  * then points portage at the resulting file via SAF; this provider only ferries it. The file content
  * is OPAQUE: [openPickedFile] yields a stream copied verbatim into the item, never interpreted.
  *
- * NOTE: this class is built and tested, but the SAF file-pick UI that wires instances of it into the
- * sender is NOT yet implemented — APP_BACKUP_RELAY has no producer until the follow-up Phase-2 PR.
- * The green tests here prove the provider itself works, not the end-to-end flow.
+ * Producer: `relayExportProviders(livePicks)` in app-send (`relay/RelayPicks.kt`), wired into the
+ * manifest build at `SenderViewModel.onStartTransfer`. The SAF pick UI is `ui/RelayPickSection.kt`
+ * (`ActivityResultContracts.OpenDocument`, no storage permission).
  *
  * [available] is false when no/empty file was picked or [restoreNote] is blank (a blank note would
  * be rejected by [RelayHeader.sanitizedOrNull] on the receiver anyway, so we gate it here too).
