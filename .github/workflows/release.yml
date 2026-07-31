@@ -139,25 +139,48 @@ jobs:
           # plaintext merged-manifest intermediate; here only the APK exists.
           aapt=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
           test -x "$aapt" || { echo "::error::aapt not found"; exit 1; }
+
+          # grep exits 0 = found, 1 = NOT found, >=2 = ERROR. The bridge-free branches below conclude
+          # "clean" from a non-match, so an ERROR must never read as "not found" — otherwise a failing
+          # reader silently publishes a SIGNED artifact that was never actually checked. Same fail-open
+          # class fixed in build.yml's boundary step; this is the LAST gate before release.
+          text_contains() {
+            local re="$1" rc=0; shift
+            printf '%s\n' "$*" | grep -qE "$re" || rc=$?
+            case "$rc" in 0) return 0 ;; 1) return 1 ;;
+              *) echo "::error::grep exited $rc scanning permissions — refusing to evaluate" >&2; exit 1 ;; esac
+          }
+          apk_contains() {
+            local apk="$1" re="$2" rc=0 listing
+            listing=$(unzip -l "$apk") \
+              || { echo "::error::unzip failed to list $apk — refusing to evaluate" >&2; exit 1; }
+            printf '%s\n' "$listing" | grep -qiE "$re" || rc=$?
+            case "$rc" in 0) return 0 ;; 1) return 1 ;;
+              *) echo "::error::grep exited $rc scanning the listing of $apk — refusing to evaluate" >&2; exit 1 ;; esac
+          }
+
           for apk in dist/*.apk; do
             name=$(basename "$apk")
             perms=$("$aapt" dump permissions "$apk")
+            # An EMPTY dump would make every bridge-free assertion below vacuously true. aapt
+            # succeeding with no output is not evidence of a clean manifest.
+            test -n "$perms" || { echo "::error::aapt produced an EMPTY permission dump for $name — refusing to evaluate"; exit 1; }
             case "$name" in
               *send*|*recv-play*)
-                if unzip -l "$apk" | grep -qiE "$bridge_lib_re"; then
+                if apk_contains "$apk" "$bridge_lib_re"; then
                   echo "::error::$name must be bridge-free but contains ADB-bridge native libs"
                   exit 1
                 fi
-                if echo "$perms" | grep -qE 'WRITE_SECURE_SETTINGS'; then
+                if text_contains 'WRITE_SECURE_SETTINGS' "$perms"; then
                   echo "::error::$name must be bridge-free but declares WRITE_SECURE_SETTINGS"
                   exit 1
                 fi ;;
               *recv-degoogle*)
-                if ! unzip -l "$apk" | grep -qiE "$bridge_lib_re"; then
+                if ! apk_contains "$apk" "$bridge_lib_re"; then
                   echo "::error::$name (degoogle receiver) lacks expected ADB-bridge native libs"
                   exit 1
                 fi
-                if ! echo "$perms" | grep -qE 'WRITE_SECURE_SETTINGS'; then
+                if ! text_contains 'WRITE_SECURE_SETTINGS' "$perms"; then
                   echo "::error::$name (degoogle receiver) lacks expected WRITE_SECURE_SETTINGS"
                   exit 1
                 fi ;;
