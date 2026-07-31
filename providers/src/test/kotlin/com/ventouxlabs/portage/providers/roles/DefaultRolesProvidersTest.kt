@@ -147,6 +147,34 @@ class DefaultRolesProvidersTest {
     }
 
     @Test
+    fun `package names that ShellArgs alone would NOT stop are dropped here`() {
+        // Layer note, verified against the real ShellArgs: its SAFE_ARG allowlist
+        // (^[A-Za-z0-9_.,:/@+=-]+$) INCLUDES '-', so an argument like "-foo" passes through
+        // UNQUOTED and `cmd role` could read it as a flag. ShellArgs is therefore not the control
+        // that stops flag injection — THIS regex is, because it is a full match anchored on
+        // [A-Za-z0-9_] segments. The two layers cover different things; neither is redundant.
+        val hostile = listOf(
+            "-com.evil",           // leading dash: would survive ShellArgs unquoted
+            "--user",              // looks like a flag entirely
+            "com.evil/../other",   // path traversal shape; '/' is in SAFE_ARG too
+            "com.evil app",        // argument split
+            "",                    // empty
+            "noDotsAtAll",         // not a package (needs >= 2 segments)
+        )
+        hostile.forEach { pkg ->
+            // CRITICAL: claim every hostile string IS installed. Otherwise the `isInstalled` filter
+            // drops them and this test passes without the regex doing anything — it would be green
+            // even with the package validation deleted. (Caught by mutation-testing: loosening
+            // PACKAGE_NAME left this test passing until the installed-set was made permissive too.)
+            val (_, candidates) = applied(
+                """{"roles":[{"role":"browser","packageName":"$pkg"}]}""",
+                installed = setOf(pkg),
+            )
+            assertThat(candidates).isEmpty()
+        }
+    }
+
+    @Test
     fun `a duplicated role yields one candidate, not two`() {
         val (_, candidates) = applied(
             """{"roles":[
