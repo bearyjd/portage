@@ -75,11 +75,71 @@ jobs:
             n=$(printf '%s\n' "$hits" | grep -c . || true)
             [ "$n" = 1 ] && printf '%s\n' "$hits"
           }
-          find_apk() { find "$1/build/outputs/apk/$2" -name '*.apk' | head -1; }
-          # Strip XML comments before grepping: the recv main manifest's prose mentions
-          # "WRITE_SECURE_SETTINGS" / "ADB bridge" and the merged manifest preserves comments, so a
-          # naive grep would false-positive on documentation rather than a real declaration.
-          manifest_body() { perl -0777 -pe 's/<!--.*?-->//gs' "$1"; }
+          # `|| true` so a MISSING output dir still reaches the caller's explicit "APK not found"
+          # message instead of aborting the step with no diagnostic at all.
+          find_apk() { find "$1/build/outputs/apk/$2" -name '*.apk' -print -quit 2>/dev/null || true; }
+
+          # grep exits 0 = found, 1 = NOT found, >=2 = ERROR (unreadable file, bad pattern); a signal
+          # kill gives 128+n. The FORBID loops below conclude "clean" from a non-match, so an ERROR
+          # must never be allowed to read as "not found" — that is the same fail-open the normalize()
+          # rewrite closed on the perl side, and it applies equally to the verdict greps themselves.
+          contains() {
+            local f="$1" re="$2" rc=0
+            grep -qE "$re" "$f" || rc=$?
+            case "$rc" in
+              0) return 0 ;;
+              1) return 1 ;;
+              *) echo "::error::grep exited $rc scanning $f for /$re/ — refusing to evaluate" >&2; exit 1 ;;
+            esac
+          }
+
+          # Same discrimination for the APK listings. Materialize the listing first so a failing
+          # unzip is distinguishable from a listing that simply lacks the pattern.
+          apk_contains() {
+            local apk="$1" re="$2" rc=0 listing
+            listing=$(unzip -l "$apk") \
+              || { echo "::error::unzip failed to list $apk — refusing to evaluate" >&2; exit 1; }
+            printf '%s\n' "$listing" | grep -qiE "$re" || rc=$?
+            case "$rc" in
+              0) return 0 ;;
+              1) return 1 ;;
+              *) echo "::error::grep exited $rc scanning the listing of $apk — refusing to evaluate" >&2; exit 1 ;;
+            esac
+          }
+
+          WORK=$(mktemp -d)
+          trap 'rm -rf "$WORK"' EXIT
+
+          # Strip XML comments ONCE per variant into a file, then grep the FILE. The recv main
+          # manifest's prose mentions "WRITE_SECURE_SETTINGS" / "ADB bridge" and the merged manifest
+          # preserves comments, so a naive grep would false-positive on documentation.
+          #
+          # Every failure mode here is LOUD and FATAL, deliberately. The previous form piped
+          # `perl ... | grep -q` inline per token, which made "the token is absent" and "perl did not
+          # produce output" indistinguishable. In the FORBID loops below — which conclude *clean*
+          # from a non-match — that combination fails OPEN: a manifest genuinely leaking
+          # WRITE_SECURE_SETTINGS passed the gate if the perl invocation died. It also produced
+          # spurious "lost an expected surface" failures on unrelated dependency-bump PRs, each
+          # naming a different token (the tell that it was the reader failing, not the manifest).
+          # A manifest we could not read must never be evaluated. Emits the normalized path.
+          #
+          # NOTE: this runs inside $( ), so diagnostics MUST go to stderr — anything on stdout is
+          # captured as the returned path instead of reaching the log.
+          normalize() {
+            local label="$1" src="$2" out="$WORK/$3.xml"
+            die() { echo "::error::$*" >&2; exit 1; }
+            test -n "$src" || die "$label merged manifest not found"
+            test -s "$src" || die "$label merged manifest is missing or empty: $src"
+            perl -0777 -pe 's/<!--.*?-->//gs' "$src" > "$out" \
+              || die "$label manifest comment-strip FAILED for $src — refusing to evaluate"
+            test -s "$out" || die "$label normalized manifest is EMPTY ($src) — refusing to evaluate"
+            # Sanity control on the normalized text itself: if these are gone we are not looking at
+            # a real merged manifest, and every verdict below would be meaningless.
+            grep -q '<manifest' "$out" || die "$label normalized manifest has no <manifest> root ($src)"
+            grep -q 'uses-permission' "$out" \
+              || die "$label normalized manifest declares NO permissions at all ($src) — implausible"
+            printf '%s\n' "$out"
+          }
 
           escalation_re='WRITE_SECURE_SETTINGS|com\.ventouxlabs\.portage\.adbbridge'
           bridge_lib_re='conscrypt|spake2'
@@ -93,9 +153,11 @@ jobs:
 
           # --- 1. portage-send: both flavors clean (manifest + APK). ---
           for variant in degoogleDebug playDebug degoogleRelease playRelease; do
-            m=$(find_manifest app-send "$variant")
-            test -n "$m" || { echo "::error::send $variant merged manifest not found"; exit 1; }
-            if manifest_body "$m" | grep -qE "$escalation_re"; then
+            # NOTE: bare assignment ON PURPOSE. `local body=$(normalize ...)` would make `local`'s
+            # own status the command status and MASK a normalize() failure — silently reverting this
+            # entire fix. Keep these assignments bare and out of `if`/pipeline contexts.
+            body=$(normalize "send $variant" "$(find_manifest app-send "$variant")" "send-$variant")
+            if contains "$body" "$escalation_re"; then
               echo "::error::portage-send ($variant) merged manifest leaks an escalation permission or the ADB bridge"
               exit 1
             fi
@@ -103,7 +165,7 @@ jobs:
           for path in degoogle/debug play/debug degoogle/release play/release; do
             apk=$(find_apk app-send "$path")
             test -f "$apk" || { echo "::error::sender APK not found at $path"; exit 1; }
-            if unzip -l "$apk" | grep -qiE "$bridge_lib_re"; then
+            if apk_contains "$apk" "$bridge_lib_re"; then
               echo "::error::portage-send APK ($path) contains ADB-bridge native libraries — a privilege dependency leaked into the sender"
               exit 1
             fi
@@ -111,15 +173,14 @@ jobs:
 
           # --- 2. portage-recv PLAY: must be bridge-FREE AND lite-restricted (manifest + APK). ---
           for variant in playDebug playRelease; do
-            recv_play_manifest=$(find_manifest app-recv "$variant")
-            test -n "$recv_play_manifest" || { echo "::error::recv $variant merged manifest not found"; exit 1; }
-            if manifest_body "$recv_play_manifest" | grep -qE "$escalation_re"; then
+            body=$(normalize "recv $variant" "$(find_manifest app-recv "$variant")" "recv-play-$variant")
+            if contains "$body" "$escalation_re"; then
               echo "::error::portage-recv $variant merged manifest carries WRITE_SECURE_SETTINGS or the ADB bridge"
               exit 1
             fi
             # ADR-007 §6.3 #2: lite must declare NO SMS/MMS/call-log/install surface or .sms. role component.
             for tok in $lite_required_toks $lite_forbidden_extra_toks; do
-              if manifest_body "$recv_play_manifest" | grep -qE "$tok"; then
+              if contains "$body" "$tok"; then
                 echo "::error::portage-recv PLAY ($variant) merged manifest declares a lite-forbidden surface: $tok"
                 exit 1
               fi
@@ -128,7 +189,7 @@ jobs:
           for path in play/debug play/release; do
             recv_play_apk=$(find_apk app-recv "$path")
             test -f "$recv_play_apk" || { echo "::error::recv play APK not found at $path"; exit 1; }
-            if unzip -l "$recv_play_apk" | grep -qiE "$bridge_lib_re"; then
+            if apk_contains "$recv_play_apk" "$bridge_lib_re"; then
               echo "::error::portage-recv PLAY APK ($path) contains ADB-bridge native libs"
               exit 1
             fi
@@ -137,16 +198,15 @@ jobs:
           # --- 3. portage-recv DEGOOGLE: bridge + lite-restricted surfaces PRESENT (positive control —
           #        proves the source-set split works BOTH ways: full on degoogle, none on play). ---
           for variant in degoogleDebug degoogleRelease; do
-            recv_degoogle_manifest=$(find_manifest app-recv "$variant")
-            test -n "$recv_degoogle_manifest" || { echo "::error::recv $variant merged manifest not found"; exit 1; }
-            if ! manifest_body "$recv_degoogle_manifest" | grep -qE 'WRITE_SECURE_SETTINGS'; then
+            body=$(normalize "recv $variant" "$(find_manifest app-recv "$variant")" "recv-degoogle-$variant")
+            if ! contains "$body" 'WRITE_SECURE_SETTINGS'; then
               echo "::error::recv $variant merged manifest lacks WRITE_SECURE_SETTINGS"
               exit 1
             fi
             # The degoogle manifest MUST still carry the FULL surface (ADR-007 §6.3 #2) — the SAME token set
             # the play loop forbids, so a drop from BOTH flavors (not just play) fails here.
             for tok in $lite_required_toks; do
-              if ! manifest_body "$recv_degoogle_manifest" | grep -qE "$tok"; then
+              if ! contains "$body" "$tok"; then
                 echo "::error::recv DEGOOGLE ($variant) merged manifest lost an expected surface: $tok"
                 exit 1
               fi
@@ -155,7 +215,7 @@ jobs:
           for path in degoogle/debug degoogle/release; do
             recv_degoogle_apk=$(find_apk app-recv "$path")
             test -f "$recv_degoogle_apk" || { echo "::error::recv degoogle APK not found at $path"; exit 1; }
-            if ! unzip -l "$recv_degoogle_apk" | grep -qiE "$bridge_lib_re"; then
+            if ! apk_contains "$recv_degoogle_apk" "$bridge_lib_re"; then
               echo "::error::recv DEGOOGLE APK ($path) lacks expected ADB-bridge native libs"
               exit 1
             fi
