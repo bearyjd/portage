@@ -220,6 +220,72 @@ jobs:
               exit 1
             fi
           done
+      - name: Assert 16 KB page alignment of shipped native libraries (ADR-003 §7.7)
+        # Android is moving to 16 KB memory pages; a misaligned .so hard-fails to load there. Two
+        # independent requirements, BOTH checked, because either one alone lets a broken APK through:
+        #   1. ZIP level  — each .so entry must be STORED (uncompressed) at a 16 KB offset in the APK.
+        #   2. ELF level  — each LOAD segment's p_align must be >= 0x4000 (16384).
+        # portage builds no native code itself; these libs are PREBUILT (libadb-android's spake2,
+        # conscrypt, and Compose's androidx.graphics.path), so this is a DETECTION gate on the pinned
+        # dependency set — a dependency bump that regresses alignment must fail here, not on a user's
+        # 16 KB device. Verified passing on the current pins (12/12 libs at 0x4000).
+        run: |
+          set -euo pipefail
+          zipalign=$(ls -d "${ANDROID_HOME:?}"/build-tools/*/zipalign 2>/dev/null | sort -V | tail -1 || true)
+          test -n "$zipalign" || { echo "::error::zipalign not found under $ANDROID_HOME/build-tools"; exit 1; }
+          command -v readelf >/dev/null || { echo "::error::readelf not available"; exit 1; }
+
+          WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+          total_libs=0
+
+          # Release variants are the release gate, but debug ships the same prebuilts — check both so a
+          # regression surfaces on the PR that introduces it.
+          # Flavored outputs nest as apk/<flavor>/<buildType>/*.apk, so match at any depth under apk/.
+          apks=$(find app-recv app-send -path '*/build/outputs/apk/*' -name '*.apk' | sort)
+          test -n "$apks" || { echo "::error::no APKs found to check"; exit 1; }
+
+          for apk in $apks; do
+            # 1. ZIP level.
+            if ! "$zipalign" -c -P 16 -v 4 "$apk" > "$WORK/za.txt" 2>&1; then
+              echo "::error::$apk fails 16 KB zip page alignment (zipalign -c -P 16)"
+              grep -iE '\.so' "$WORK/za.txt" | grep -viE '\(OK' | head -20 || true
+              exit 1
+            fi
+
+            # 1b. STORED check. zipalign reports a COMPRESSED entry as "(OK - compressed)" and skips the
+            # alignment requirement for it, so step 1 alone lets a compressed .so through — and a
+            # compressed native lib cannot be mmap'd at any page size. Require method Stored explicitly.
+            if unzip -lv "$apk" | awk '$NF ~ /\.so$/ && $2 != "Stored" { print; found=1 } END { exit !found }'; then
+              echo "::error::$apk ships COMPRESSED native libraries (listed above) — must be STORED for mmap"
+              exit 1
+            fi
+
+            # 2. ELF level. Extract and inspect every LOAD segment of every .so.
+            rm -rf "$WORK/x"; mkdir -p "$WORK/x"
+            unzip -qq -o "$apk" 'lib/*' -d "$WORK/x" 2>/dev/null || true
+            libs=$(find "$WORK/x" -name '*.so' 2>/dev/null | sort)
+            n=$(printf '%s\n' "$libs" | grep -c . || true)
+            echo "checked $apk — $n native lib(s)"
+            total_libs=$((total_libs + n))
+            [ "$n" = 0 ] && continue
+            for so in $libs; do
+              rel=${so#"$WORK/x/"}
+              # Every LOAD line's last field is the alignment, e.g. 0x4000. Require >= 16384.
+              aligns=$(readelf -lW "$so" | awk '$1=="LOAD"{print $NF}' | sort -u)
+              test -n "$aligns" || { echo "::error::$apk :: $rel has no LOAD segments — unreadable ELF"; exit 1; }
+              for a in $aligns; do
+                if [ "$((a))" -lt 16384 ]; then
+                  echo "::error::$apk :: $rel LOAD p_align=$a (< 0x4000) — not 16 KB page compatible"
+                  exit 1
+                fi
+              done
+            done
+          done
+
+          # Fail closed: passing because we inspected NOTHING is the failure mode this repo already got
+          # bitten by once (see the manifest-boundary step above). The bridge flavors ship real libs.
+          test "$total_libs" -gt 0 || { echo "::error::inspected 0 native libraries — the check did not actually run"; exit 1; }
+          echo "16 KB alignment OK across $total_libs native libraries"
       - name: Assert raw AdbBridge.shell() stays inside the privilege modules
         # ADR-003 §1 call-site rule, made durable: raw .shell() may be called ONLY from within
         # :adb-bridge itself. :wizard IS intentionally included in the scanned (forbidden) module
