@@ -11,6 +11,27 @@ attack surface — yields only a **list of SSIDs, never the passwords**, so the 
 This is Seedvault's domain (it holds the system backup privilege portage deliberately lacks). See
 `SPIKE-RESULTS-2026-06-12.md`. Original draft retained below for the record.
 
+**RE-CONFIRMED on GrapheneOS Android 17 / SDK 37 — 2026-07-31 (#123).** The DECLINED status stands
+unchanged; this is confirmation, not re-litigation. The three `open-questions.md` boxes are now
+formally checked with A17 evidence (`SPIKE-RESULTS-2026-07-31.md` §7):
+
+- `WifiConfigStore.xml` is still Permission-denied at shell uid — file, legacy path, and containing
+  directory. The NO-GO trigger fires on A17 exactly as on A16.
+- The sender-side read is closed on **all three** paths, which the original decline asserted and
+  this run measured: the config file is denied even to shell; `cmd wifi list-networks` needs shell
+  uid, which `app-send` must never hold (no-escalation CI assert); and `NETWORK_SETTINGS` — the
+  permission gating privileged enumeration through the app API — is `protectionLevel: signature`,
+  unreachable for a non-platform-signed app. (`ACCESS_WIFI_STATE` is `normal`, but grants Wi-Fi
+  *state*, not enumeration.)
+- The restore path (b) `cmd wifi add-network` **does** work at shell uid and shows as saved with no
+  per-network prompt — verified with a throwaway SSID, then forgotten. This is receiver-side only
+  and is moot while the read side is NO-GO; recorded so a future reader does not re-spike it.
+
+One angle worth noting as already-answered rather than new: under ADR-007 unification the sender
+binary carries the bridge, which would make `cmd wifi list-networks` reachable on the source device.
+That yields **SSIDs and security types, never passphrases** — exactly the trade the decline above
+already weighed and rejected. It does not reopen this PRP.
+
 Grounding: this PRP was written against the live tree. It mirrors the call-log provider
 (`providers/.../calllog/CallLogProviders.kt`), the Tier-1 settings provider
 (`providers/.../settings/SettingsProviders.kt`), the allowlist guardrail

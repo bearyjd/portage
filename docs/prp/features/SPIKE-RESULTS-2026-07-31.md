@@ -169,3 +169,73 @@ adb shell bmgr enable false           # restore original state
 adb shell cmd role get-role-holders android.app.role.BROWSER
 adb shell cmd role add-role-holder android.app.role.BROWSER <pkg>
 ```
+
+---
+
+## 7. #123 — PRP-01 Wi-Fi feasibility (RESOLVED: NO-GO, confirming the existing decline)
+
+PRP-01 was already **DECLINED 2026-06-13** ("not feasible on unrooted GOS; do not re-litigate")
+against A16. #123 asked for the three `open-questions.md` boxes to be formally resolved with
+evidence. They now are, on **A17** — the status is unchanged.
+
+### 7.1 Read side — the NO-GO trigger fires
+
+```
+$ adb shell id
+uid=2000(shell) gid=2000(shell) …
+
+$ ls -ld /data/misc/apexdata/com.android.wifi/WifiConfigStore.xml
+ls: …: Permission denied
+$ ls -ld /data/misc/wifi/WifiConfigStore.xml
+ls: …: Permission denied
+$ ls -ld /data/misc/apexdata/com.android.wifi/
+ls: …: Permission denied            <- even the directory
+$ head -c 120 /data/misc/apexdata/com.android.wifi/WifiConfigStore.xml
+head: …: Permission denied
+```
+
+Passphrases remain root-only. GOS is unrooted.
+
+### 7.2 Sender read — closed on all three paths (measured, not assumed)
+
+| Path | Status on A17 |
+|---|---|
+| Read `WifiConfigStore.xml` | Permission denied at shell uid (§7.1) |
+| `cmd wifi list-networks` | Works at shell uid — but `app-send` must never hold shell uid (no-escalation CI assert) |
+| App API privileged enumeration | Gated by `NETWORK_SETTINGS`, **`protectionLevel: signature`** — unreachable for a non-platform-signed app |
+
+`ACCESS_WIFI_STATE` is `protectionLevel: normal`, but grants Wi-Fi *state*, not saved-network
+enumeration. What `cmd wifi list-networks` returns is SSID + **security type** only — there is no
+passphrase column and no get/export verb:
+
+```
+Network Id      SSID                         Security type
+0            <redacted>                       wpa2-psk
+1            <redacted>                       open
+```
+
+### 7.3 Restore side — path (b) works, and is receiver-only
+
+```
+$ cmd wifi add-network PORTAGE_SPIKE_DELETEME open
+$ cmd wifi list-networks
+4            PORTAGE_SPIKE_DELETEME           open
+$ cmd wifi forget-network 4
+Forget successful
+```
+
+Appears as **saved** immediately, **no per-network prompt**. Requires shell uid, so it is a
+receiver-side path only. Path (a) `WifiNetworkSuggestion` was not tested — it needs app code and is
+moot while the read side is NO-GO. Saved-network count before/after: 8 → 8; the throwaway entry was
+removed and the device left as found.
+
+### 7.4 Verdict
+
+**NO-GO for credential parity**, confirming the 2026-06-13 decline on a newer OS. The receiver
+*could* re-add networks it learned some other way, but with the sender unable to enumerate them,
+that reduces to the user typing SSIDs by hand — no better than doing it in Settings.
+
+Already-answered, recorded so it is not re-raised: under ADR-007 unification the sender binary
+carries the bridge, making `cmd wifi list-networks` reachable at the source. That yields SSIDs and
+security types, **never passphrases** — the exact trade PRP-01's decline already weighed and
+rejected.
