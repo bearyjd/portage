@@ -41,6 +41,16 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v4
       - uses: gradle/actions/setup-gradle@v6
+      - name: Self-test the privilege-boundary gates
+        # Runs FIRST, before the ~15-minute assemble: it uses synthetic build-output fixtures, needs
+        # no real APKs, and finishes in seconds — so a broken gate fails fast instead of at the end.
+        #
+        # This exists because the boundary step below is the ONLY enforcement of the privilege
+        # boundary, and it shipped two independent fail-open bugs (PR #135) that CI could not see —
+        # a gate that wrongly passes looks exactly like a gate that rightly passes. The self-test
+        # extracts the REAL step bodies from this file and asserts they fail CLOSED on reader
+        # failure, rather than re-implementing them (a copy would drift and prove nothing).
+        run: ./scripts/test-boundary-gate.sh
       - name: Unit tests (core-model + core-transport + adb-bridge + wizard + providers + app-recv + app-send)
         # app-recv and app-send are flavored (distribution: degoogle/play, ADR-003) so their unit-test
         # tasks are per-flavor; both flavors run. The play variant exercises the Tier-0 no-bridge wiring
