@@ -239,3 +239,70 @@ Already-answered, recorded so it is not re-raised: under ADR-007 unification the
 carries the bridge, making `cmd wifi list-networks` reachable at the source. That yields SSIDs and
 security types, **never passphrases** — the exact trade PRP-01's decline already weighed and
 rejected.
+
+---
+
+## 8. Reboot-recovery walk (#125 / ADR-003 §7.5) and #121 persistence — GOS A17
+
+Real reboot, proven rather than assumed:
+
+| | before | after |
+|---|---|---|
+| `boot_id` | `5e4eea28-…` | `5da1ff30-…` (**changed**) |
+| uptime | 46 974 s | 1 450 s |
+
+Setup before the reboot: both apps reinstalled from `main` (`edd9822`), `WRITE_SECURE_SETTINGS`
+granted to `com.ventouxlabs.portage.recv` via `pm grant`, BROWSER role flipped to
+`app.vanadium.browser`.
+
+### 8.1 The grant persists — ADR-001's core promise holds on A17
+
+```
+android.permission.WRITE_SECURE_SETTINGS: granted=true              <- user 0 (Owner)
+android.permission.WRITE_SECURE_SETTINGS: granted=false, userId=10  <- secondary user
+```
+
+The ONE-SHOT grant survived the reboot for the owner profile. **This is the half of §7.5 that is now
+closed.**
+
+**Owner-profile-only is confirmed, not merely assumed.** This device has a real secondary user
+(`UserInfo{10}`), and the grant is explicitly `granted=false` there. ADR-001's "owner profile only"
+constraint is observed behaviour on A17, not an inference.
+
+Scope note, deliberately narrow: this proves the **grant record** persisted, which is exactly what
+§7.5 asserts. It does not prove portage can successfully *exercise* it — that needs code running as
+portage's uid and is covered separately by ADR-003 §7.1–7.4.
+
+### 8.2 #121: the role change survives reboot — spike COMPLETE
+
+BROWSER remained `app.vanadium.browser` across the reboot. Combined with §2's flip result, #121's
+acceptance criterion (go/no-go **with reboot-survival evidence**) is met: `cmd role
+add-role-holder` both takes effect and persists. Restored to `com.android.chrome` afterwards.
+
+### 8.3 NEW: Wireless Debugging does NOT survive the reboot
+
+```
+adb_wifi_enabled:  1  (before)  ->  0  (after)
+```
+
+The bridge's precondition resets on every reboot. Consequences, and why this is not a problem for
+the architecture but *is* one for the UX:
+
+- **The grant architecture is unaffected**, and this is precisely why it was chosen: post-grant,
+  settings writes go through the normal `Settings.*` API with **no live bridge**. A user who has
+  completed the wizard once keeps working across reboots without touching Wireless Debugging.
+- **But any bridge-requiring operation after a reboot needs the user to re-enable Wireless Debugging
+  first** — silent install (#86), role restore (#122), and the Seedvault handoff (#120) all inherit
+  this. It cannot be done programmatically: `adb_wifi_enabled` is a `Settings.Global` write behind
+  `WRITE_SECURE_SETTINGS`, and portage would need the very bridge it is trying to start.
+- This is the concrete shape of the already-known hang (`connect()` blocks forever when Wireless
+  Debugging is off, gated in #70). The gate is correct; the finding is that **reboot is a routine
+  path into that state**, so the wizard must detect and explain it rather than treat it as an edge
+  case.
+
+### 8.4 What §7.5 still needs
+
+The `pair → connect → probe` recovery half is **NOT** verified. It requires the in-app wizard with
+an interactive pairing code, which cannot be driven headlessly — and §8.3 means it now also requires
+re-enabling Wireless Debugging first. §7.5 should be recorded as **half-closed**: grant persistence
+verified, chain recovery outstanding.
