@@ -73,6 +73,15 @@ enum class ItemKind(val wire: String, val tier: Tier) {
     // Framework; Portage never crawls shared storage. Payload bytes are opaque and streamed into
     // Downloads/Portage on the receiver.
     USER_FILE("user.file", Tier.TIER0),
+    // APPEND-ONLY wire bump (#122): the user's DEFAULT-APP CHOICES — browser / dialer / launcher —
+    // as a tiny JSON snapshot of role -> package. Carries the CHOICE only; never an app, never app
+    // data. Tier 1 because re-applying it needs the bridge's `cmd role add-role-holder` (verified
+    // on GOS A17 to take effect and survive reboot). The SENDER side needs no privilege at all — it
+    // reads defaults via ordinary intent resolution, so the no-escalation assert is unaffected.
+    // Applying is opt-in per role: the shell path shows NO system confirm dialog, so the receiver
+    // surfaces candidates and restores only on an explicit tap. SMS is deliberately excluded (it
+    // ships separately with its own transient-role discipline, and is broken on GOS per #61).
+    DEFAULT_ROLES("roles", Tier.TIER1),
     // NOTE: no SEEDVAULT_BLOB. Couriering a Seedvault file would imply app-DATA transfer,
     // which contradicts the Seedvault division of labor (PRP §2, DEVILS_ADVOCATE Q5). If
     // ever wanted, it goes in a future protocol bump behind explicit "carrying, not backing up"

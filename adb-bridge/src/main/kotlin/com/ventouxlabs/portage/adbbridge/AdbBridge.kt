@@ -120,6 +120,24 @@ interface AdbBridge {
     suspend fun setSmsRoleHolder(packageName: String): OpResult =
         typedOp("cmd", "role", "add-role-holder", "android.app.role.SMS", packageName)
 
+    /**
+     * Restore a captured default-app role (#122). Verified on GOS A17: the flip takes effect and
+     * SURVIVES REBOOT (`SPIKE-RESULTS-2026-07-31.md` §2, §8.2).
+     *
+     * [role] is an ENUM, never a wire string, and that is load-bearing rather than stylistic. The
+     * role argument selects WHICH system capability is handed to a package; if it could be carried
+     * as free text, a hostile-but-authenticated sender could aim this verb at a role portage never
+     * intended to restore (ASSISTANT, CALL_REDIRECTION, SMS…). Restricting it to a compiled-in set
+     * makes that unrepresentable instead of merely validated. [packageName] is still untrusted and
+     * is bounded twice: the caller intersects it with the verified manifest, and [ShellArgs] rejects
+     * shell metacharacters here.
+     *
+     * NOTE: the shell path applies the change with NO user-confirm dialog — the platform will not
+     * ask on portage's behalf. Callers MUST gate this behind explicit opt-in consent.
+     */
+    suspend fun setRoleHolder(role: RoleTarget, packageName: String): OpResult =
+        typedOp("cmd", "role", "add-role-holder", role.roleName, packageName)
+
     /** Build a validated argv, run it, and fold the [ShellResult] into a typed [OpResult]. */
     private suspend fun typedOp(vararg argv: String): OpResult {
         val command = ShellArgs.command(*argv)
@@ -132,6 +150,23 @@ interface AdbBridge {
     enum class NavigationMode(internal val overlayPackage: String) {
         GESTURAL("com.android.internal.systemui.navbar.gestural"),
         THREE_BUTTON("com.android.internal.systemui.navbar.threebutton"),
+    }
+
+    /**
+     * The default-app roles [setRoleHolder] may restore (#122). CLOSED SET, deliberately — the role
+     * name can never originate from the wire, so a hostile manifest cannot aim the verb at a role
+     * portage never meant to hand over. Adding an entry here is a privilege-surface change and gets
+     * a security-review lane.
+     *
+     * SMS is deliberately ABSENT. It already ships via [setSmsRoleHolder] with its own transient
+     * acquire/write/relinquish discipline and its own hard self-gate, and it is currently broken on
+     * GOS (#61) — folding it in here would entangle this verb with that bug and widen what one call
+     * can do.
+     */
+    enum class RoleTarget(internal val roleName: String) {
+        BROWSER("android.app.role.BROWSER"),
+        DIALER("android.app.role.DIALER"),
+        HOME("android.app.role.HOME"),
     }
 
     /** What the connected device verifiably allows — gates checklist items and wizard copy. */

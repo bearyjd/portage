@@ -202,6 +202,8 @@ private fun StateBody(
                 apkInstallPrompts = current.apkInstallPrompts,
                 restoredPermissions = current.restoredPermissions,
                 optInPermissions = current.optInPermissions,
+                roleCandidates = current.roleCandidates,
+                restoredRoles = current.restoredRoles,
                 failedItems = current.failedItems,
                 onInstall = { action -> launchInstall(context, action) },
                 onInstallApk = { prompt ->
@@ -210,6 +212,9 @@ private fun StateBody(
                 onGrantOptIn = { packageName, permissions ->
                     viewModel.grantOptIn(packageName, permissions)
                 },
+                // The ONLY path that changes a default app. The ViewModel re-checks the (role,
+                // package) pair against the live offered set before it reaches the bridge.
+                onRestoreRole = { role, packageName -> viewModel.restoreRole(role, packageName) },
                 onOpenBluetoothSettings = { launchBluetoothSettings(context) },
                 onOpenRelayApp = { prompt -> launchRelayApp(context, prompt) },
                 backupActionLabel = if (seedvaultIntent(context) != null) {

@@ -43,6 +43,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ventouxlabs.portage.providers.bluetooth.RePairEntry
+import com.ventouxlabs.portage.providers.roles.RestorableRole
+import com.ventouxlabs.portage.providers.roles.RoleRestoreCandidate
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.inventory.InstallStore
 import com.ventouxlabs.portage.providers.permission.PermissionAllowlist
@@ -204,10 +206,13 @@ fun DoneScreen(
     apkInstallPrompts: List<ApkInstallPrompt> = emptyList(),
     restoredPermissions: List<RestoredPermissions> = emptyList(),
     optInPermissions: List<OptInPermissions> = emptyList(),
+    roleCandidates: List<RoleRestoreCandidate> = emptyList(),
+    restoredRoles: List<RestorableRole> = emptyList(),
     failedItems: List<FailedItem> = emptyList(),
     onInstall: (InstallAction) -> Unit = {},
     onInstallApk: (ApkInstallPrompt) -> Unit = {},
     onGrantOptIn: (packageName: String, permissions: List<String>) -> Unit = { _, _ -> },
+    onRestoreRole: (RestorableRole, String) -> Unit = { _, _ -> },
     onOpenBluetoothSettings: () -> Unit = {},
     onOpenRelayApp: (RelayRestorePrompt) -> Unit = {},
     backupActionLabel: String = "Open backup settings",
@@ -308,6 +313,19 @@ fun DoneScreen(
                 item {
                     Spacer(Modifier.height(s.lg))
                     OptInPermissionsSection(optInPermissions = optInPermissions, onGrantOptIn = onGrantOptIn)
+                }
+            }
+            if (roleCandidates.isNotEmpty() || restoredRoles.isNotEmpty()) {
+                // DEFAULT APPS (#122). The shell path applies a role change with NO system confirm
+                // dialog, so this tap is the ONLY consent that exists. One tap per role, never a
+                // "restore all" — each default is a separate decision.
+                item {
+                    Spacer(Modifier.height(s.lg))
+                    DefaultRolesSection(
+                        candidates = roleCandidates,
+                        restored = restoredRoles,
+                        onRestoreRole = onRestoreRole,
+                    )
                 }
             }
             if (installActions.isNotEmpty()) {
@@ -969,4 +987,92 @@ internal fun statusReason(status: ItemStatus): String? = when (status) {
 internal fun isTerminal(status: ItemStatus): Boolean = when (status) {
     ItemStatus.OK, ItemStatus.HASH_MISMATCH, ItemStatus.WRITE_ERROR -> false
     ItemStatus.SKIPPED, ItemStatus.UNKNOWN_KIND, ItemStatus.OVERSIZE -> true
+}
+
+/** Human label for a carried default-app role. */
+private fun roleLabel(role: RestorableRole): String = when (role) {
+    RestorableRole.BROWSER -> "Browser"
+    RestorableRole.DIALER -> "Phone"
+    RestorableRole.HOME -> "Home screen"
+}
+
+/**
+ * The default-app restore surface (#122).
+ *
+ * Consent lives HERE and nowhere else. Restoring a role through the bridge shows **no system
+ * confirm dialog** — the platform will not ask on portage's behalf — so this tap is the only thing
+ * standing between "portage knows your old default" and "portage changed your default". Hence:
+ * one explicit tap per role, no "restore all", and nothing pre-selected.
+ *
+ * Only roles whose app is actually installed here are ever offered (filtered in the apply
+ * provider), so a tap cannot point a role at something missing. A role that fails to apply stays
+ * offered rather than moving to "set" — portage must not claim a default it did not set.
+ */
+@Composable
+private fun DefaultRolesSection(
+    candidates: List<RoleRestoreCandidate>,
+    restored: List<RestorableRole>,
+    onRestoreRole: (RestorableRole, String) -> Unit,
+) {
+    val s = LocalSpacing.current
+    Column {
+        Text(
+            text = "DEFAULT APPS · ${candidates.size + restored.size}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.height(s.sm))
+        HairlineDivider()
+        Spacer(Modifier.height(s.md))
+        Text(
+            text = "These were your defaults on the old phone. portage won't switch them over by " +
+                "itself — choose each one you want.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        candidates.forEach { candidate ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = s.md),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = roleLabel(candidate.role),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                    Text(
+                        text = candidate.packageName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                SwissTextAction(
+                    text = "SET",
+                    onClick = { onRestoreRole(candidate.role, candidate.packageName) },
+                )
+            }
+        }
+        restored.forEach { role ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = s.md),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = roleLabel(role),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "SET",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
 }

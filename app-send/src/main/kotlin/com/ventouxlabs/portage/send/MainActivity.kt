@@ -26,6 +26,9 @@ import com.ventouxlabs.portage.providers.ExportProvider
 import com.ventouxlabs.portage.providers.bluetooth.AndroidBluetoothStore
 import com.ventouxlabs.portage.providers.bluetooth.BluetoothStore
 import com.ventouxlabs.portage.providers.bluetooth.BtPairingsExportProvider
+import com.ventouxlabs.portage.providers.roles.DefaultRolesExportProvider
+import com.ventouxlabs.portage.providers.roles.DefaultRolesStore
+import com.ventouxlabs.portage.send.roles.AndroidDefaultRolesStore
 import com.ventouxlabs.portage.providers.calendar.AndroidCalendarStore
 import com.ventouxlabs.portage.providers.calendar.CalendarExportProvider
 import com.ventouxlabs.portage.providers.calendar.CalendarStore
@@ -167,6 +170,7 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
             wallpaperStore = AndroidWallpaperStore(context),
             soundStore = soundStore,
             bluetoothStore = AndroidBluetoothStore(context),
+            defaultRolesStore = AndroidDefaultRolesStore(context),
         )
         @Suppress("UNCHECKED_CAST")
         return SenderViewModel(
@@ -214,6 +218,7 @@ internal fun buildExportProviders(
     wallpaperStore: WallpaperStore,
     soundStore: SoundStore,
     bluetoothStore: BluetoothStore,
+    defaultRolesStore: DefaultRolesStore,
 ): List<ExportProvider> = listOf(
     ContactsExportProvider(contactsStore),
     CalendarExportProvider(calendarStore),
@@ -242,6 +247,11 @@ internal fun buildExportProviders(
     // (non-transferable) and the roster is never logged. available() is false when BT is off or
     // the permission was denied, so the item self-omits gracefully.
     BtPairingsExportProvider(bluetoothStore),
+    // The user's default browser / dialer / launcher CHOICE (#122) — package names only, never an
+    // app or its data. Read via ordinary intent resolution, so the sender needs NO privilege and
+    // links no privilege stack (the no-escalation assert is unaffected). available() is false when
+    // no unambiguous default is set, so the item self-omits.
+    DefaultRolesExportProvider(defaultRolesStore),
 )
 
 private const val STAGING_DIR = "portage-staging"

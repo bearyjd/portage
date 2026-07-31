@@ -12,6 +12,8 @@ package com.ventouxlabs.portage.recv
 import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.providers.bluetooth.RePairEntry
+import com.ventouxlabs.portage.providers.roles.RestorableRole
+import com.ventouxlabs.portage.providers.roles.RoleRestoreCandidate
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.relay.RelayRestorePrompt
 import com.ventouxlabs.portage.recv.checklist.ChecklistGroup
@@ -114,6 +116,14 @@ sealed interface ReceiverState {
          * silent install only; empty otherwise). Nothing here is granted until the user acts on it.
          */
         val optInPermissions: List<OptInPermissions> = emptyList(),
+        /**
+         * Default-app roles (#122) the sender had whose app is installed here, offered for an
+         * explicit per-role tap. Nothing is applied until the user acts — the shell path shows no
+         * system confirm dialog, so consent lives entirely here.
+         */
+        val roleCandidates: List<RoleRestoreCandidate> = emptyList(),
+        /** Roles the user confirmed and the platform accepted. */
+        val restoredRoles: List<RestorableRole> = emptyList(),
         /**
          * Non-OK items from the transfer, in receive order, with their display names attached.
          * Split by [isTerminal] for the Done-screen sections (U3a).

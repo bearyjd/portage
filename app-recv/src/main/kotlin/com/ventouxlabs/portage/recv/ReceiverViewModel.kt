@@ -21,6 +21,9 @@ import com.ventouxlabs.portage.providers.ApplyProviderRegistry
 import com.ventouxlabs.portage.providers.apk.ApkContainerValidation
 import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
 import com.ventouxlabs.portage.providers.bluetooth.RePairEntry
+import com.ventouxlabs.portage.providers.roles.RoleRestoreCandidate
+import com.ventouxlabs.portage.providers.roles.RestorableRole
+import com.ventouxlabs.portage.providers.roles.RoleRestorer
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.relay.AppBackupRelayApplyProvider
 import com.ventouxlabs.portage.providers.relay.RelayRestorePrompt
@@ -86,6 +89,12 @@ class ReceiverViewModel(
     // NoOp; production wires AdbRuntimePermissionGranter(adbBridge) — the same process-scoped bridge, which
     // is idle once the transfer is done.
     private val optInPermissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
+    // Default-app role restore (#122). Defaults to Unavailable so a caller that forgets to wire it
+    // degrades to "cannot restore", never to an unguarded restore.
+    private val roleRestorer: RoleRestorer = RoleRestorer.Unavailable,
+    // Flavor-level: play ships no bridge, so it must not OFFER a default it can never set. Defaults
+    // to false so an unwired caller shows nothing rather than a dead button.
+    private val canRestoreRoles: Boolean = false,
     // Keeps the process at foreground importance + the CPU awake for the item stream so a screen-off
     // can't reset the streaming socket mid-frame (#85). NoOp default (tests/previews); production
     // wires a foreground-service-backed implementation. Driven start-before-phase / stop-in-finally.
@@ -136,6 +145,18 @@ class ReceiverViewModel(
     val optInPermissions: StateFlow<List<OptInPermissions>> = _optInPermissions.asStateFlow()
 
     /**
+     * Default-app roles (#122) the sender had, whose target app is installed here. Surfaced on the
+     * Done screen for an explicit per-role tap; NOTHING is applied until the user acts. The shell
+     * path shows no system confirm dialog, so this list is offered, never auto-restored.
+     */
+    private val _roleCandidates = MutableStateFlow<List<RoleRestoreCandidate>>(emptyList())
+    val roleCandidates: StateFlow<List<RoleRestoreCandidate>> = _roleCandidates.asStateFlow()
+
+    /** Roles the user confirmed and the platform accepted — drives the in-place row update. */
+    private val _restoredRoles = MutableStateFlow<List<RestorableRole>>(emptyList())
+    val restoredRoles: StateFlow<List<RestorableRole>> = _restoredRoles.asStateFlow()
+
+    /**
      * Non-null ⇒ portage is still the default SMS app from an interrupted handoff (process death,
      * dismissed restore prompt). Drives an in-app one-tap restore — the persistent backstop to the
      * `finally` relinquish, which cannot survive a kill (DEVILS_ADVOCATE.md Q4 §3).
@@ -180,6 +201,17 @@ class ReceiverViewModel(
                     _optInPermissions.value =
                         (_optInPermissions.value + OptInPermissions(packageName, permissions))
                             .distinctBy { it.packageName }
+                },
+                // Default-app role candidates (#122). DATA ONLY — dedup by role so a hostile or
+                // duplicated snapshot cannot produce two rows for one role.
+                onRoleCandidates = { candidates ->
+                    // Drop them entirely on a build that cannot restore (play). Surfacing a "SET"
+                    // affordance that can never succeed would be a dead button, and silently
+                    // failing is precisely the dishonesty this feature exists to avoid.
+                    if (canRestoreRoles) {
+                        _roleCandidates.value =
+                            (_roleCandidates.value + candidates).distinctBy { it.role }
+                    }
                 },
             ),
         )
@@ -327,6 +359,8 @@ class ReceiverViewModel(
                     apkInstallPrompts = _apkInstallPrompts.value,
                     restoredPermissions = _restoredPermissions.value,
                     optInPermissions = _optInPermissions.value,
+                    roleCandidates = _roleCandidates.value,
+                    restoredRoles = _restoredRoles.value,
                     failedItems = failedItems,
                 )
                 channel?.close()
@@ -463,6 +497,42 @@ class ReceiverViewModel(
     }
 
     /**
+     * Restore ONE captured default-app role, on an explicit user tap (#122).
+     *
+     * This is the only code path that changes a role, and it is deliberately narrow:
+     *  - The (role, package) pair MUST already be an OFFERED candidate on the LIVE Done state. A
+     *    caller cannot restore a role the transfer never carried, or point a role at a package the
+     *    apply provider did not validate and confirm installed. Anything else is dropped silently.
+     *  - The bridge round-trip is held under the same [optInGrantMutex] as the opt-in grants, so
+     *    overlapping Done-screen taps never race on the single process-scoped bridge.
+     *  - Only [RoleRestorer.Outcome.RESTORED] updates the UI. REJECTED (the app does not qualify)
+     *    and UNAVAILABLE (no live bridge) leave the row offered rather than claiming success —
+     *    portage must not report a default it did not actually set.
+     *
+     * There is no "restore all" convenience here, on purpose: each role is a separate consent.
+     */
+    fun restoreRole(role: RestorableRole, packageName: String) {
+        val offered = (_state.value as? ReceiverState.Done)
+            ?.roleCandidates
+            ?.firstOrNull { it.role == role && it.packageName == packageName }
+            ?: return
+        viewModelScope.launch {
+            val outcome = optInGrantMutex.withLock { roleRestorer.restore(offered.role, offered.packageName) }
+            if (outcome != RoleRestorer.Outcome.RESTORED) return@launch
+            // Re-read the LIVE Done snapshot AFTER the suspend call: the user may have left the
+            // screen mid-restore, and a stale write would resurrect a dead state (same discipline
+            // as moveOptInToRestored).
+            val done = _state.value as? ReceiverState.Done ?: return@launch
+            _restoredRoles.value = (_restoredRoles.value + offered.role).distinct()
+            _roleCandidates.value = _roleCandidates.value.filterNot { it.role == offered.role }
+            _state.value = done.copy(
+                roleCandidates = _roleCandidates.value,
+                restoredRoles = _restoredRoles.value,
+            )
+        }
+    }
+
+    /**
      * Reflect a confirmed opt-in grant: drop [granted] from [packageName]'s opt-in entry (removing the
      * entry when emptied) and fold them into its restored entry, then re-emit the Done state so the row
      * updates in place. Computed from — and gated on — the LIVE Done snapshot (read AFTER the suspend
@@ -566,6 +636,8 @@ data class DoneSinks(
     val onApkInstallPrompt: (ApkInstallPrompt) -> Unit,
     val onPermissionsRestored: (packageName: String, permissions: List<String>) -> Unit,
     val onOptInPermissions: (packageName: String, permissions: List<String>) -> Unit,
+    /** Default-app roles the sender had, that are installed here and could be restored (#122). */
+    val onRoleCandidates: (List<RoleRestoreCandidate>) -> Unit,
 )
 
 /** Builds the compiled apply registry, wired to the receiver's Done-screen [DoneSinks]. A `fun interface`

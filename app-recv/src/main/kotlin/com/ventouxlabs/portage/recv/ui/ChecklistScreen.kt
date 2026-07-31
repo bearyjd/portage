@@ -386,6 +386,7 @@ private fun tierHint(kind: ItemKind): String {
         ItemKind.BLUETOOTH_DEVICES -> "Paired Bluetooth devices to re-pair"
         ItemKind.APP_BACKUP_RELAY -> "App backup to relay (Signal, Aegis)"
         ItemKind.USER_FILE -> "Selected files"
+        ItemKind.DEFAULT_ROLES -> "Default app choices"
     }
     return if (kind.tier == Tier.TIER1) "$base · advanced" else base
 }

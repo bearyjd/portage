@@ -74,6 +74,7 @@ class ApplyRegistrationCompletenessTest {
                     onApkInstallPrompt = {},
                     onPermissionsRestored = { _, _ -> },
                     onOptInPermissions = { _, _ -> },
+                    onRoleCandidates = {},
                 ),
                 onApkInstall = {},
                 onStoreFallback = { _, _ -> },

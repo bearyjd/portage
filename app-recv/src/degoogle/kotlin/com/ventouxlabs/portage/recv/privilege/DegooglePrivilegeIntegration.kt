@@ -23,6 +23,7 @@ import com.ventouxlabs.portage.recv.install.AdbApkInstaller
 import com.ventouxlabs.portage.recv.install.AdbRuntimePermissionGranter
 import com.ventouxlabs.portage.recv.install.androidTargetDeclaredPermissions
 import com.ventouxlabs.portage.recv.install.hasSilentInstall
+import com.ventouxlabs.portage.recv.roles.AdbRoleRestorer
 import com.ventouxlabs.portage.recv.ui.WizardScreen
 import com.ventouxlabs.portage.wizard.PrivilegeWizard
 
@@ -60,6 +61,10 @@ object DegooglePrivilegeIntegration : PrivilegeIntegration {
             // Phase 5d-2 user-driven opt-in dangerous-perm grant on the Done screen; same process-scoped
             // bridge, a distinct granter from the apply provider's auto-grant one.
             optInPermissionGranter = AdbRuntimePermissionGranter(bridge),
+            // Default-app role restore (#122) — same process-scoped bridge. Only invoked from an
+            // explicit per-role tap; the shell path shows no system confirm dialog.
+            roleRestorer = AdbRoleRestorer(bridge),
+            canRestoreRoles = true,
         )
     }
 

@@ -30,6 +30,7 @@ import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
 import com.ventouxlabs.portage.providers.inventory.AppRecord
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.bluetooth.BtPairingsApplyProvider
+import com.ventouxlabs.portage.providers.roles.DefaultRolesApplyProvider
 import com.ventouxlabs.portage.providers.calendar.AndroidCalendarStore
 import com.ventouxlabs.portage.providers.calendar.CalendarApplyProvider
 import com.ventouxlabs.portage.providers.calendar.CalendarStore
@@ -267,6 +268,8 @@ private class ReceiverViewModelFactory(
             // auto-grant granter (that one is DEFAULT_SAFE-belt-filtered and runs inside the silent
             // install). play: RuntimePermissionGranter.NoOp — the Done-screen opt-in grants nothing.
             optInPermissionGranter = wiring.optInPermissionGranter,
+            roleRestorer = wiring.roleRestorer,
+            canRestoreRoles = wiring.canRestoreRoles,
             // Keeps the process alive + CPU awake for the item stream via a short-lived foreground
             // service so a screen-off can't reset the streaming socket mid-frame (#85).
             transferKeepAlive = ForegroundServiceKeepAlive(context),
@@ -353,6 +356,16 @@ internal fun buildApplyProviders(
     // to Phase 2) and carries no link keys (non-transferable). No platform dependency, so it cannot
     // bond by construction.
     BtPairingsApplyProvider(sinks.onRepairEntries),
+    // Tier 1: the sender's default browser / dialer / launcher CHOICE (#122). Applies NOTHING —
+    // it validates, filters to apps actually installed here, and surfaces candidates for an
+    // explicit per-role tap. The shell path shows no system confirm dialog, so silently applying
+    // would be power without consent; the restore runs from the ViewModel on user action.
+    DefaultRolesApplyProvider(
+        isInstalled = { pkg ->
+            runCatching { inventorySource.installedPackageNames().contains(pkg) }.getOrDefault(false)
+        },
+        onCandidates = sinks.onRoleCandidates,
+    ),
     // Tier 0: COURIER for a user-exported, app-encrypted backup (Signal/Molly/Aegis; PRP-06).
     // portage relays the OPAQUE file the user picked — it NEVER decrypts, parses, or imports it,
     // and never holds the passphrase.
