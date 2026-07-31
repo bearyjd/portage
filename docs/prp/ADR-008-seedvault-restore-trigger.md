@@ -1,7 +1,10 @@
 # ADR-008 — Seedvault Restore Trigger: Scope & Consent
 
-**Status:** PROPOSED — awaiting the mandatory `security-reviewer` scope-discipline sign-off
-(repo cadence: privilege-boundary changes get an independent security lane before merge).
+**Status:** PROPOSED — `security-reviewer` scope-discipline lane COMPLETE (2026-07-31):
+**APPROVE-WITH-WARNINGS**, no CRITICAL, no BLOCK. The reviewer confirmed the §2 control-plane /
+data-plane split is load-bearing rather than rhetorical, and found no scope breach. Its three HIGH
+findings were gaps in this document's own text and are now closed in §1.2, §3.5, §3.10, §3.11,
+§4 and §4.1 — see §12 for the disposition. Awaiting owner acceptance.
 **Date:** 2026-07-31
 **Tracks:** #118 (this ADR) · blocks #119 (on-device spike) and #120 (implementation)
 **Parents:** #116 (story) → #114 (epic, northstar lever B)
@@ -24,13 +27,21 @@ Concretely, portage is permitted to:
 1. Probe whether the restore path is reachable, as a new
    `AdbBridge.PrivilegedCapability.BACKUP_RESTORE`, alongside the existing `SMS_ROLE` /
    `SILENT_INSTALL` probes.
-2. Invoke **one new typed operation** on `AdbBridge` — never raw `shell()` from any other module:
+2. **Enumerate** the available restore sets, as a typed operation:
+   ```
+   suspend fun listRestoreSets(): List<RestoreSet>   // backed by `bmgr list sets`
+   ```
+   Required because §4 makes the user choose a set by name, and portage cannot present a choice it
+   cannot read. Its output is **untrusted, cross-device metadata** — the spike observed another
+   phone's device label in this list — so it is treated as untrusted text per §6, bounded and
+   control-stripped, and drives the §4.1 selection UI. It is never used to auto-select a set.
+3. Invoke **one new typed operation** on `AdbBridge` — never raw `shell()` from any other module:
    ```
    suspend fun restoreAppData(token: String, packages: List<String>): OpResult
    ```
    backed by `bmgr restore <token> <pkg> [<pkg>…]`, routed through the existing
    `ShellArgs.command(...)` metacharacter rejection like every other typed op.
-3. Surface the outcome honestly per package, using the per-item failure-surfacing pattern already
+4. Surface the outcome honestly per package, using the per-item failure-surfacing pattern already
    shipped for the Done screen (U3a, PR #111).
 
 Everything not on that list is out of scope. §3 states the prohibitions as testable invariants.
@@ -84,9 +95,15 @@ portage MUST NOT:
 4. **Change the backup transport, enable/disable backup, or touch Seedvault's passphrase, keys, or
    storage location.** If Seedvault is not already the user's configured, active transport, portage
    reports that and stops. portage never configures Seedvault on the user's behalf.
-5. **Restore packages the user did not receive in this transfer.** The package list is derived from
-   the completed manifest of the current session, intersected with what actually installed. A
-   package name that did not come from the verified manifest can never reach the bridge.
+5. **Restore packages the user did not receive in this transfer.** The package list is the set of
+   packages that this session **carried AND installed** — i.e. intersected with *"installed **by**
+   this session"*, **not** with *"present on the device after the transfer"*. The distinction is
+   load-bearing and must not be resolved permissively at implementation time: under the looser
+   reading, a hostile-but-authenticated sender could name `com.whatsapp` in its manifest **without
+   shipping an APK**, and if the receiver already had it, that package would survive the
+   intersection and reach the bridge — letting the sender aim a destructive write (§3.10) at an app
+   it never carried. A package name that did not come from the verified manifest, or that this
+   session did not itself install, can never reach the bridge.
 6. **Perform a whole-device / whole-set restore.** The bare `bmgr restore <token>` form (restore
    *everything* in the set) is explicitly out of scope: its blast radius is not what the user
    consented to when they consented to moving *these* apps. Package-scoped only.
@@ -97,6 +114,24 @@ portage MUST NOT:
 8. **Hold shell uid open.** Acquire → invoke → `disconnect()` in a `finally`, matching the wizard's
    probe discipline and the SMS role's acquire/write/relinquish shape.
 9. **Claim success it cannot observe.** See §5.
+10. **Silently overwrite app data that already existed on the receiver.** This is the prohibition
+    §3.3 does *not* cover, and the one that matters most in practice. Banning the backup verb
+    removes the **exfiltration** shape — but restore is a privileged **write** into app-private
+    storage, and its characteristic harm is **destruction**: it replaces whatever is there,
+    irreversibly, with no snapshot and no rollback. The realistic case is ordinary, not exotic —
+    the receiver already has Signal or WhatsApp carrying messages newer than the backup (the user
+    set it up already, or #86 degraded the install to Tier-0 on an app that was already present),
+    and a restore clobbers current data with older data.
+
+    Therefore: a package that **pre-existed this session** on the receiver MUST NOT be restored on
+    the ordinary path. It is either excluded outright, or routed to a **distinct, separately
+    consented, explicitly warned** path that names the app and states that current data will be
+    replaced. #120 must pick one and record which. "Wait for the installs the user confirmed"
+    (§9) is about *ordering* and does not address this.
+11. **Send an unbounded package list to the bridge.** The list is capped at a stated maximum, in
+    keeping with the receiver limits the project already applies elsewhere (per-item size cap,
+    item-count cap, `u16` frame cap). An over-long list is rejected, not truncated — silently
+    dropping entries from a destructive operation is its own failure mode.
 
 ---
 
@@ -111,11 +146,40 @@ Requirements:
 - The step is offered **after** portage's own apply completes and after APKs install (app data can
   only restore into an installed app), as a distinct action on the Done screen — not a step the user
   is swept through.
-- The consent copy must name, in plain language: that **Seedvault** performs the restore, that
-  **portage does not see the data**, and **which apps** are in scope. A count is not sufficient; the
-  list is available.
+- The consent copy must name, in plain language:
+  1. that **Seedvault** performs the restore, and that **portage does not see the data**;
+  2. **which apps** are in scope — a count is not sufficient; the list is shown;
+  3. **which backup set** the data comes from, named, including its origin device (see §4.1);
+  4. that the restore **replaces those apps' current data on this phone, and cannot be undone.**
+
+  Item 4 is the actual blast radius and was missing from the first draft of this ADR. Naming the
+  apps tells the user the *scope*; only this tells them the *consequence*. Consent to "restore my
+  app data" is not consent to "discard what is on this phone now" unless we say so.
+- **Per-package opt-out.** The app list is *editable*, not merely viewable: the user can restore a
+  subset. For a destructive, irreversible operation, all-or-nothing is the wrong granularity.
 - Declining is a first-class outcome that leaves everything else the transfer accomplished intact.
 - No silent retry. A failed restore is reported, not re-attempted behind the user's back.
+
+### 4.1 Backup-set selection (normative)
+
+Promoted here from the post-spike addendum because §4 is the section #120 implements against, and a
+reader of §4 alone would otherwise miss it.
+
+`bmgr list sets` returned **two** sets on the test device, one of them belonging to a **different
+phone**. That is portage's actual use case — old phone → new phone — so "which backup set" is a
+real user-facing choice with an irreversible consequence, not an implementation detail.
+
+- portage MUST NOT guess a token, and MUST NOT pre-select a set — **even when only one exists.**
+- portage MUST cross-check the chosen set's origin-device label against the transfer's
+  `Manifest.senderName` (`core-model/.../Manifest.kt:100`) and, on mismatch, refuse or require a
+  distinct explicit confirmation rather than proceeding.
+
+  **Honest scoping of what that buys:** `senderName` is sender-controlled, so this is a
+  *consistency* check, not an *authentication* one — a hostile sender could forge `senderName` to
+  match a set it wants restored. It does not harden the hostile case. It is aimed at the
+  **accidental** wrong-set case, which is the one actually observed on hardware, and where two
+  similarly-labelled Pixels plus one irreversible operation is a realistic way to lose data. The
+  hostile case is separately bounded: the sender does not choose the token, the user does.
 
 **Why consent is non-negotiable here:** the shell path shows **no system confirmation dialog**. The
 platform will not ask on portage's behalf, so the entire consent burden sits in portage's UI. This
@@ -137,6 +201,8 @@ user-visible outcomes:
 | No backup set / no backup for a package | Per-package "no backup found" |
 | Restore reported failure | Per-package failure, with the reason surfaced |
 | Restore reported success | **"Handed off to Seedvault"** — not "restored" |
+| Chosen set's origin device disagrees with `Manifest.senderName` | Refused, or a distinct explicit confirmation naming both (§4.1) — never a silent proceed |
+| Package pre-existed this session | Excluded, or routed to the separately-consented overwrite path (§3.10) — never folded into the ordinary list |
 
 That last row is the important one. portage cannot verify the data actually landed without reading
 app-private data, which §3.1 forbids. So the honest claim is that the restore was *handed off and
@@ -197,6 +263,12 @@ Nothing ships on this ADR alone.
    `Store`-style interface per the repo's provider-authoring convention.
 5. **E2E runbook gains a section** (feeds #128 / §F sign-off).
 6. **CI:** the existing play-recv no-bridge assert must stay green, unmodified.
+7. **A new CI grep for §3.1.** §3.1 ("no file handle to a backup blob is ever opened by portage
+   code") is this ADR's strongest prohibition and, as written, its least enforceable — §3.2 is
+   backed by the compiled `ItemKind` enum and §3.7 by the play no-bridge assert, but §3.1 is
+   review-only. The repo already has the pattern: the raw-`.shell()` grep. Add the analogous
+   gate — no `bmgr` / backup-path / transport identifiers outside `:adb-bridge` — so the
+   load-bearing rule is durable rather than cultural.
 
 ---
 
@@ -285,3 +357,35 @@ unparseable form as failure rather than success. Do not infer success from the a
 **Still unexercised** (see spike §1.5): a third-party app's data, restoring into an app installed in
 the same session, and the honest-failure paths of §5 (Seedvault absent / not the active transport /
 no set) — the test device had a working Seedvault, so those branches were never taken.
+
+---
+
+## 12. Security review disposition (2026-07-31)
+
+Independent `security-reviewer` scope-discipline lane, run separately from authorship per the repo
+cadence. Verdict **APPROVE-WITH-WARNINGS** — no CRITICAL, no BLOCK, **no scope breach**. The
+reviewer explicitly checked for a BLOCK-worthy misreading of the scope rule and did not find one:
+portage carries nothing, adds no `ItemKind`, adds no permission, adds no protocol change, and stays
+inside the existing bridge with typed ops. "Courier, not absorber" holds.
+
+Findings and disposition — all six conditions are **closed in this document**, not deferred:
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| HIGH-1 | HIGH | §3/§6 treated exfiltration as the only harm shape. Restore's characteristic harm is **destruction** — an irreversible overwrite of app-private data — and nothing forbade it. | **Closed:** new §3.10. |
+| HIGH-2 | HIGH | §3.5's "intersected with what actually installed" didn't say *whose* install. Under the loose reading a hostile sender could name a package it never shipped and aim a destructive write at it. | **Closed:** §3.5 now says "installed **by** this session", with the attack spelled out so it cannot be resolved permissively. |
+| HIGH-3 | HIGH | §11's token mitigation ("consent must name the set") was presentation-only against a data-loss risk, resting on metadata §11 itself calls untrusted. | **Closed:** §4.1 adds a technical cross-check against `Manifest.senderName` plus never-preselect, and states honestly that this covers the *accidental* case, not a forged `senderName`. |
+| MEDIUM-1 | MED | §3.1 is the strongest prohibition and the least enforceable (review-only). | **Closed:** §8.7 adds a CI grep, modelled on the existing raw-`.shell()` gate. |
+| MEDIUM-2/3/4 | MED | §4 required naming Seedvault, the apps, and that portage can't see data — but **not** that the restore overwrites current data irreversibly. Set-naming was stranded in the addendum. Granularity was all-or-nothing. | **Closed:** §4 items 3–4, §4.1 promoted to normative, per-package opt-out added. |
+| MEDIUM-5 | MED | §11 created a requirement §1 never authorized: naming the set requires **enumerating** sets, a fourth operation, unlisted and unbounded. | **Closed:** §1.2 adds `listRestoreSets()` as a reviewed, bounded typed op. |
+| LOW-1/2 | LOW | No cap on package-list length; no §5 row for wrong-set restore; irreversibility unstated. | **Closed:** §3.11 caps the list (reject, don't truncate); §5 gains two rows. |
+
+Two things the reviewer recorded as **correctly** foreclosed, worth keeping that way: the ADR never
+permits the whole-set restore form (§3.6 — and §11 confirms the platform rejects the bare form
+anyway, so this is belt-and-platform-suspenders), and it never permits portage to configure
+Seedvault on the user's behalf (§3.4), which would have been the classic overreach.
+
+One supporting fact from the review, useful to #120: the ambient capability does not leak a data
+path. Shell uid (2000) cannot read app-private data directories under SELinux, so holding the
+bridge does not hand portage access it is merely declining to use — the §2 split is enforced by the
+platform, not only by portage's own restraint.
