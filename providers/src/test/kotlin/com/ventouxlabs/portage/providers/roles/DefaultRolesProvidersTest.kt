@@ -32,7 +32,7 @@ class DefaultRolesProvidersTest {
     ): Pair<ItemStatus, List<RoleRestoreCandidate>> {
         var seen: List<RoleRestoreCandidate> = emptyList()
         val provider = DefaultRolesApplyProvider(
-            isInstalled = { it in installed },
+            installedPackages = { installed },
             onCandidates = { seen = it },
         )
         val outcome = kotlinx.coroutines.runBlocking { provider.apply(payload(json)) }
@@ -214,7 +214,7 @@ class DefaultRolesProvidersTest {
     fun `an isInstalled predicate that throws drops the entry instead of propagating`() {
         var seen: List<RoleRestoreCandidate>? = null
         val provider = DefaultRolesApplyProvider(
-            isInstalled = { error("package manager unavailable") },
+            installedPackages = { error("package manager unavailable") },
             onCandidates = { seen = it },
         )
         val outcome = kotlinx.coroutines.runBlocking {

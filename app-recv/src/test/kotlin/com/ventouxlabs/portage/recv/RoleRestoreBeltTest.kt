@@ -125,7 +125,7 @@ class RoleRestoreBeltTest {
                 ApplyProviderRegistry(
                     listOf(
                         DefaultRolesApplyProvider(
-                            isInstalled = { true },
+                            installedPackages = { setOf("com.example.browser", "com.example.dialer", "com.example.home") },
                             onCandidates = sinks.onRoleCandidates,
                         ),
                     ),

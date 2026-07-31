@@ -182,7 +182,17 @@ data class RoleRestoreCandidate(val role: RestorableRole, val packageName: Strin
  *    `isInstalled` is the qualification gate the spike flagged as untested platform behaviour
  */
 class DefaultRolesApplyProvider(
-    private val isInstalled: (String) -> Boolean,
+    /**
+     * The packages present RIGHT NOW, read once per [apply] call.
+     *
+     * Evaluated at APPLY time, deliberately — NOT captured at construction. The apply registry is
+     * built before the transfer starts, while `ApkApplyProvider` installs apps DURING it, so a
+     * construction-time snapshot would miss every app this same transfer just installed. That is
+     * precisely the headline case ("restore my defaults after reinstalling my apps"), so the
+     * lookup must stay live. Taking it once per apply rather than once per role keeps it O(1)
+     * enumerations instead of O(roles).
+     */
+    private val installedPackages: () -> Set<String>,
     private val onCandidates: (List<RoleRestoreCandidate>) -> Unit,
 ) : ApplyProvider {
 
@@ -192,13 +202,17 @@ class DefaultRolesApplyProvider(
         val snapshot = DefaultRolesCodec.decode(source)
             ?: return ApplyOutcome(ItemStatus.WRITE_ERROR, "unreadable default-roles snapshot")
 
+        // Bound the UNTRUSTED input before doing per-entry work. Previously this .take() sat at the
+        // END of the chain, which bounded the OUTPUT while still walking every entry of a hostile
+        // snapshot — a work bound that did not bound work.
         val wellFormed = snapshot.roles
+            .take(MAX_ROLES_INPUT)
             .filter { PACKAGE_NAME.matches(it.packageName) }
             .distinctBy { it.role }
-            .take(MAX_ROLES)
 
+        val installed = runCatching { installedPackages() }.getOrDefault(emptySet())
         val candidates = wellFormed
-            .filter { runCatching { isInstalled(it.packageName) }.getOrDefault(false) }
+            .filter { it.packageName in installed }
             .map { RoleRestoreCandidate(it.role, it.packageName) }
 
         onCandidates(candidates)
@@ -215,8 +229,11 @@ class DefaultRolesApplyProvider(
     }
 
     private companion object {
-        /** Three roles exist; the cap bounds a hostile snapshot rather than trusting the enum count. */
-        const val MAX_ROLES = 8
+        /**
+         * Input bound, applied BEFORE any per-entry work. Not a limit on how many roles portage
+         * supports (the enum is that) — a ceiling on how much attacker-controlled input is walked.
+         */
+        const val MAX_ROLES_INPUT = 8
     }
 }
 

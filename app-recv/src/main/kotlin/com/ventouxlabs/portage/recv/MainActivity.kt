@@ -361,8 +361,11 @@ internal fun buildApplyProviders(
     // explicit per-role tap. The shell path shows no system confirm dialog, so silently applying
     // would be power without consent; the restore runs from the ViewModel on user action.
     DefaultRolesApplyProvider(
-        isInstalled = { pkg ->
-            runCatching { inventorySource.installedPackageNames().contains(pkg) }.getOrDefault(false)
+        // Read at APPLY time, not construction: this registry is built before the transfer
+        // starts, while ApkApplyProvider installs apps DURING it. A construction-time snapshot
+        // would miss every app this same transfer just installed — the headline case.
+        installedPackages = {
+            runCatching { inventorySource.installedPackageNames() }.getOrDefault(emptySet())
         },
         onCandidates = sinks.onRoleCandidates,
     ),
