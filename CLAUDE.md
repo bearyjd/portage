@@ -37,6 +37,19 @@ APK) — both asserts run across the debug AND release variants. The tag-trigger
 re-asserts the same boundary on the signed APKs before publishing.
 See `.github/workflows/build.yml`.
 
+**The boundary asserts have a self-test: `scripts/test-boundary-gate.sh`** (runs FIRST in
+`android-build`, before the assemble, in seconds). It exists because those asserts are the ONLY
+enforcement of the privilege boundary and shipped two independent **fail-open** bugs (PR #135) that
+CI could not see — a gate that wrongly passes is indistinguishable from one that rightly passes.
+The general shape to watch for: *a FORBID check that concludes "clean" from a non-match fails OPEN
+whenever an ERROR status is indistinguishable from "not found"* (`grep` returns 0 = found,
+1 = not found, **>=2 = error**; a killed process gives 128+n). The self-test **extracts the real
+step bodies** from `build.yml` rather than re-implementing them, so it cannot drift — which means
+**renaming those steps breaks extraction and fails the build** (deliberately; fix the name in the
+script). It asserts behaviour, not internals: it verifies each gate fails CLOSED when its reader
+dies. If you change it, mutation-test it — splice the pre-#135 step body over the current one and
+confirm it goes red; the header records how.
+
 ## Established facts (don't re-litigate; verified on real hardware / in CI)
 
 - **Privilege model = grant architecture** (ADR-001, verified on Pixel 9 Pro XL / GOS
