@@ -1,8 +1,10 @@
-# Spike results — 2026-07-31 (read-only device probe, GOS **Android 17**)
+# Spike results — 2026-07-31 (GOS **Android 17**, Pixel 10 Pro Fold)
 
-**Status:** PARTIAL. The *reachability* half of #119 and #121 is answered on metal. The
-*behavioural* half of both is NOT — it requires device-state changes that were deliberately not
-made (see §5).
+**#119 (Seedvault restore trigger): GO — verified end-to-end on hardware.**
+**#121 (default-app role restore): GO on the flip; reboot-survival still OPEN.**
+
+Answers the two spikes the northstar gap audit ranked highest (`docs/prp/features/northstar-gap-audit.md`
+§2B/§4). Governed by ADR-008 for #119.
 
 ## Device under test
 
@@ -12,22 +14,20 @@ made (see §5).
 | OS | **GrapheneOS, Android 17 (SDK 37)** — `app.grapheneos.*` packages present |
 | Build | `google/rango/rango:17/CP2A.260705.006/2026071501:user/release-keys` |
 | Security patch | 2026-07-05 |
-| Seedvault | `com.stevesoltys.seedvault` **16-5.7**, installed |
+| Seedvault | `com.stevesoltys.seedvault` **16-5.7**, installed, IS the selected transport |
 | portage | `com.ventouxlabs.portage.recv` installed; `app-send` NOT installed |
-| Wireless debugging | `adb_wifi_enabled = 0` (off) |
 
-> ⚠️ **This is Android 17 / SDK 37, not Android 16 / SDK 36.** Every "Established fact" in
-> `CLAUDE.md` and every ADR-003 §7 gate is written against **GOS A16**. Results below are valid for
-> **A17** and must not be silently filed as A16 evidence. See §4 — this also undercuts the stated
-> rationale for the current `compileSdk = 36` pin.
+> ⚠️ **Android 17 / SDK 37, not Android 16 / SDK 36.** Every "Established fact" in `CLAUDE.md` and
+> every ADR-003 §7 gate is written against GOS **A16**. These results are **A17** evidence and must
+> not be filed as A16. See #140.
 
 ---
 
-## 1. #119 — Seedvault restore trigger: is `bmgr restore` reachable via the bridge?
+## 1. #119 — Seedvault restore trigger: **GO**
 
-**Reachability: GO.** GrapheneOS has **not** stripped `BACKUP` from its Shell package on A17.
+### 1.1 Permission reachability
 
-`dumpsys package com.android.shell`:
+`dumpsys package com.android.shell` — GrapheneOS has **not** stripped `BACKUP`:
 
 ```
 android.permission.BACKUP: granted=true
@@ -35,90 +35,137 @@ android.permission.MANAGE_ROLE_HOLDERS: granted=true
 android.permission.BACKUP_HEALTH_CONNECT_DATA_AND_SETTINGS: granted=true
 ```
 
-This was the single assumption the gap audit flagged as unverified and as the thing that would
-"kill S1.1 cheaply" if false. It is true. `com.android.shell` is the bridge's own identity (uid
-2000), so the capability is reachable from `AdbBridge` by construction.
+This was the single assumption the audit flagged as the cheap kill-shot for S1.1 (#116). It holds.
+`com.android.shell` (uid 2000) is the bridge's own identity, so the capability is reachable from
+`AdbBridge` by construction.
 
-`bmgr list transports` — Seedvault **is** the selected transport (`*`):
+### 1.2 Backup accepted by Seedvault's transport
+
+Starting state: Backup Manager **disabled**, `Ancestral: 0`, `Current: 0`, `Last backup pass: 0`.
+After `bmgr enable true`, backing up portage's own package (chosen as the safest possible target —
+our app, minimal data):
 
 ```
-    com.android.localtransport/.LocalTransport
-  * com.stevesoltys.seedvault.transport.ConfigurableBackupTransport
+$ bmgr backupnow com.ventouxlabs.portage.recv
+Running incremental backup for 1 requested packages.
+Package @pm@ with result: Success
+Package com.ventouxlabs.portage.recv with progress: 2048/1536
+…
+Package com.ventouxlabs.portage.recv with result: Success
+Backup finished with result: Success
 ```
 
-**NOT established (blocks the rest of #119):**
+### 1.3 The restore — the actual question
 
-- `bmgr enabled` reports **"Backup Manager currently disabled"**, while
-  `settings get secure backup_enabled` reports `1`. These disagree; the authoritative signal for
-  whether a restore can run is the former. Either way, backup is not currently operating.
-- **No completed backup set exists to restore from**, so `bmgr restore` was not invoked at all.
-- Therefore: whether `bmgr restore <token> <pkg>` actually reaches Seedvault's transport, whether it
-  silently no-ops, and its output grammar (which ADR-008 §9 flags as spike-derived and untrusted)
-  all remain **OPEN**.
+```
+$ bmgr list sets
+  19e136a376b : Google Pixel 9 Pro Fold - Owner
+  19fb65efd0c : Google Pixel 10 Pro Fold - Owner
 
-**To finish #119** the owner must enable Backup Manager and complete a real Seedvault backup of
-real data on this device. That is a decision about the owner's own data and was not taken
-unilaterally.
+$ bmgr restore 19fb65efd0c com.ventouxlabs.portage.recv
+Scheduling restore: Google Pixel 10 Pro Fold - Owner
+restoreStarting: 1 packages
+onUpdate: 1 = com.ventouxlabs.portage.recv
+restoreFinished: 0
+done
+```
 
-## 2. #121 — Default-app role restore: is `cmd role` reachable?
+**It reaches Seedvault's transport, actually runs, and reports a per-package verdict. It does not
+silently no-op.** `restoreFinished: 0` is `TRANSPORT_OK`.
 
-**Reachability: GO.** `android.permission.MANAGE_ROLE_HOLDERS: granted=true` on the Shell package
-(same dump as above).
+### 1.4 Findings that feed ADR-008 directly
 
-Current holders read cleanly via `cmd role get-role-holders` (read-only):
+1. **The `<token> <package>` form is mandatory.** The bare package form is rejected outright:
+   > `The syntax 'restore <package>' is no longer supported, please use 'restore <token> <package>'.`
 
-| Role | Holder |
-|---|---|
-| BROWSER | `com.android.chrome` |
-| DIALER | `com.android.dialer` |
-| SMS | `com.android.messaging` |
-| HOME | `com.android.launcher3` |
+   This *validates* ADR-008 §1's choice of the package-scoped two-argument verb, and independently
+   forecloses ADR-008 §3.6's prohibited whole-set form being reached by accident.
 
-**NOT established:** whether `cmd role add-role-holder` actually *flips* a default and whether the
-change **survives reboot** — the two questions #121 exists to answer. Both require writing to the
-device's role state (changing the user's real default browser) and rebooting it. Not done without
-an explicit go-ahead.
+2. **Output grammar is now known** — ADR-008 §9 listed this as an open, spike-derived item. The
+   parseable shape is:
+   ```
+   restoreStarting: <n> packages
+   onUpdate: <index> = <package>
+   restoreFinished: <code>      # 0 = TRANSPORT_OK
+   done
+   ```
+   Per ADR-008 §6 this remains **untrusted text**: bound it, strip control characters, and treat any
+   unparseable form as failure rather than success.
+
+3. **Cross-device restore sets are visible.** A set from a *Pixel 9 Pro Fold* is listed alongside
+   this device's own. That is precisely portage's use case (old phone → new phone), and it means
+   token selection is a real UX decision, not an implementation detail — the user may have several
+   sets and portage must not guess. ADR-008 does not currently say how the token is chosen; **this
+   is a gap the implementation issue (#120) must close.**
+
+4. **Restore ran with Backup Manager toggled on for the test.** Whether a restore can be triggered
+   while the framework's backup scheduling is disabled was not isolated. #120 should not assume it
+   can.
+
+### 1.5 Still open for #119/#120
+
+- Restoring a **third-party** app's data (only portage's own package was exercised).
+- Restoring into an app installed **in the same session** (the sequencing question ADR-008 §9 raises,
+  entangled with #86).
+- Behaviour when Seedvault is installed but *not* the selected transport, and when no set exists —
+  the honest-failure paths ADR-008 §5 requires. Not exercised because this device had both.
+
+## 2. #121 — Default-app role restore: **GO on the flip**
+
+`android.permission.MANAGE_ROLE_HOLDERS: granted=true` (same dump as §1.1).
+
+Reversible flip, executed and reverted:
+
+```
+$ cmd role get-role-holders android.app.role.BROWSER   -> com.android.chrome
+$ cmd role add-role-holder android.app.role.BROWSER app.vanadium.browser
+$ cmd role get-role-holders android.app.role.BROWSER   -> app.vanadium.browser
+$ cmd role add-role-holder android.app.role.BROWSER com.android.chrome
+$ cmd role get-role-holders android.app.role.BROWSER   -> com.android.chrome
+```
+
+**The flip works in both directions, exit 0, with NO user-confirm dialog.** That silence is exactly
+why the audit and #122 require this to be opt-in in portage's own UI — the platform will not ask on
+portage's behalf.
+
+Read-only holders at time of test: BROWSER `com.android.chrome` · DIALER `com.android.dialer` ·
+SMS `com.android.messaging` · HOME `com.android.launcher3`.
+
+**Still OPEN:** **reboot survival** — requires rebooting the owner's daily-driver device, not done
+unprompted. Also untested: role *qualification* failure (a target app that does not declare the
+role's components) and roles beyond BROWSER.
 
 ## 3. What this means for the epic
 
-- The cheap kill-shot for **S1.1** (#116) did not land — the permission is there. The story stays
-  alive, and ADR-008's boundary applies.
-- **S1.2** (#117) likewise clears its permission precondition.
-- Neither story is *proven*; both now hinge on behaviour, not reachability.
+- **S1.1 (#116) is de-risked.** The mechanism is proven; what remains is scope, consent, and honest
+  failure — which is what ADR-008 (#118) already specifies. #120 can proceed once ADR-008 is signed
+  off, with the token-selection gap in §1.4.3 added to its scope.
+- **S1.2 (#117) is de-risked** except for persistence.
+- The bare-package rejection and the known output grammar both *tighten* ADR-008 rather than
+  contradict it.
 
-## 4. Finding: the A16 pin no longer matches the hardware
+## 4. Device state — changed and restored
 
-Not a spike question, but discovered by the same probe and material to open work:
+| Change | Status |
+|---|---|
+| Backup Manager enabled for the test | **restored to disabled** (original state) |
+| BROWSER role flipped to Vanadium | **restored to `com.android.chrome`** |
+| `adb_wifi_enabled` 0 → 1 (Wireless Debugging) | **left ON** — approved, and it is the bridge precondition. Turn off when done. |
+| A Seedvault backup of `com.ventouxlabs.portage.recv` in set `19fb65efd0c` | **left in place** (harmless; portage's own data) |
 
-- `gradle/libs.versions.toml` pins `compileSdk = 36` / `targetSdk = 36`, documented as "Android 16 =
-  verified target device (ADR-001)".
-- PR **#113** holds `lifecycle` at 2.10.0 specifically because 2.11.0's AAR metadata requires
-  compileSdk 37+, justified as "this repo pins compileSdk=36 to the verified GOS target device".
-- **The verified target device now runs SDK 37.** The stated reason for the pin no longer describes
-  reality.
+Not run: `pm grant` / bridge bootstrap (needs an interactive pairing code from the Wireless
+Debugging UI), `scripts/device-contract.sh` (destructive-but-self-cleaning), any reboot.
 
-This does not make the pin wrong — minSdk/targetSdk policy is a deliberate call, and bumping
-`targetSdk` has behavioural consequences that need their own review. But the *justification*
-recorded in #113 and in `CLAUDE.md` is now stale, and the whole ADR-003 §7 gate set is written
-against an OS version the test hardware has moved past. Worth an explicit decision rather than
-drift.
-
-## 5. Discipline note — what was deliberately NOT done
-
-All probes above are read-only. The following were available and were **not** run, because each
-changes the owner's device state or data:
-
-- `cmd role add-role-holder …` (would change the real default browser)
-- enabling Backup Manager / running a Seedvault backup (touches real user data)
-- `pm grant` / any bridge bootstrap (Wireless Debugging is off; enabling it is a user action)
-- `scripts/device-contract.sh` (destructive-but-self-cleaning; takes the SMS role)
-
-## 6. Reproduce
+## 5. Reproduce
 
 ```sh
 adb shell dumpsys package com.android.shell | grep -E 'BACKUP|MANAGE_ROLE_HOLDERS'
-adb shell bmgr enabled
-adb shell bmgr list transports
+adb shell bmgr enable true
+adb shell bmgr backupnow com.ventouxlabs.portage.recv
+adb shell bmgr list sets
+adb shell bmgr restore <token> com.ventouxlabs.portage.recv
+adb shell bmgr enable false           # restore original state
+
 adb shell cmd role get-role-holders android.app.role.BROWSER
-adb shell settings get global adb_wifi_enabled
+adb shell cmd role add-role-holder android.app.role.BROWSER <pkg>
 ```
