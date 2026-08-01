@@ -173,6 +173,21 @@ class DefaultRolesProvidersTest {
     }
 
     @Test
+    fun `duplicate padding cannot squeeze out a legitimate role`() {
+        // The input bound counts DISTINCT roles, not raw entries. With the bound applied to raw
+        // entries first, MAX_ROLES_INPUT browser rows consumed the entire budget and the trailing
+        // dialer was dropped — a hostile sender could suppress any role by padding ahead of it, and
+        // the item still reported OK so nothing looked wrong.
+        val padding = (1..DefaultRolesApplyProvider.MAX_ROLES_INPUT)
+            .joinToString(",") { """{"role":"browser","packageName":"com.example.browser"}""" }
+        val (status, candidates) = applied("""{"roles":[$padding,{"role":"dialer","packageName":"com.example.dialer"}]}""")
+
+        assertThat(candidates.map { it.role })
+            .containsExactly(RestorableRole.BROWSER, RestorableRole.DIALER)
+        assertThat(status).isEqualTo(ItemStatus.OK)
+    }
+
+    @Test
     fun `a duplicated role yields one candidate, not two`() {
         val (_, candidates) = applied(
             """{"roles":[
@@ -227,12 +242,26 @@ class DefaultRolesProvidersTest {
     }
 
     @Test
-    fun `a payload over the byte ceiling is refused BEFORE it is parsed or held`() {
-        // The bound is on the ALLOCATION, not the decoded list: the per-item receive cap is 64 MiB,
-        // so a hostile sender can frame an item that large. An earlier version read the whole stream
-        // with readText() and bounded only the resulting list — by then the bytes were already on
-        // the heap. Padding a VALID document past the ceiling proves the reader gives up before the
-        // parser ever sees it (a malformed doc would fail for the wrong reason).
+    fun `an over-length payload is refused, NOT truncated to a parseable prefix`() {
+        // Two properties in one fixture, because only this shape can distinguish them.
+        //
+        // (1) The bound is on the ALLOCATION, not the decoded list: the per-item receive cap is
+        //     64 MiB, so a hostile sender can frame an item that large. An earlier version read the
+        //     whole stream with readText() and bounded only the resulting list — by then the bytes
+        //     were already on the heap.
+        //
+        // (2) Over-length input is REJECTED rather than truncated. That matters more than it looks:
+        //     a prefix of a valid snapshot can itself be valid JSON, so a truncating reader would
+        //     silently apply an attacker-chosen SUBSET of a payload portage refused to read whole.
+        //
+        // THE PADDING MUST BE WHITESPACE. Cut at the ceiling, this fixture leaves
+        // `{"roles":[{browser}]}` + spaces — still a complete, parseable document that yields a
+        // usable candidate. So a truncating reader SURFACES com.example.browser and reports OK, and
+        // this test fails. Padding with non-whitespace (say "x") makes the truncated prefix
+        // unparseable, the decode fails for the wrong reason, and the test passes against a
+        // truncating implementation — green while proving nothing. That exact mistake was caught
+        // here by mutation: `return String(buffer, 0, minOf(filled, maxBytes), …)` must turn this
+        // test red, and does.
         val padding = " ".repeat(DefaultRolesCodec.MAX_PAYLOAD_BYTES)
         val oversized =
             """{"roles":[{"role":"browser","packageName":"com.example.browser"}]}$padding"""
@@ -242,27 +271,12 @@ class DefaultRolesProvidersTest {
         assertThat(status).isEqualTo(ItemStatus.WRITE_ERROR)
         assertThat(candidates).isEmpty()
 
-        // ...and the same document UNPADDED still applies, so the assertion above is about the
-        // length and not about trailing whitespace tripping the parser.
+        // ...and the same document UNPADDED still applies, so the assertions above are about the
+        // LENGTH and not about trailing whitespace tripping the parser.
         val (okStatus, okCandidates) =
             applied("""{"roles":[{"role":"browser","packageName":"com.example.browser"}]}""")
         assertThat(okStatus).isEqualTo(ItemStatus.OK)
         assertThat(okCandidates).hasSize(1)
-    }
-
-    @Test
-    fun `an over-length payload is refused rather than TRUNCATED to a valid prefix`() {
-        // Truncating would be worse than rejecting: a prefix of a valid snapshot can itself be
-        // valid JSON, which would silently apply an attacker-chosen SUBSET of a payload portage
-        // refused to read in full. Here the first entry alone forms a complete document once the
-        // rest is cut, so a truncating reader would surface `com.example.browser` and drop the
-        // second entry. Nothing may be surfaced at all.
-        val head = """{"roles":[{"role":"browser","packageName":"com.example.browser"}]}"""
-        val oversized = head + "x".repeat(DefaultRolesCodec.MAX_PAYLOAD_BYTES)
-
-        val (status, candidates) = applied(oversized)
-        assertThat(status).isEqualTo(ItemStatus.WRITE_ERROR)
-        assertThat(candidates).isEmpty()
     }
 
     @Test

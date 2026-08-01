@@ -214,7 +214,7 @@ class RoleRestoreBeltTest {
             vm.reset()
             advanceUntilIdle()
 
-            assertThat(vm.roleCandidates.value).isEmpty()
+            assertThat(vm.carriedRoles.value).isEmpty()
             assertThat(vm.restoredRoles.value).isEmpty()
 
             // Attempting the previously-offered pair after the reset must reach nothing.
@@ -258,7 +258,7 @@ class RoleRestoreBeltTest {
 
             // Still offered, and NOT claimed as restored — portage must never report a default it
             // did not set.
-            assertThat(vm.roleCandidates.value).hasSize(1)
+            assertThat(vm.carriedRoles.value).hasSize(1)
             assertThat(vm.restoredRoles.value).isEmpty()
         }
 
@@ -339,7 +339,7 @@ class RoleRestoreBeltTest {
             advanceUntilIdle()
 
             assertThat(vm.restoredRoles.value).isEmpty()
-            assertThat(vm.roleCandidates.value).hasSize(1)
+            assertThat(vm.carriedRoles.value).hasSize(1)
             assertThat(vm.state.value).isInstanceOf(ReceiverState.Done::class.java)
         }
 
@@ -363,11 +363,11 @@ class RoleRestoreBeltTest {
             // The item applied, THEN the transfer died — so the roles are carried but there is no
             // Done screen and the user never passes through reset().
             assertThat(vm.state.value).isInstanceOf(ReceiverState.Failed::class.java)
-            assertThat(vm.roleCandidates.value).hasSize(1)
+            assertThat(vm.carriedRoles.value).hasSize(1)
 
             vm.startScanning()
 
-            assertThat(vm.roleCandidates.value).isEmpty()
+            assertThat(vm.carriedRoles.value).isEmpty()
             assertThat(vm.restoredRoles.value).isEmpty()
         }
 
@@ -386,7 +386,7 @@ class RoleRestoreBeltTest {
             )
             vm.runTransfer(ROLES_ITEM_ID) { advanceUntilIdle() }
 
-            assertThat(vm.roleCandidates.value).isEmpty()
+            assertThat(vm.carriedRoles.value).isEmpty()
             assertThat((vm.state.value as ReceiverState.Done).roleCandidates).isEmpty()
 
             // ...and the belt still holds if something calls restoreRole anyway.

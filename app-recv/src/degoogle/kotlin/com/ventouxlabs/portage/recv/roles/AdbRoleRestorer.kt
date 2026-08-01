@@ -60,7 +60,13 @@ class AdbRoleRestorer(
                     }
                 }
                 when (bridge.setRoleHolder(target, packageName)) {
-                    is AdbBridge.OpResult.Ok -> RoleRestorer.Outcome.RESTORED
+                    // Exit 0 is NOT proof the role moved. `add-role-holder` was only ever exercised
+                    // on the success path during the A17 spike — role-qualification failure is
+                    // recorded there as UNTESTED — so a platform that exits 0 while silently
+                    // refusing a non-qualifying package would have portage display "DEFAULT" for a
+                    // role it never set, and drop the row so the user cannot even retry. Read the
+                    // role back and believe the readback, not the exit code.
+                    is AdbBridge.OpResult.Ok -> verify(target, packageName)
                     // The bridge answered but the platform refused — most often role qualification
                     // (the target app does not declare the role's components). Distinct from
                     // UNAVAILABLE so the UI can say "that app can't be the default" rather than
@@ -80,6 +86,32 @@ class AdbRoleRestorer(
         } finally {
             // Never hold shell uid open (ADR-003). The bridge reconnects with the persisted key.
             bridge.disconnect()
+        }
+    }
+
+    /**
+     * Confirm the role actually moved before claiming success.
+     *
+     * An UNVERIFIABLE readback (bridge died between the write and the read, command failed) is
+     * reported as UNAVAILABLE, never RESTORED: "I could not check" and "it worked" must not
+     * collapse, or the verification fails OPEN and buys nothing. The cost of being wrong in this
+     * direction is a row that stays offered and a retry that is harmless — `add-role-holder` is
+     * idempotent.
+     */
+    private suspend fun verify(
+        target: AdbBridge.RoleTarget,
+        packageName: String,
+    ): RoleRestorer.Outcome {
+        // ONE read. Calling roleHolders() per branch would both double the round-trip and let the
+        // two branches disagree if the role changed between them.
+        val holders = bridge.roleHolders(target) ?: return RoleRestorer.Outcome.UNAVAILABLE
+        return if (packageName in holders) {
+            RoleRestorer.Outcome.RESTORED
+        } else {
+            // The command succeeded but the package does not hold the role: the platform accepted
+            // the call and declined the change. That is the qualification case, so REJECTED is the
+            // honest verdict — "that app can't be the default", not "setup isn't ready".
+            RoleRestorer.Outcome.REJECTED
         }
     }
 

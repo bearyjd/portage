@@ -67,9 +67,13 @@ data class PairingPayload(
     }
 
     companion object {
-        // v4 adds MMS. ItemKind is serialized as an enum, so an unknown kind cannot be
-        // decoded by a v1 peer; fail during QR validation instead of failing after pairing.
-        const val PROTOCOL_VERSION = 4
+        // v5 adds DEFAULT_ROLES (v4 added MMS). ItemKind is serialized as an enum BY KOTLIN
+        // CONSTANT NAME — the `wire` strings on ItemKind are decorative, not @SerialName — so an
+        // unknown kind is a hard SerializationException on an older peer, not a skipped field.
+        // Bump on EVERY new kind: an unbumped version means both peers still advertise the same
+        // number, QR validation passes, and the transfer instead dies at manifest decode AFTER
+        // pairing — precisely the failure this gate exists to convert into a clean refusal.
+        const val PROTOCOL_VERSION = 5
         const val PSK_BYTES = 32
         const val SID_BYTES = 16
         const val SCHEME = "portage1:"

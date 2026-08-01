@@ -161,14 +161,16 @@ class ReceiverViewModel(
     private val _carriedRoles = MutableStateFlow<List<RoleRestoreCandidate>>(emptyList())
 
     /**
-     * The carried roles whose target app is installed RIGHT NOW — what the Done screen may offer.
+     * The CARRIED roles — deliberately NOT the offerable ones.
      *
-     * Recomputed on every read rather than stored, because the set it filters against changes while
-     * the Done screen is up: Tier-0 APK installs are user-confirmed and complete after the transfer,
-     * so a role that is unrestorable when Done first renders becomes restorable once the user
-     * finishes the install prompts. [refreshRoleCandidates] re-surfaces it on resume.
+     * Named for what it holds. The offerable set is [restorableCandidates], which filters this
+     * against a live installed-set read and is reachable only through [ReceiverState.Done]. Do not
+     * bind this flow to UI: it includes roles whose target app is not installed here, and surfacing
+     * those is exactly what the live filter exists to prevent. An earlier revision called this
+     * `roleCandidates` and documented it as the filtered, recomputed set — it was neither, and the
+     * name invited precisely that mistake.
      */
-    val roleCandidates: StateFlow<List<RoleRestoreCandidate>> = _carriedRoles.asStateFlow()
+    val carriedRoles: StateFlow<List<RoleRestoreCandidate>> = _carriedRoles.asStateFlow()
 
     /** Roles the user confirmed and the platform accepted — drives the in-place row update. */
     private val _restoredRoles = MutableStateFlow<List<RestorableRole>>(emptyList())

@@ -1010,9 +1010,11 @@ private fun roleLabel(role: RestorableRole): String = when (role) {
  * standing between "portage knows your old default" and "portage changed your default". Hence:
  * one explicit tap per role, no "restore all", and nothing pre-selected.
  *
- * Only roles whose app is actually installed here are ever offered (filtered in the apply
- * provider), so a tap cannot point a role at something missing. A role that fails to apply stays
- * offered rather than moving to "set" — portage must not claim a default it did not set.
+ * Only roles whose app is actually installed here are ever offered, so a tap cannot point a role at
+ * something missing. That filter is NOT in the apply provider (it cannot be — Tier-0 installs land
+ * after apply returns); the ViewModel applies it against a live installed-set read when it builds
+ * Done, on every resume, and once more at tap time. A role that fails to apply stays offered rather
+ * than moving to "set" — portage must not claim a default it did not set.
  */
 @Composable
 private fun DefaultRolesSection(

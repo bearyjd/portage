@@ -26,7 +26,9 @@ import java.io.OutputStream
  * SCOPE: portage carries the user's *choice* of default browser / dialer / launcher, not any app or
  * its data. On the receiver the choice is re-applied through the bridge's `cmd role
  * add-role-holder`, verified on GOS A17 to take effect AND survive reboot
- * (`docs/prp/features/SPIKE-RESULTS-2026-07-31.md` §2, §8.2).
+ * (`docs/prp/features/SPIKE-RESULTS-2026-07-31.md` §2, §8.2). That verification covers **BROWSER
+ * only** — DIALER and HOME are unexercised on hardware, and §2 records role-qualification failure
+ * as untested too, which is why the receiver reads the role back instead of trusting an exit code.
  *
  * CONSENT IS LOAD-BEARING: the shell path applies a role change with **no system confirm dialog**.
  * The platform will not ask on portage's behalf, so the entire consent burden sits in portage's UI.
@@ -247,11 +249,23 @@ class DefaultRolesApplyProvider(
         // Bound the UNTRUSTED input before doing per-entry work. Previously this .take() sat at the
         // END of the chain, which bounded the OUTPUT while still walking every entry of a hostile
         // snapshot — a work bound that did not bound work.
+        // distinctBy BEFORE take: the bound must be on DISTINCT ROLES, not raw entries. Bounding
+        // raw entries first let padding suppress legitimate data — eight `browser` rows followed by
+        // a `dialer` row spent the whole budget on duplicates and dropped DIALER entirely, while
+        // the item still reported OK.
+        //
+        // This ordering does mean an all-duplicates snapshot never reaches the take() limit and so
+        // walks every entry. That is fine, and it is worth being exact about why: the WORK bound
+        // here is [DefaultRolesCodec.MAX_PAYLOAD_BYTES], which caps the document at 64 KiB before
+        // it is parsed at all — a few hundred short records, whatever they contain. MAX_ROLES_INPUT
+        // is not the work bound and never was; it bounds the OUTPUT handed to the UI.
         val candidates = snapshot.roles
-            .take(MAX_ROLES_INPUT)
+            .asSequence()
             .filter { PACKAGE_NAME.matches(it.packageName) }
             .distinctBy { it.role }
+            .take(MAX_ROLES_INPUT)
             .map { RoleRestoreCandidate(it.role, it.packageName) }
+            .toList()
 
         onCandidates(candidates)
 
@@ -269,10 +283,13 @@ class DefaultRolesApplyProvider(
         }
     }
 
-    private companion object {
+    internal companion object {
         /**
-         * Input bound, applied BEFORE any per-entry work. Not a limit on how many roles portage
-         * supports (the enum is that) — a ceiling on how much attacker-controlled input is walked.
+         * Ceiling on DISTINCT roles surfaced from one snapshot. Not the work bound — that is
+         * [DefaultRolesCodec.MAX_PAYLOAD_BYTES], which caps the input before parsing. Not a limit
+         * on how many roles portage supports either; [RestorableRole] is that, and with three
+         * entries this can never bind today. It is headroom that keeps a future enum growth from
+         * silently turning one item into an unbounded row count in the UI.
          */
         const val MAX_ROLES_INPUT = 8
     }

@@ -41,15 +41,18 @@ class RoleRestoreConsentTest {
         }
     }
 
-    @Test
-    fun `a restorer that rejects is not treated as success`() = kotlinx.coroutines.test.runTest {
-        // REJECTED means the bridge answered but the platform refused — most often role
-        // qualification. It must stay distinct from RESTORED so the UI never claims a default it
-        // did not set.
-        val rejecting = RoleRestorer { _, _ -> RoleRestorer.Outcome.REJECTED }
-        assertThat(rejecting.restore(RestorableRole.BROWSER, "com.example.browser"))
-            .isNotEqualTo(RoleRestorer.Outcome.RESTORED)
-    }
+    // DELIBERATELY ABSENT: a test that builds `RoleRestorer { _, _ -> REJECTED }` and asserts the
+    // result is not RESTORED. One used to live here. It exercised Kotlin's fun-interface dispatch,
+    // not portage — no production control could be deleted to make it fail. The property it was
+    // named for (a non-confirming restorer must not be treated as success) is held by
+    // `RoleRestoreBeltTest.a restorer that does not confirm leaves the offer in place and claims
+    // nothing`, which drives the real ViewModel and dies to a real mutation.
+
+    // The BRIDGE-side twin of the tripwire below lives in `:adb-bridge`'s own test module
+    // (`RoleTargetClosedSetTest`), NOT here. This file is in `src/test`, shared by both flavors, and
+    // play links no `:adb-bridge` at all — importing AdbBridge here would break the play unit-test
+    // compile and risk dragging the bridge into the play APK, which the CI no-bridge assert exists
+    // to prevent.
 
     @Test
     fun `the restorable role set stays closed to the three reviewed roles`() {
