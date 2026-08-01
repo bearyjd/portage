@@ -12,6 +12,7 @@ package com.ventouxlabs.portage.recv.roles
 import com.ventouxlabs.portage.adbbridge.AdbBridge
 import com.ventouxlabs.portage.providers.roles.RestorableRole
 import com.ventouxlabs.portage.providers.roles.RoleRestorer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -68,6 +69,14 @@ class AdbRoleRestorer(
                     is AdbBridge.OpResult.BridgeUnavailable -> RoleRestorer.Outcome.UNAVAILABLE
                 }
             } ?: RoleRestorer.Outcome.UNAVAILABLE // timed out → not restored, row stays offered
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            // The bridge is a network client over localhost TLS: connect() and setRoleHolder() can
+            // throw (IO, TLS, protocol) as readily as they can answer. Report it as UNAVAILABLE —
+            // the row stays offered and the user can retry. Letting it propagate would reach
+            // viewModelScope's uncaught handler and take the process down on the Done screen.
+            RoleRestorer.Outcome.UNAVAILABLE
         } finally {
             // Never hold shell uid open (ADR-003). The bridge reconnects with the persisted key.
             bridge.disconnect()

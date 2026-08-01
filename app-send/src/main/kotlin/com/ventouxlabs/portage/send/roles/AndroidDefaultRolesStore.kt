@@ -59,9 +59,9 @@ class AndroidDefaultRolesStore(context: Context) : DefaultRolesStore {
 
         val pkg = resolved.activityInfo?.packageName?.takeIf { it.isNotBlank() } ?: return null
 
-        // Drop the "no default chosen" sentinels. Android reports the resolver/chooser itself when
+        // Drop the "no default chosen" sentinel. Android reports the resolver/chooser itself when
         // nothing is set; carrying that would restore the chooser as the user's "default".
-        if (pkg in RESOLVER_SENTINELS) return null
+        if (pkg == RESOLVER_PACKAGE) return null
         // Never carry ourselves: portage handling one of these intents in some future build must not
         // turn into "portage was your default browser".
         if (pkg == selfPackage) return null
@@ -70,7 +70,13 @@ class AndroidDefaultRolesStore(context: Context) : DefaultRolesStore {
     }
 
     private companion object {
-        /** Framework activities that mean "the user has not picked a default". */
-        val RESOLVER_SENTINELS = setOf("android", "com.android.internal.app.ResolverActivity")
+        /**
+         * The framework package that owns the resolver/chooser — i.e. "the user has not picked a
+         * default". This is compared against `activityInfo.packageName`, so it must be a PACKAGE.
+         * A previous version also listed `com.android.internal.app.ResolverActivity`, which is the
+         * CLASS half of that same component and could therefore never match; it was dead weight
+         * that implied class names were being checked when they were not.
+         */
+        const val RESOLVER_PACKAGE = "android"
     }
 }

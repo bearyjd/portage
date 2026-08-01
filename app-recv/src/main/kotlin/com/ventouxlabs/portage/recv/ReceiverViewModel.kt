@@ -45,6 +45,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -95,6 +96,12 @@ class ReceiverViewModel(
     // Flavor-level: play ships no bridge, so it must not OFFER a default it can never set. Defaults
     // to false so an unwired caller shows nothing rather than a dead button.
     private val canRestoreRoles: Boolean = false,
+    // The packages present RIGHT NOW (#122). Called fresh every time role candidates are surfaced —
+    // never cached — because Tier-0 APK installs are user-confirmed and land AFTER apply returns
+    // (see [DefaultRolesApplyProvider]); a snapshot taken at any single moment would miss the apps
+    // this very transfer is installing. Defaults to "nothing installed", which offers no role at
+    // all: an unwired caller shows an empty section rather than an unverifiable one.
+    private val installedPackages: () -> Set<String> = { emptySet() },
     // Keeps the process at foreground importance + the CPU awake for the item stream so a screen-off
     // can't reset the streaming socket mid-frame (#85). NoOp default (tests/previews); production
     // wires a foreground-service-backed implementation. Driven start-before-phase / stop-in-finally.
@@ -145,12 +152,23 @@ class ReceiverViewModel(
     val optInPermissions: StateFlow<List<OptInPermissions>> = _optInPermissions.asStateFlow()
 
     /**
-     * Default-app roles (#122) the sender had, whose target app is installed here. Surfaced on the
-     * Done screen for an explicit per-role tap; NOTHING is applied until the user acts. The shell
-     * path shows no system confirm dialog, so this list is offered, never auto-restored.
+     * Default-app roles (#122) the sender CARRIED, already through every security filter but NOT
+     * filtered to what is installed here — that is [restorableCandidates]'s job, evaluated live.
+     *
+     * NOTHING is applied to produce this list. The shell path shows no system confirm dialog, so
+     * roles are offered, never auto-restored.
      */
-    private val _roleCandidates = MutableStateFlow<List<RoleRestoreCandidate>>(emptyList())
-    val roleCandidates: StateFlow<List<RoleRestoreCandidate>> = _roleCandidates.asStateFlow()
+    private val _carriedRoles = MutableStateFlow<List<RoleRestoreCandidate>>(emptyList())
+
+    /**
+     * The carried roles whose target app is installed RIGHT NOW — what the Done screen may offer.
+     *
+     * Recomputed on every read rather than stored, because the set it filters against changes while
+     * the Done screen is up: Tier-0 APK installs are user-confirmed and complete after the transfer,
+     * so a role that is unrestorable when Done first renders becomes restorable once the user
+     * finishes the install prompts. [refreshRoleCandidates] re-surfaces it on resume.
+     */
+    val roleCandidates: StateFlow<List<RoleRestoreCandidate>> = _carriedRoles.asStateFlow()
 
     /** Roles the user confirmed and the platform accepted — drives the in-place row update. */
     private val _restoredRoles = MutableStateFlow<List<RestorableRole>>(emptyList())
@@ -209,8 +227,7 @@ class ReceiverViewModel(
                     // affordance that can never succeed would be a dead button, and silently
                     // failing is precisely the dishonesty this feature exists to avoid.
                     if (canRestoreRoles) {
-                        _roleCandidates.value =
-                            (_roleCandidates.value + candidates).distinctBy { it.role }
+                        _carriedRoles.update { (it + candidates).distinctBy { c -> c.role } }
                     }
                 },
             ),
@@ -244,8 +261,20 @@ class ReceiverViewModel(
 
     fun startScanning() {
         if (_state.value is ReceiverState.Idle || _state.value is ReceiverState.Failed) {
+            // Clear the role state on the way IN as well as on the way out (#122). reset() covers
+            // the Done → Home exit, but Failed → Scanning re-enters without passing through it, so
+            // a failed transfer's carried roles would survive into the next one — where the sink's
+            // distinctBy { role } keeps the FIRST entry and the stale row would SHADOW the new
+            // transfer's legitimate one for that role.
+            clearRoleState()
             _state.value = ReceiverState.Scanning
         }
+    }
+
+    /** Drop every Done-scoped role flow (#122). Both the entry and the exit path must call this. */
+    private fun clearRoleState() {
+        _carriedRoles.value = emptyList()
+        _restoredRoles.value = emptyList()
     }
 
     /** Called by the QR scanner with a raw `portage1:` URI. */
@@ -359,7 +388,7 @@ class ReceiverViewModel(
                     apkInstallPrompts = _apkInstallPrompts.value,
                     restoredPermissions = _restoredPermissions.value,
                     optInPermissions = _optInPermissions.value,
-                    roleCandidates = _roleCandidates.value,
+                    roleCandidates = restorableCandidates(),
                     restoredRoles = _restoredRoles.value,
                     failedItems = failedItems,
                 )
@@ -502,12 +531,17 @@ class ReceiverViewModel(
      * This is the only code path that changes a role, and it is deliberately narrow:
      *  - The (role, package) pair MUST already be an OFFERED candidate on the LIVE Done state. A
      *    caller cannot restore a role the transfer never carried, or point a role at a package the
-     *    apply provider did not validate and confirm installed. Anything else is dropped silently.
+     *    apply provider did not validate. Anything else is dropped silently.
+     *  - The package must STILL be installed at tap time, re-read here rather than trusted from the
+     *    surfaced list. The offered set is built from an installed-set read that may be seconds or
+     *    minutes old (the user can uninstall, or cancel a pending install, while Done is up), and
+     *    pointing a role at a package that has since gone would ask the platform to hand a system
+     *    capability to something absent. This is the last check before the privileged call.
      *  - The bridge round-trip is held under the same [optInGrantMutex] as the opt-in grants, so
      *    overlapping Done-screen taps never race on the single process-scoped bridge.
-     *  - Only [RoleRestorer.Outcome.RESTORED] updates the UI. REJECTED (the app does not qualify)
-     *    and UNAVAILABLE (no live bridge) leave the row offered rather than claiming success —
-     *    portage must not report a default it did not actually set.
+     *  - Only [RoleRestorer.Outcome.RESTORED] updates the UI. REJECTED (the app does not qualify),
+     *    UNAVAILABLE (no live bridge) and a THROWING restorer all leave the row offered rather than
+     *    claiming success — portage must not report a default it did not actually set.
      *
      * There is no "restore all" convenience here, on purpose: each role is a separate consent.
      */
@@ -516,21 +550,58 @@ class ReceiverViewModel(
             ?.roleCandidates
             ?.firstOrNull { it.role == role && it.packageName == packageName }
             ?: return
+        if (offered.packageName !in liveInstalledPackages()) return
         viewModelScope.launch {
-            val outcome = optInGrantMutex.withLock { roleRestorer.restore(offered.role, offered.packageName) }
+            // A restorer that THROWS must not reach viewModelScope's handler — an uncaught throw
+            // there takes the process down, turning "the bridge is unhappy" into a crash on the
+            // Done screen with the transfer's results still on it. Same shape as [applyStaged].
+            val outcome = try {
+                optInGrantMutex.withLock { roleRestorer.restore(offered.role, offered.packageName) }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                RoleRestorer.Outcome.UNAVAILABLE
+            }
             if (outcome != RoleRestorer.Outcome.RESTORED) return@launch
             // Re-read the LIVE Done snapshot AFTER the suspend call: the user may have left the
             // screen mid-restore, and a stale write would resurrect a dead state (same discipline
             // as moveOptInToRestored).
             val done = _state.value as? ReceiverState.Done ?: return@launch
-            _restoredRoles.value = (_restoredRoles.value + offered.role).distinct()
-            _roleCandidates.value = _roleCandidates.value.filterNot { it.role == offered.role }
+            // update {} , not value= : two roles restored concurrently each read-modify-write these
+            // flows, and a plain assignment loses whichever write lands first.
+            _restoredRoles.update { (it + offered.role).distinct() }
+            _carriedRoles.update { carried -> carried.filterNot { it.role == offered.role } }
             _state.value = done.copy(
-                roleCandidates = _roleCandidates.value,
+                roleCandidates = restorableCandidates(),
                 restoredRoles = _restoredRoles.value,
             )
         }
     }
+
+    /**
+     * Re-surface the role offers against a FRESH installed-set read (#122).
+     *
+     * Called on every resume, which is what makes the headline case work: Tier-0 APK installs are
+     * user-confirmed system dialogs, so the apps this transfer carried usually arrive AFTER the Done
+     * screen first rendered. Without this, a role whose app was still installing would sit
+     * permanently unrestorable behind a stale filter. Also drops a row whose app was uninstalled
+     * while Done was up. No-op outside Done; touches nothing but the offered list.
+     */
+    fun refreshRoleCandidates() {
+        val done = _state.value as? ReceiverState.Done ?: return
+        val fresh = restorableCandidates()
+        if (fresh != done.roleCandidates) _state.value = done.copy(roleCandidates = fresh)
+    }
+
+    /** Carried roles minus those whose target app is not installed here, read live. */
+    private fun restorableCandidates(): List<RoleRestoreCandidate> {
+        val installed = liveInstalledPackages()
+        return _carriedRoles.value.filter { it.packageName in installed }
+    }
+
+    /** Never throws: a failed enumeration offers no roles rather than taking the screen down. */
+    private fun liveInstalledPackages(): Set<String> =
+        runCatching { installedPackages() }.getOrDefault(emptySet())
 
     /**
      * Reflect a confirmed opt-in grant: drop [granted] from [packageName]'s opt-in entry (removing the
@@ -586,8 +657,7 @@ class ReceiverViewModel(
         // never carried" would be false across a reset. The append in the sink also uses
         // distinctBy { it.role }, which keeps the FIRST occurrence, so a retained stale candidate
         // would SHADOW the next transfer's legitimate one for that role.
-        _roleCandidates.value = emptyList()
-        _restoredRoles.value = emptyList()
+        clearRoleState()
         _state.value = ReceiverState.Idle
         // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
         refreshSmsRoleStrand()

@@ -39,6 +39,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -219,9 +221,13 @@ fun DoneScreen(
     onOpenBackup: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
+    // Every list that can render a section below MUST be checked here. A section missing from this
+    // guard is invisible exactly when it is the only thing that happened — the summary-only branch
+    // returns before the section list is ever reached.
     if (installActions.isEmpty() && repairEntries.isEmpty() &&
         relayPrompts.isEmpty() && apkInstallPrompts.isEmpty() && restoredPermissions.isEmpty() &&
-        optInPermissions.isEmpty() && failedItems.isEmpty()
+        optInPermissions.isEmpty() && failedItems.isEmpty() &&
+        roleCandidates.isEmpty() && restoredRoles.isEmpty()
     ) {
         Column(
             modifier = modifier
@@ -1058,7 +1064,16 @@ private fun DefaultRolesSection(
         }
         restored.forEach { role ->
             Row(
-                modifier = Modifier.fillMaxWidth().padding(top = s.md),
+                // The completed row is a STATE, not an action. It previously read "SET" — the same
+                // word as the tappable affordance, separated only by colour — so a user could
+                // reasonably tap the inert one and a screen reader announced both identically. The
+                // wording now differs, and stateDescription carries the distinction non-visually,
+                // which matters here because an honest consent surface is the whole point of the
+                // feature.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = s.md)
+                    .semantics { stateDescription = "Set as default" },
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -1068,7 +1083,7 @@ private fun DefaultRolesSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = "SET",
+                    text = "DEFAULT",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

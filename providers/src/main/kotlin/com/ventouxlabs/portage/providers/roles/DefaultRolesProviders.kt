@@ -75,16 +75,46 @@ data class DefaultRoleSnapshot(val roles: List<DefaultRoleRecord>)
 
 /** JSON (de)serialization, separated so tests can frame payloads directly. */
 object DefaultRolesCodec {
+    /**
+     * Hard ceiling on how many bytes of UNTRUSTED payload are read before anything is parsed.
+     *
+     * This bound is on the ALLOCATION, and it has to be: the per-item receive cap is 64 MiB, so a
+     * hostile sender can legitimately frame an item that large. An earlier version read the whole
+     * stream with `readText()` and bounded only the decoded LIST, which bounded the output while the
+     * 64 MiB had already been pulled into the heap — the expensive part was over before the limit
+     * ran. A real snapshot is three short records; 64 KiB is orders of magnitude of headroom.
+     */
+    internal const val MAX_PAYLOAD_BYTES = 64 * 1024
+
     fun encode(snapshot: DefaultRoleSnapshot): String =
         JsonLines.format.encodeToString(DefaultRoleSnapshot.serializer(), snapshot)
 
     /** Returns null on anything unparseable — including an unknown role, which fails the enum. */
     fun decode(source: InputStream): DefaultRoleSnapshot? = runCatching {
-        JsonLines.format.decodeFromString(
-            DefaultRoleSnapshot.serializer(),
-            source.bufferedReader(Charsets.UTF_8).readText(),
-        )
+        val text = source.readBoundedUtf8(MAX_PAYLOAD_BYTES) ?: return null
+        JsonLines.format.decodeFromString(DefaultRoleSnapshot.serializer(), text)
     }.getOrNull()
+}
+
+/**
+ * Read at most [maxBytes], or return null if the source has more to give.
+ *
+ * REJECTS rather than truncates. Truncation would hand a half-document to the parser, and a prefix
+ * of a valid snapshot can itself be valid JSON — that would silently apply an attacker-chosen SUBSET
+ * of a payload portage refused to read in full. Over-length input is not a snapshot portage will
+ * act on, so the honest answer is "unreadable".
+ */
+private fun InputStream.readBoundedUtf8(maxBytes: Int): String? {
+    // One byte of headroom: filling it proves the source exceeded the ceiling.
+    val buffer = ByteArray(maxBytes + 1)
+    var filled = 0
+    while (filled < buffer.size) {
+        val n = read(buffer, filled, buffer.size - filled)
+        if (n < 0) break
+        filled += n
+    }
+    if (filled > maxBytes) return null
+    return String(buffer, 0, filled, Charsets.UTF_8)
 }
 
 /**
@@ -159,8 +189,12 @@ class DefaultRolesExportProvider(
 }
 
 /**
- * A validated, restorable candidate: the user HAD this app as their default, and it is installed
- * here. Surfaced for an explicit opt-in tap; nothing is applied to produce one.
+ * A validated candidate: the user HAD this app as their default, and the entry survived every
+ * security filter (known role, well-formed package, within the input bound, deduped).
+ *
+ * Deliberately NOT "and it is installed here". Installedness is a LIVE property, re-evaluated by the
+ * receiver at surface time and again at tap time — see [DefaultRolesApplyProvider]'s note on why an
+ * apply-time installed check cannot work. Nothing is applied to produce one of these.
  */
 data class RoleRestoreCandidate(val role: RestorableRole, val packageName: String)
 
@@ -174,25 +208,33 @@ data class RoleRestoreCandidate(val role: RestorableRole, val packageName: Strin
  * [RoleRestorer].
  *
  * Filtering, in order:
- *  - unparseable payload, or any unknown role → the whole item is rejected (`WRITE_ERROR`)
+ *  - unparseable payload (including over-length), or any unknown role → the whole item is rejected
+ *    (`WRITE_ERROR`)
+ *  - input bound applied BEFORE per-entry work
  *  - malformed package name → that entry dropped
  *  - duplicate role → first wins (a hostile snapshot must not produce two rows for one role, which
  *    would also break Compose's list keys — same guard as the inventory/Bluetooth lists)
- *  - package not installed here → dropped; restoring a role to a missing app is meaningless, and
- *    `isInstalled` is the qualification gate the spike flagged as untested platform behaviour
+ *
+ * WHY THERE IS NO "is it installed here" FILTER, though restoring a role to a missing app is
+ * meaningless: at apply time the answer is not yet knowable. Tier-0 APK installs — the ordinary
+ * path, and the only one working on GOS today (#86) — are USER-CONFIRMED and ASYNCHRONOUS:
+ * `ApkApplyProvider.apply` returns once the install prompt is surfaced, NOT once the app exists, so
+ * the apps this same transfer is carrying are typically installed after the Done screen first
+ * renders. An apply-time installed-set read therefore filters out exactly the headline case
+ * ("restore my defaults after reinstalling my apps"), and no reordering of the item stream fixes
+ * that — the install simply has not happened yet.
+ *
+ * So installedness is evaluated where it is actually live: the receiver re-filters when it builds
+ * the Done state, again on every resume (i.e. after the user returns from the system install
+ * dialogs), and once more as a belt when the user taps restore.
  */
 class DefaultRolesApplyProvider(
     /**
-     * The packages present RIGHT NOW, read once per [apply] call.
-     *
-     * Evaluated at APPLY time, deliberately — NOT captured at construction. The apply registry is
-     * built before the transfer starts, while `ApkApplyProvider` installs apps DURING it, so a
-     * construction-time snapshot would miss every app this same transfer just installed. That is
-     * precisely the headline case ("restore my defaults after reinstalling my apps"), so the
-     * lookup must stay live. Taking it once per apply rather than once per role keeps it O(1)
-     * enumerations instead of O(roles).
+     * Whether this BUILD can restore a role at all — false on the play flavor, which ships no
+     * bridge. Only affects the reported status: a build that cannot restore reports the item
+     * `SKIPPED` rather than `OK`, so it is not counted as moved when nothing is restorable.
      */
-    private val installedPackages: () -> Set<String>,
+    private val canRestore: () -> Boolean = { false },
     private val onCandidates: (List<RoleRestoreCandidate>) -> Unit,
 ) : ApplyProvider {
 
@@ -205,25 +247,24 @@ class DefaultRolesApplyProvider(
         // Bound the UNTRUSTED input before doing per-entry work. Previously this .take() sat at the
         // END of the chain, which bounded the OUTPUT while still walking every entry of a hostile
         // snapshot — a work bound that did not bound work.
-        val wellFormed = snapshot.roles
+        val candidates = snapshot.roles
             .take(MAX_ROLES_INPUT)
             .filter { PACKAGE_NAME.matches(it.packageName) }
             .distinctBy { it.role }
-
-        val installed = runCatching { installedPackages() }.getOrDefault(emptySet())
-        val candidates = wellFormed
-            .filter { it.packageName in installed }
             .map { RoleRestoreCandidate(it.role, it.packageName) }
 
         onCandidates(candidates)
 
         // An empty snapshot that PARSED is not an error — the sender simply had no defaults worth
-        // carrying. Only a non-empty input that produced nothing usable is worth flagging, and even
-        // then it is SKIPPED rather than WRITE_ERROR: "the apps aren't installed here" is a defined,
-        // honest outcome, not a failure to write.
+        // carrying. The non-OK cases are SKIPPED rather than WRITE_ERROR: "this build can't restore
+        // defaults" and "the snapshot held nothing usable" are defined, honest outcomes, not
+        // failures to write.
         return when {
             snapshot.roles.isEmpty() -> ApplyOutcome(ItemStatus.OK)
-            candidates.isEmpty() -> ApplyOutcome(ItemStatus.SKIPPED, "no matching apps installed here")
+            !runCatching { canRestore() }.getOrDefault(false) ->
+                ApplyOutcome(ItemStatus.SKIPPED, "this build can't set default apps")
+            candidates.isEmpty() ->
+                ApplyOutcome(ItemStatus.SKIPPED, "no usable entries in the default-apps snapshot")
             else -> ApplyOutcome(ItemStatus.OK)
         }
     }

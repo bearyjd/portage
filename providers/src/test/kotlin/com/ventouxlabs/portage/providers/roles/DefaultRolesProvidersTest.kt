@@ -28,11 +28,11 @@ class DefaultRolesProvidersTest {
 
     private fun applied(
         json: String,
-        installed: Set<String> = setOf("com.example.browser", "com.example.dialer", "com.example.home"),
+        canRestore: () -> Boolean = { true },
     ): Pair<ItemStatus, List<RoleRestoreCandidate>> {
         var seen: List<RoleRestoreCandidate> = emptyList()
         val provider = DefaultRolesApplyProvider(
-            installedPackages = { installed },
+            canRestore = canRestore,
             onCandidates = { seen = it },
         )
         val outcome = kotlinx.coroutines.runBlocking { provider.apply(payload(json)) }
@@ -162,14 +162,12 @@ class DefaultRolesProvidersTest {
             "noDotsAtAll",         // not a package (needs >= 2 segments)
         )
         hostile.forEach { pkg ->
-            // CRITICAL: claim every hostile string IS installed. Otherwise the `isInstalled` filter
-            // drops them and this test passes without the regex doing anything — it would be green
-            // even with the package validation deleted. (Caught by mutation-testing: loosening
-            // PACKAGE_NAME left this test passing until the installed-set was made permissive too.)
-            val (_, candidates) = applied(
-                """{"roles":[{"role":"browser","packageName":"$pkg"}]}""",
-                installed = setOf(pkg),
-            )
+            // The regex is now the ONLY thing that can drop these. This test used to need
+            // `installed = setOf(pkg)` to stay honest — without it the installed-set filter dropped
+            // the hostile strings and the test passed even with PACKAGE_NAME deleted (found by
+            // mutation-testing). That filter has since moved to the receiver, so the confound is
+            // gone by construction rather than by careful test setup.
+            val (_, candidates) = applied("""{"roles":[{"role":"browser","packageName":"$pkg"}]}""")
             assertThat(candidates).isEmpty()
         }
     }
@@ -187,14 +185,84 @@ class DefaultRolesProvidersTest {
     }
 
     @Test
-    fun `a role whose app is not installed here is dropped and reported SKIPPED`() {
+    fun `apply does NOT filter on installedness — that decision is the receiver's, made live`() {
+        // REGRESSION PIN for the headline case ("restore my defaults after reinstalling my apps").
+        //
+        // The provider deliberately knows nothing about which packages exist. An apply-time
+        // installed check cannot work: Tier-0 APK installs are user-confirmed system dialogs, so
+        // ApkApplyProvider.apply returns once the PROMPT is surfaced and the app itself arrives
+        // after the Done screen renders. Filtering here dropped exactly the apps this same transfer
+        // was installing, and no reordering of the item stream fixes it — the install has not
+        // happened yet at any point during the stream.
+        //
+        // So a candidate for a package that exists nowhere must still be surfaced; the receiver
+        // re-filters against a live read when it shows the row, on resume, and at tap time.
         val (status, candidates) = applied(
-            """{"roles":[{"role":"browser","packageName":"com.example.browser"}]}""",
-            installed = emptySet(),
+            """{"roles":[{"role":"browser","packageName":"com.example.nothere"}]}""",
         )
-        assertThat(candidates).isEmpty()
-        // SKIPPED, not WRITE_ERROR: "that app isn't here" is a defined outcome, not a failure.
+        assertThat(candidates).containsExactly(
+            RoleRestoreCandidate(RestorableRole.BROWSER, "com.example.nothere"),
+        )
+        assertThat(status).isEqualTo(ItemStatus.OK)
+    }
+
+    @Test
+    fun `a build that cannot restore reports SKIPPED, not OK`() {
+        // play ships no bridge, so nothing carried here is restorable. Reporting OK counted the
+        // item as MOVED on the Done summary while nothing had moved or could.
+        val (status, _) = applied(
+            """{"roles":[{"role":"browser","packageName":"com.example.browser"}]}""",
+            canRestore = { false },
+        )
         assertThat(status).isEqualTo(ItemStatus.SKIPPED)
+    }
+
+    @Test
+    fun `a canRestore probe that throws is treated as cannot-restore, never propagated`() {
+        val (status, _) = applied(
+            """{"roles":[{"role":"browser","packageName":"com.example.browser"}]}""",
+            canRestore = { error("privilege wiring unavailable") },
+        )
+        assertThat(status).isEqualTo(ItemStatus.SKIPPED)
+    }
+
+    @Test
+    fun `a payload over the byte ceiling is refused BEFORE it is parsed or held`() {
+        // The bound is on the ALLOCATION, not the decoded list: the per-item receive cap is 64 MiB,
+        // so a hostile sender can frame an item that large. An earlier version read the whole stream
+        // with readText() and bounded only the resulting list — by then the bytes were already on
+        // the heap. Padding a VALID document past the ceiling proves the reader gives up before the
+        // parser ever sees it (a malformed doc would fail for the wrong reason).
+        val padding = " ".repeat(DefaultRolesCodec.MAX_PAYLOAD_BYTES)
+        val oversized =
+            """{"roles":[{"role":"browser","packageName":"com.example.browser"}]}$padding"""
+        assertThat(oversized.length).isGreaterThan(DefaultRolesCodec.MAX_PAYLOAD_BYTES)
+
+        val (status, candidates) = applied(oversized)
+        assertThat(status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(candidates).isEmpty()
+
+        // ...and the same document UNPADDED still applies, so the assertion above is about the
+        // length and not about trailing whitespace tripping the parser.
+        val (okStatus, okCandidates) =
+            applied("""{"roles":[{"role":"browser","packageName":"com.example.browser"}]}""")
+        assertThat(okStatus).isEqualTo(ItemStatus.OK)
+        assertThat(okCandidates).hasSize(1)
+    }
+
+    @Test
+    fun `an over-length payload is refused rather than TRUNCATED to a valid prefix`() {
+        // Truncating would be worse than rejecting: a prefix of a valid snapshot can itself be
+        // valid JSON, which would silently apply an attacker-chosen SUBSET of a payload portage
+        // refused to read in full. Here the first entry alone forms a complete document once the
+        // rest is cut, so a truncating reader would surface `com.example.browser` and drop the
+        // second entry. Nothing may be surfaced at all.
+        val head = """{"roles":[{"role":"browser","packageName":"com.example.browser"}]}"""
+        val oversized = head + "x".repeat(DefaultRolesCodec.MAX_PAYLOAD_BYTES)
+
+        val (status, candidates) = applied(oversized)
+        assertThat(status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(candidates).isEmpty()
     }
 
     @Test
@@ -208,20 +276,6 @@ class DefaultRolesProvidersTest {
     fun `an unparseable payload is a WRITE_ERROR`() {
         val (status, _) = applied("this is not json")
         assertThat(status).isEqualTo(ItemStatus.WRITE_ERROR)
-    }
-
-    @Test
-    fun `an isInstalled predicate that throws drops the entry instead of propagating`() {
-        var seen: List<RoleRestoreCandidate>? = null
-        val provider = DefaultRolesApplyProvider(
-            installedPackages = { error("package manager unavailable") },
-            onCandidates = { seen = it },
-        )
-        val outcome = kotlinx.coroutines.runBlocking {
-            provider.apply(payload("""{"roles":[{"role":"home","packageName":"com.example.home"}]}"""))
-        }
-        assertThat(seen).isEmpty()
-        assertThat(outcome.status).isEqualTo(ItemStatus.SKIPPED)
     }
 
     @Test

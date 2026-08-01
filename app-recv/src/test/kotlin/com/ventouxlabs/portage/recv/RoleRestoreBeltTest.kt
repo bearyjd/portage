@@ -89,16 +89,26 @@ class RoleRestoreBeltTest {
             throw UnsupportedOperationException()
     }
 
-    /** A transfer carrying exactly one DEFAULT_ROLES item with [json] as its payload. */
-    private fun rolesChannel(json: String): SecureChannel {
+    /**
+     * A transfer carrying exactly one DEFAULT_ROLES item with [json] as its payload.
+     *
+     * When [thenBreakProtocol] is set the stream ends with a message the receiver cannot accept
+     * there (HELLO where ITEM_BEGIN or BATCH_END is required) instead of BATCH_END, so the transfer
+     * lands in `Failed` with the roles item ALREADY applied — the state that lets a carried role
+     * outlive its transfer without ever passing through `reset()`.
+     */
+    private fun rolesChannel(json: String, thenBreakProtocol: Boolean = false): SecureChannel {
         val bytes = json.toByteArray()
         val meta = ItemMeta(4, ItemKind.DEFAULT_ROLES, bytes.size.toLong(), sha256(bytes), "Default apps", "Apps")
+        val tail: ProtocolMessage =
+            if (thenBreakProtocol) ProtocolMessage.Hello("x", "x")
+            else ProtocolMessage.BatchEnd(listOf(4), "done")
         return FakeChannel(
             ProtocolMessage.Manifest(TransferManifest("old phone", listOf(meta), bytes.size.toLong())),
             ProtocolMessage.ItemBegin(4, ItemKind.DEFAULT_ROLES, meta.size, bytes.size),
             ProtocolMessage.ItemData(4, 0, bytes),
             ProtocolMessage.ItemEnd(4, meta.sha256),
-            ProtocolMessage.BatchEnd(listOf(4), "done"),
+            tail,
         )
     }
 
@@ -111,7 +121,18 @@ class RoleRestoreBeltTest {
         }
     }
 
-    private fun viewModel(channel: SecureChannel, restorer: RoleRestorer): ReceiverViewModel =
+    /**
+     * The device's installed set, MUTABLE so a test can model what actually happens on Tier-0: the
+     * apps this transfer carries appear only after the user confirms the system install dialogs,
+     * i.e. strictly after the DEFAULT_ROLES item has applied.
+     */
+    private val installed = mutableSetOf("com.example.browser", "com.example.dialer", "com.example.home")
+
+    private fun viewModel(
+        channel: SecureChannel,
+        restorer: RoleRestorer,
+        canRestoreRoles: Boolean = true,
+    ): ReceiverViewModel =
         ReceiverViewModel(
             pairingCodec = FakeCodec(),
             channelFactory = FakeFactory(channel),
@@ -120,15 +141,11 @@ class RoleRestoreBeltTest {
             osFingerprint = "test",
             stagingDir = tmp.newFolder("staging-${System.nanoTime()}"),
             roleRestorer = restorer,
-            canRestoreRoles = true,
+            canRestoreRoles = canRestoreRoles,
+            installedPackages = { installed.toSet() },
             applyRegistryFactory = ApplyRegistryFactory { sinks ->
                 ApplyProviderRegistry(
-                    listOf(
-                        DefaultRolesApplyProvider(
-                            installedPackages = { setOf("com.example.browser", "com.example.dialer", "com.example.home") },
-                            onCandidates = sinks.onRoleCandidates,
-                        ),
-                    ),
+                    listOf(DefaultRolesApplyProvider(canRestore = { true }, onCandidates = sinks.onRoleCandidates)),
                 )
             },
         )
@@ -243,5 +260,138 @@ class RoleRestoreBeltTest {
             // did not set.
             assertThat(vm.roleCandidates.value).hasSize(1)
             assertThat(vm.restoredRoles.value).isEmpty()
+        }
+
+    @Test
+    fun `an app installed AFTER the transfer becomes restorable on resume — the headline case`() =
+        runTest(dispatcher) {
+            // THE regression pin for the whole feature. "Restore my defaults after reinstalling my
+            // apps" only works if installedness is re-read after the installs land, and on Tier-0
+            // they land after the transfer: ApkApplyProvider.apply returns when the install PROMPT
+            // is surfaced, and the user confirms the system dialog from the Done screen. So at the
+            // moment DEFAULT_ROLES applies, the carried app genuinely does not exist yet.
+            //
+            // The previous design read the installed set inside apply() and filtered there, which
+            // produced ZERO candidates in exactly this case — the feature's headline scenario. No
+            // reordering of the item stream fixes that; the install has not happened at any point
+            // during the stream.
+            val restorer = RecordingRestorer()
+            installed.remove("com.example.browser")
+            val vm = viewModel(
+                rolesChannel("""{"roles":[{"role":"browser","packageName":"com.example.browser"}]}"""),
+                restorer,
+            )
+            vm.runTransfer(ROLES_ITEM_ID) { advanceUntilIdle() }
+
+            // Not installed yet ⇒ carried, but not offered, and a tap reaches nothing.
+            assertThat((vm.state.value as ReceiverState.Done).roleCandidates).isEmpty()
+            vm.restoreRole(RestorableRole.BROWSER, "com.example.browser")
+            advanceUntilIdle()
+            assertThat(restorer.calls).isEmpty()
+
+            // The user confirms the system install dialog and returns to portage.
+            installed.add("com.example.browser")
+            vm.refreshRoleCandidates()
+
+            assertThat((vm.state.value as ReceiverState.Done).roleCandidates).hasSize(1)
+            vm.restoreRole(RestorableRole.BROWSER, "com.example.browser")
+            advanceUntilIdle()
+            assertThat(restorer.calls)
+                .containsExactly(RestorableRole.BROWSER to "com.example.browser")
+        }
+
+    @Test
+    fun `an app uninstalled while Done is up stops being restorable`() = runTest(dispatcher) {
+        // The other direction of the same liveness property, and the reason the tap-time re-read is
+        // a belt rather than a nicety: the offered list is built from a read that may be minutes
+        // old. Here the row is on screen and valid when rendered, and the app is gone by the tap.
+        val restorer = RecordingRestorer()
+        val vm = viewModel(
+            rolesChannel("""{"roles":[{"role":"dialer","packageName":"com.example.dialer"}]}"""),
+            restorer,
+        )
+        vm.runTransfer(ROLES_ITEM_ID) { advanceUntilIdle() }
+        assertThat((vm.state.value as ReceiverState.Done).roleCandidates).hasSize(1)
+
+        // Uninstalled behind the still-rendered row — Done is NOT refreshed, so the stale offer is
+        // deliberately still present in state. Only the tap-time read can catch this.
+        installed.remove("com.example.dialer")
+
+        vm.restoreRole(RestorableRole.DIALER, "com.example.dialer")
+        advanceUntilIdle()
+        assertThat(restorer.calls).isEmpty()
+    }
+
+    @Test
+    fun `a restorer that THROWS leaves the row offered instead of taking the process down`() =
+        runTest(dispatcher) {
+            // An uncaught throw here reaches viewModelScope's handler and crashes the app on the
+            // Done screen, with the transfer's results still on it. The bridge is a network client
+            // over localhost TLS, so throwing is an ordinary outcome, not an exotic one.
+            val throwing = RoleRestorer { _, _ -> error("bridge exploded") }
+            val vm = viewModel(
+                rolesChannel("""{"roles":[{"role":"home","packageName":"com.example.home"}]}"""),
+                throwing,
+            )
+            vm.runTransfer(ROLES_ITEM_ID) { advanceUntilIdle() }
+
+            vm.restoreRole(RestorableRole.HOME, "com.example.home")
+            advanceUntilIdle()
+
+            assertThat(vm.restoredRoles.value).isEmpty()
+            assertThat(vm.roleCandidates.value).hasSize(1)
+            assertThat(vm.state.value).isInstanceOf(ReceiverState.Done::class.java)
+        }
+
+    @Test
+    fun `startScanning clears carried roles, so a FAILED transfer cannot leak into the next`() =
+        runTest(dispatcher) {
+            // reset() covers the Done → Home exit. Failed → Scanning re-enters WITHOUT passing
+            // through it, so the carried roles survived that path. That matters because the sink
+            // appends with distinctBy { role }, which keeps the FIRST entry — a stale candidate
+            // would SHADOW the next transfer's legitimate one for the same role.
+            val restorer = RecordingRestorer()
+            val vm = viewModel(
+                rolesChannel(
+                    """{"roles":[{"role":"browser","packageName":"com.example.browser"}]}""",
+                    thenBreakProtocol = true,
+                ),
+                restorer,
+            )
+            vm.runTransfer(ROLES_ITEM_ID) { advanceUntilIdle() }
+
+            // The item applied, THEN the transfer died — so the roles are carried but there is no
+            // Done screen and the user never passes through reset().
+            assertThat(vm.state.value).isInstanceOf(ReceiverState.Failed::class.java)
+            assertThat(vm.roleCandidates.value).hasSize(1)
+
+            vm.startScanning()
+
+            assertThat(vm.roleCandidates.value).isEmpty()
+            assertThat(vm.restoredRoles.value).isEmpty()
+        }
+
+    @Test
+    fun `a build that cannot restore offers nothing and cannot be driven to the seam`() =
+        runTest(dispatcher) {
+            // The play flavor ships no bridge. Surfacing a "SET" row it can never honour would be a
+            // dead button, and this is the guard that prevents it — previously untested, so nothing
+            // stopped a refactor from dropping the canRestoreRoles check and shipping the affordance
+            // to a build that cannot act on it.
+            val restorer = RecordingRestorer()
+            val vm = viewModel(
+                rolesChannel("""{"roles":[{"role":"browser","packageName":"com.example.browser"}]}"""),
+                restorer,
+                canRestoreRoles = false,
+            )
+            vm.runTransfer(ROLES_ITEM_ID) { advanceUntilIdle() }
+
+            assertThat(vm.roleCandidates.value).isEmpty()
+            assertThat((vm.state.value as ReceiverState.Done).roleCandidates).isEmpty()
+
+            // ...and the belt still holds if something calls restoreRole anyway.
+            vm.restoreRole(RestorableRole.BROWSER, "com.example.browser")
+            advanceUntilIdle()
+            assertThat(restorer.calls).isEmpty()
         }
 }
