@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 20  # a hung jitpack/maven fetch shouldn't burn the GitHub 6h default
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v5.6.0
         with:
           distribution: temurin
           java-version: '17'
