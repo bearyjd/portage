@@ -9,8 +9,8 @@ agp = "9.2.1"                 # AGP 9.x: built-in Kotlin (no standalone kotlin-a
 kotlin = "2.4.10"             # K2; Compose compiler is bundled via the kotlin compose plugin
 # SDK levels — Pixel 6 and newer (Tensor era)
 minSdk = "31"                 # Android 12 = Pixel 6 launch floor
-compileSdk = "36"             # Android 16 = verified target device (ADR-001); re-check per GOS release
-targetSdk = "36"
+compileSdk = "37"             # Android 17 = current verified test device; compile-only toolchain posture (#140)
+targetSdk = "36"              # Held separately: target-SDK behavioural changes require their own review (#140)
 # AndroidX
 coreKtx = "1.18.0"
 lifecycle = "2.10.0"

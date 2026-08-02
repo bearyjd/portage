@@ -2,7 +2,7 @@
 
 # Dependencies — external & supply-chain
 
-Toolchain: AGP 9.2.1 · Kotlin 2.4.0 (K2) · JDK 17 · minSdk 31 (Pixel 6) · compile/target 36 (GOS A16).
+Toolchain: AGP 9.2.1 · Kotlin 2.4.10 (K2) · JDK 17 · minSdk 31 (Pixel 6) · compileSdk 37 (GOS A17) · targetSdk 36 (held pending a separate behaviour review).
 Every module pins `kotlin { jvmToolchain(17) }`.
 
 ## Runtime libraries
