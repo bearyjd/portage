@@ -177,6 +177,16 @@ class ReceiverViewModel(
     val restoredRoles: StateFlow<List<RestorableRole>> = _restoredRoles.asStateFlow()
 
     /**
+     * In-flight / last-failure status per tapped role (#122). Absent ⇒ untouched.
+     *
+     * Also the duplicate-tap guard: [restoreRole] marks IN_FLIGHT synchronously before launching,
+     * so a second tap is refused rather than enqueueing another ≤90 s bridge round-trip behind the
+     * first on the shared [optInGrantMutex].
+     */
+    private val _roleAttempts = MutableStateFlow<Map<RestorableRole, ReceiverState.RoleAttempt>>(emptyMap())
+    val roleAttempts: StateFlow<Map<RestorableRole, ReceiverState.RoleAttempt>> = _roleAttempts.asStateFlow()
+
+    /**
      * Non-null ⇒ portage is still the default SMS app from an interrupted handoff (process death,
      * dismissed restore prompt). Drives an in-app one-tap restore — the persistent backstop to the
      * `finally` relinquish, which cannot survive a kill (DEVILS_ADVOCATE.md Q4 §3).
@@ -277,6 +287,7 @@ class ReceiverViewModel(
     private fun clearRoleState() {
         _carriedRoles.value = emptyList()
         _restoredRoles.value = emptyList()
+        _roleAttempts.value = emptyMap()
     }
 
     /** Called by the QR scanner with a raw `portage1:` URI. */
@@ -392,6 +403,7 @@ class ReceiverViewModel(
                     optInPermissions = _optInPermissions.value,
                     roleCandidates = restorableCandidates(),
                     restoredRoles = _restoredRoles.value,
+                    roleAttempts = _roleAttempts.value,
                     failedItems = failedItems,
                 )
                 channel?.close()
@@ -553,6 +565,12 @@ class ReceiverViewModel(
             ?.firstOrNull { it.role == role && it.packageName == packageName }
             ?: return
         if (offered.packageName !in liveInstalledPackages()) return
+        // Duplicate-tap guard, set SYNCHRONOUSLY so two rapid taps cannot both get past it. The
+        // belt above runs before the launch, so without this every tap enqueued its own coroutine
+        // and they serialized on optInGrantMutex — three taps with the bridge unreachable meant
+        // minutes of queued work and no visible change.
+        if (_roleAttempts.value[role] == ReceiverState.RoleAttempt.IN_FLIGHT) return
+        publishRoleAttempt(role, ReceiverState.RoleAttempt.IN_FLIGHT)
         viewModelScope.launch {
             // A restorer that THROWS must not reach viewModelScope's handler — an uncaught throw
             // there takes the process down, turning "the bridge is unhappy" into a crash on the
@@ -564,7 +582,20 @@ class ReceiverViewModel(
             } catch (t: Throwable) {
                 RoleRestorer.Outcome.UNAVAILABLE
             }
-            if (outcome != RoleRestorer.Outcome.RESTORED) return@launch
+            if (outcome != RoleRestorer.Outcome.RESTORED) {
+                // Say so. A failed restore used to change NOTHING on screen, which made the two
+                // failures indistinguishable from each other AND from a tap that did nothing at
+                // all. The distinction is actionable: REJECTED means this app cannot hold the role,
+                // UNAVAILABLE means setup is not ready and retrying later may work.
+                publishRoleAttempt(
+                    offered.role,
+                    when (outcome) {
+                        RoleRestorer.Outcome.REJECTED -> ReceiverState.RoleAttempt.REJECTED
+                        else -> ReceiverState.RoleAttempt.UNAVAILABLE
+                    },
+                )
+                return@launch
+            }
             // Re-read the LIVE Done snapshot AFTER the suspend call: the user may have left the
             // screen mid-restore, and a stale write would resurrect a dead state (same discipline
             // as moveOptInToRestored).
@@ -573,11 +604,21 @@ class ReceiverViewModel(
             // flows, and a plain assignment loses whichever write lands first.
             _restoredRoles.update { (it + offered.role).distinct() }
             _carriedRoles.update { carried -> carried.filterNot { it.role == offered.role } }
+            // Success needs no status: the row moves to restored and leaves the offered list.
+            _roleAttempts.update { it - offered.role }
             _state.value = done.copy(
                 roleCandidates = restorableCandidates(),
                 restoredRoles = _restoredRoles.value,
+                roleAttempts = _roleAttempts.value,
             )
         }
+    }
+
+    /** Record a role's attempt status and re-emit Done so the row reflects it immediately. */
+    private fun publishRoleAttempt(role: RestorableRole, attempt: ReceiverState.RoleAttempt) {
+        _roleAttempts.update { it + (role to attempt) }
+        val done = _state.value as? ReceiverState.Done ?: return
+        _state.value = done.copy(roleAttempts = _roleAttempts.value)
     }
 
     /**
@@ -592,7 +633,13 @@ class ReceiverViewModel(
     fun refreshRoleCandidates() {
         val done = _state.value as? ReceiverState.Done ?: return
         val fresh = restorableCandidates()
-        if (fresh != done.roleCandidates) _state.value = done.copy(roleCandidates = fresh)
+        // Drop stale statuses for roles no longer offered (the app was uninstalled), so a failure
+        // message cannot outlive the row it described.
+        val attempts = _roleAttempts.value.filterKeys { role -> fresh.any { it.role == role } }
+        _roleAttempts.value = attempts
+        if (fresh != done.roleCandidates || attempts != done.roleAttempts) {
+            _state.value = done.copy(roleCandidates = fresh, roleAttempts = attempts)
+        }
     }
 
     /** Carried roles minus those whose target app is not installed here, read live. */

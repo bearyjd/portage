@@ -372,6 +372,91 @@ class RoleRestoreBeltTest {
         }
 
     @Test
+    fun `a failed restore SAYS so instead of changing nothing on screen`() = runTest(dispatcher) {
+        // The dead-button regression. A tap that fails used to produce no visible change at all:
+        // no message, no row change, nothing — so "the platform refused this app" and "your bridge
+        // isn't set up" and "the button is broken" all looked identical. On a degoogle build whose
+        // wizard was never run, that is a permanently dead SET with a 90 s wait behind it.
+        val refusing = RoleRestorer { _, _ -> RoleRestorer.Outcome.REJECTED }
+        val vm = viewModel(
+            rolesChannel("""{"roles":[{"role":"dialer","packageName":"com.example.dialer"}]}"""),
+            refusing,
+        )
+        vm.runTransfer(ROLES_ITEM_ID) { advanceUntilIdle() }
+
+        vm.restoreRole(RestorableRole.DIALER, "com.example.dialer")
+        advanceUntilIdle()
+
+        assertThat((vm.state.value as ReceiverState.Done).roleAttempts)
+            .containsEntry(RestorableRole.DIALER, ReceiverState.RoleAttempt.REJECTED)
+        // ...and it is still offered, because a rejection is not a success.
+        assertThat((vm.state.value as ReceiverState.Done).roleCandidates).hasSize(1)
+        assertThat(vm.restoredRoles.value).isEmpty()
+    }
+
+    @Test
+    fun `REJECTED and UNAVAILABLE stay distinct — they need different user actions`() =
+        runTest(dispatcher) {
+            // AdbRoleRestorer's KDoc justifies keeping these apart "so the UI can say 'that app
+            // can't be the default' rather than 'setup isn't ready'". Nothing consumed the
+            // distinction until now, which made that comment describe a capability that did not
+            // exist. This pins that it does.
+            val unavailable = RoleRestorer { _, _ -> RoleRestorer.Outcome.UNAVAILABLE }
+            val vm = viewModel(
+                rolesChannel("""{"roles":[{"role":"home","packageName":"com.example.home"}]}"""),
+                unavailable,
+            )
+            vm.runTransfer(ROLES_ITEM_ID) { advanceUntilIdle() }
+
+            vm.restoreRole(RestorableRole.HOME, "com.example.home")
+            advanceUntilIdle()
+
+            assertThat((vm.state.value as ReceiverState.Done).roleAttempts)
+                .containsEntry(RestorableRole.HOME, ReceiverState.RoleAttempt.UNAVAILABLE)
+        }
+
+    @Test
+    fun `a second tap while one is in flight is refused, not queued`() = runTest(dispatcher) {
+        // Each attempt is a bridge round-trip of up to 90 s, serialized on the shared mutex. The
+        // belt runs BEFORE the launch, so without an in-flight guard N taps enqueued N coroutines
+        // and the user waited N x 90 s with nothing on screen changing.
+        val restorer = RecordingRestorer()
+        val vm = viewModel(
+            rolesChannel("""{"roles":[{"role":"browser","packageName":"com.example.browser"}]}"""),
+            restorer,
+        )
+        vm.runTransfer(ROLES_ITEM_ID) { advanceUntilIdle() }
+
+        // Three taps before the dispatcher runs any of them.
+        repeat(3) { vm.restoreRole(RestorableRole.BROWSER, "com.example.browser") }
+        assertThat((vm.state.value as ReceiverState.Done).roleAttempts)
+            .containsEntry(RestorableRole.BROWSER, ReceiverState.RoleAttempt.IN_FLIGHT)
+        advanceUntilIdle()
+
+        assertThat(restorer.calls).hasSize(1)
+    }
+
+    @Test
+    fun `a successful restore leaves no lingering status on the row`() = runTest(dispatcher) {
+        // Success is represented by the row MOVING to restored, not by a status annotation on a row
+        // that is still asking to be tapped. A stale IN_FLIGHT here would render "SETTING…" forever.
+        val restorer = RecordingRestorer()
+        val vm = viewModel(
+            rolesChannel("""{"roles":[{"role":"browser","packageName":"com.example.browser"}]}"""),
+            restorer,
+        )
+        vm.runTransfer(ROLES_ITEM_ID) { advanceUntilIdle() }
+
+        vm.restoreRole(RestorableRole.BROWSER, "com.example.browser")
+        advanceUntilIdle()
+
+        val done = vm.state.value as ReceiverState.Done
+        assertThat(done.roleAttempts).isEmpty()
+        assertThat(done.restoredRoles).containsExactly(RestorableRole.BROWSER)
+        assertThat(done.roleCandidates).isEmpty()
+    }
+
+    @Test
     fun `a build that cannot restore offers nothing and cannot be driven to the seam`() =
         runTest(dispatcher) {
             // The play flavor ships no bridge. Surfacing a "SET" row it can never honour would be a

@@ -54,6 +54,7 @@ import com.ventouxlabs.portage.providers.relay.RelayApp
 import com.ventouxlabs.portage.providers.relay.RelayRestorePrompt
 import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.recv.FailedItem
+import com.ventouxlabs.portage.recv.ReceiverState
 import com.ventouxlabs.portage.recv.ItemPhase
 import com.ventouxlabs.portage.recv.ItemProgress
 import com.ventouxlabs.portage.recv.OptInPermissions
@@ -210,6 +211,7 @@ fun DoneScreen(
     optInPermissions: List<OptInPermissions> = emptyList(),
     roleCandidates: List<RoleRestoreCandidate> = emptyList(),
     restoredRoles: List<RestorableRole> = emptyList(),
+    roleAttempts: Map<RestorableRole, ReceiverState.RoleAttempt> = emptyMap(),
     failedItems: List<FailedItem> = emptyList(),
     onInstall: (InstallAction) -> Unit = {},
     onInstallApk: (ApkInstallPrompt) -> Unit = {},
@@ -330,6 +332,7 @@ fun DoneScreen(
                     DefaultRolesSection(
                         candidates = roleCandidates,
                         restored = restoredRoles,
+                        attempts = roleAttempts,
                         onRestoreRole = onRestoreRole,
                     )
                 }
@@ -1016,10 +1019,26 @@ private fun roleLabel(role: RestorableRole): String = when (role) {
  * Done, on every resume, and once more at tap time. A role that fails to apply stays offered rather
  * than moving to "set" — portage must not claim a default it did not set.
  */
+/**
+ * The user-facing reason a role restore did not take. Null when there is nothing to say — the role
+ * is untouched, still running, or succeeded (success removes the row rather than annotating it).
+ *
+ * The two failures are deliberately worded differently because the user's next move differs:
+ * REJECTED is terminal for that app, UNAVAILABLE is worth retrying once the bridge is up.
+ */
+private fun roleAttemptMessage(attempt: ReceiverState.RoleAttempt?): String? = when (attempt) {
+    ReceiverState.RoleAttempt.REJECTED ->
+        "This phone wouldn't let that app take the role — it may not support being the default."
+    ReceiverState.RoleAttempt.UNAVAILABLE ->
+        "Couldn't reach the setup bridge. Turn Wireless debugging back on and try again."
+    ReceiverState.RoleAttempt.IN_FLIGHT, null -> null
+}
+
 @Composable
 private fun DefaultRolesSection(
     candidates: List<RoleRestoreCandidate>,
     restored: List<RestorableRole>,
+    attempts: Map<RestorableRole, ReceiverState.RoleAttempt>,
     onRestoreRole: (RestorableRole, String) -> Unit,
 ) {
     val s = LocalSpacing.current
@@ -1039,29 +1058,47 @@ private fun DefaultRolesSection(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         candidates.forEach { candidate ->
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = s.md),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        text = roleLabel(candidate.role),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    Text(
-                        text = candidate.packageName,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+            val attempt = attempts[candidate.role]
+            val inFlight = attempt == ReceiverState.RoleAttempt.IN_FLIGHT
+            Column(Modifier.fillMaxWidth().padding(top = s.md)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = roleLabel(candidate.role),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground,
+                        )
+                        Text(
+                            text = candidate.packageName,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    // Disabled while the bridge round-trip runs. It can take up to 90 s (it may
+                    // have to connect first), and without this the tap looked like it did nothing,
+                    // inviting more taps that each queued another attempt behind the first.
+                    SwissTextAction(
+                        text = if (inFlight) "SETTING…" else "SET",
+                        enabled = !inFlight,
+                        onClick = { onRestoreRole(candidate.role, candidate.packageName) },
                     )
                 }
-                SwissTextAction(
-                    text = "SET",
-                    onClick = { onRestoreRole(candidate.role, candidate.packageName) },
-                )
+                // Say why it failed. The two reasons call for different actions, and saying
+                // nothing — the previous behaviour — was indistinguishable from a dead button.
+                roleAttemptMessage(attempt)?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = s.xs),
+                    )
+                }
             }
         }
         restored.forEach { role ->

@@ -204,6 +204,7 @@ private fun StateBody(
                 optInPermissions = current.optInPermissions,
                 roleCandidates = current.roleCandidates,
                 restoredRoles = current.restoredRoles,
+                roleAttempts = current.roleAttempts,
                 failedItems = current.failedItems,
                 onInstall = { action -> launchInstall(context, action) },
                 onInstallApk = { prompt ->
