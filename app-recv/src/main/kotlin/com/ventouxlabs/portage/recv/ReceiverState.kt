@@ -12,6 +12,8 @@ package com.ventouxlabs.portage.recv
 import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.providers.bluetooth.RePairEntry
+import com.ventouxlabs.portage.providers.roles.RestorableRole
+import com.ventouxlabs.portage.providers.roles.RoleRestoreCandidate
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.relay.RelayRestorePrompt
 import com.ventouxlabs.portage.recv.checklist.ChecklistGroup
@@ -115,6 +117,24 @@ sealed interface ReceiverState {
          */
         val optInPermissions: List<OptInPermissions> = emptyList(),
         /**
+         * Default-app roles (#122) the sender had whose app is installed here, offered for an
+         * explicit per-role tap. Nothing is applied until the user acts — the shell path shows no
+         * system confirm dialog, so consent lives entirely here.
+         */
+        val roleCandidates: List<RoleRestoreCandidate> = emptyList(),
+        /** Roles the user confirmed and the platform accepted. */
+        val restoredRoles: List<RestorableRole> = emptyList(),
+        /**
+         * What is happening, or last happened, on a role the user tapped (#122). Absent ⇒ untouched.
+         *
+         * Load-bearing for honesty, not decoration. The restore can take up to 90 s (it may have to
+         * connect the bridge first) and can fail for two very different reasons the user can act on
+         * differently — the app does not qualify, versus setup is not ready. Without this the tap
+         * produced NO visible change on either failure, which on a build whose bridge was never set
+         * up made SET a permanently dead button.
+         */
+        val roleAttempts: Map<RestorableRole, RoleAttempt> = emptyMap(),
+        /**
          * Non-OK items from the transfer, in receive order, with their display names attached.
          * Split by [isTerminal] for the Done-screen sections (U3a).
          */
@@ -123,4 +143,21 @@ sealed interface ReceiverState {
 
     /** Fail-closed terminal state with a user-facing reason. */
     data class Failed(val reason: String) : ReceiverState
+
+    /**
+     * The visible state of one tapped role (#122). There is deliberately no SUCCEEDED entry: a
+     * confirmed restore moves the role into [Done.restoredRoles] and out of the offered list, so
+     * success is represented by the row changing rather than by a status on a row that is still
+     * asking to be tapped.
+     */
+    enum class RoleAttempt {
+        /** The bridge round-trip is running (it may be connecting first — up to 90 s). */
+        IN_FLIGHT,
+
+        /** The platform accepted the call and declined the change — usually role qualification. */
+        REJECTED,
+
+        /** No live bridge, or the result could not be verified. Retrying is safe. */
+        UNAVAILABLE,
+    }
 }

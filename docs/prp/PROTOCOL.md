@@ -1,4 +1,4 @@
-# PROTOCOL.md — `portage` pairing + transfer wire format (v4)
+# PROTOCOL.md — `portage` pairing + transfer wire format (v5)
 
 Scope: one sender (`portage-send`, old phone), one receiver (`portage-recv`, new phone),
 same LAN, no cloud, no relay. One transfer session at a time.
@@ -124,7 +124,7 @@ close
 
 `ItemMeta = {item_id (u32), kind (tstr: "contacts.vcf" | "calendar.ics" | "calllog" |
 "sms" | "mms" | "inventory" | "apk" | "settings" | "wallpaper" | "sound.selection" |
-"sound.file" | "app.backup.relay" | "user.file" | …), tier (0|1),
+"sound.file" | "app.backup.relay" | "user.file" | "roles" | …), tier (0|1),
 size, sha256, display_name, group}`.
 
 > The `contacts.vcf` kind is vCard 3.0 plus Portage extension fields where Android exposes
@@ -183,7 +183,28 @@ size, sha256, display_name, group}`.
 > pending sends, and original thread ids remain out of scope. Protocol `v=4` is required for
 > the new enum value.
 
-> No `seedvault.blob` kind in v4: couriering a Seedvault file would imply app-data
+> The `roles` kind carries the user's CHOICE of default browser / dialer / launcher as a small
+> JSON snapshot of `(role, packageName)` pairs — never an app, never app data. The role is a
+> CLOSED ENUM on the wire, so an unknown role fails to deserialize and the whole item is
+> rejected; the package name is attacker-chosen and constrained only by a package-name grammar,
+> by being installed on the receiver, and by an explicit per-role user tap. The receiver applies
+> NOTHING on its own: the shell path (`cmd role add-role-holder`) shows no system confirm dialog,
+> so the entire consent burden is portage's own UI. The write is verified by reading the role
+> back — a zero exit code is not treated as proof it landed. Protocol `v=5` is required for the
+> new enum value.
+
+> **How `kind` is actually encoded, and why every new kind needs a version bump.** The prose
+> above lists the `wire` strings for readability, but those strings are decorative: `ItemKind`
+> carries no `@SerialName`, so kotlinx.serialization encodes it by KOTLIN CONSTANT NAME
+> (`DEFAULT_ROLES`, not `roles`). Two consequences, both easy to get wrong:
+> renaming a Kotlin constant is a WIRE BREAK even when its `wire` string is unchanged; and a peer
+> that lacks the constant fails with a hard `SerializationException` at manifest decode — it does
+> NOT degrade to `UNKNOWN_KIND`, which only covers a peer that HAS the constant but no handler.
+> `ignoreUnknownKeys` does not help; it governs object keys, not enum values. That is the whole
+> reason the version gate exists: without a bump both peers still advertise the same number, QR
+> validation passes, and the transfer dies AFTER pairing instead of refusing cleanly before it.
+
+> No `seedvault.blob` kind in v5: couriering a Seedvault file would imply app-data
 > transfer, which the Seedvault division of labor explicitly excludes (PRP §2,
 > DEVILS_ADVOCATE Q5). Reconsider only behind a future protocol bump with explicit UX copy.
 

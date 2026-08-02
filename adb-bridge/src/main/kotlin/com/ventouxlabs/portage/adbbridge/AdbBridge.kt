@@ -120,6 +120,76 @@ interface AdbBridge {
     suspend fun setSmsRoleHolder(packageName: String): OpResult =
         typedOp("cmd", "role", "add-role-holder", "android.app.role.SMS", packageName)
 
+    /**
+     * Restore a captured default-app role (#122). Verified on GOS A17: the flip takes effect and
+     * SURVIVES REBOOT (`SPIKE-RESULTS-2026-07-31.md` §2, §8.2) — **for BROWSER only**. DIALER and
+     * HOME ship unexercised, as does role-qualification failure (§2 records both as untested); that
+     * gap is why [roleHolders] exists rather than trusting this call's exit code.
+     *
+     * [role] is an ENUM, never a wire string, and that is load-bearing rather than stylistic. The
+     * role argument selects WHICH system capability is handed to a package; if it could be carried
+     * as free text, a hostile-but-authenticated sender could aim this verb at a role portage never
+     * intended to restore (ASSISTANT, CALL_REDIRECTION, SMS…). Restricting it to a compiled-in set
+     * makes that unrepresentable instead of merely validated.
+     *
+     * [packageName] is still untrusted. Be precise about what guards it, because the two layers
+     * cover DIFFERENT things and neither is a spare for the other:
+     *  - [ShellArgs] here rejects control characters and quotes shell metacharacters — but its
+     *    SAFE_ARG allowlist INCLUDES `-`, so it would pass `--user` through as a bare argument. It
+     *    is not a defence against flag injection.
+     *  - The CALLER's package-name grammar is what stops that: a full match on dot-separated
+     *    `[A-Za-z0-9_]` segments admits no leading dash, no separator, no metacharacter.
+     *
+     * BE PRECISE ABOUT WHAT DOES *NOT* GUARD IT. An earlier version of this note claimed the caller
+     * "intersects the name with the verified manifest". It does not, and such an intersection would
+     * be worthless if it did — the same sender supplies the manifest. **The package is fully
+     * attacker-chosen.** The real constraints are exactly three: it is syntactically a package name,
+     * it is installed on this device, and the user explicitly tapped that row. Unlike the relay
+     * (THREAT_MODEL row 13), the target cannot be derived from a typed enum — browsers are not
+     * enumerable — so this is an accepted residual, not a defence.
+     *
+     * NOTE: the shell path applies the change with NO user-confirm dialog — the platform will not
+     * ask on portage's behalf. Callers MUST gate this behind explicit opt-in consent.
+     *
+     * A zero exit code is NOT proof the role changed — see [roleHolders]; callers that report
+     * success to the user must read the role back rather than trusting this result.
+     */
+    suspend fun setRoleHolder(role: RoleTarget, packageName: String): OpResult =
+        typedOp("cmd", "role", "add-role-holder", role.roleName, packageName)
+
+    /**
+     * Read the current holders of [role] (`cmd role get-role-holders`).
+     *
+     * READ-ONLY: this hands over no capability, which is why it is a narrower privilege-surface
+     * addition than [setRoleHolder]. It exists so a caller can VERIFY a write instead of inferring
+     * success from an exit code.
+     *
+     * That distinction is load-bearing. `add-role-holder` was only ever exercised on the SUCCESS
+     * path during the A17 spike (`SPIKE-RESULTS-2026-07-31.md` §2 records role-qualification
+     * failure as untested), so "exit 0" has never been shown to mean "the role actually moved". If
+     * the platform exits 0 while silently refusing a non-qualifying package, a caller trusting the
+     * exit code reports a default it did not set — the exact dishonesty this feature exists to
+     * avoid. Reading back replaces that assumption with evidence.
+     *
+     * Returns null when the bridge is unreachable or the command failed, which callers MUST treat
+     * as "not verified" rather than as "no holders" — the two are not the same and collapsing them
+     * would fail OPEN.
+     */
+    suspend fun roleHolders(role: RoleTarget): Set<String>? {
+        val command = ShellArgs.command("cmd", "role", "get-role-holders", role.roleName)
+            ?: return null
+        val result = shell(command)
+        if (result !is ShellResult.Completed || !result.ok) return null
+        // Output is one package per line (empty when nothing holds the role). Tolerate CR, blank
+        // lines and surrounding space; anything that is not a plausible package name is dropped
+        // rather than trusted, so a chatty or localised build cannot manufacture a false match.
+        return result.stdout
+            .lineSequence()
+            .map { it.trim() }
+            .filter { PACKAGE_LINE.matches(it) }
+            .toSet()
+    }
+
     /** Build a validated argv, run it, and fold the [ShellResult] into a typed [OpResult]. */
     private suspend fun typedOp(vararg argv: String): OpResult {
         val command = ShellArgs.command(*argv)
@@ -132,6 +202,23 @@ interface AdbBridge {
     enum class NavigationMode(internal val overlayPackage: String) {
         GESTURAL("com.android.internal.systemui.navbar.gestural"),
         THREE_BUTTON("com.android.internal.systemui.navbar.threebutton"),
+    }
+
+    /**
+     * The default-app roles [setRoleHolder] may restore (#122). CLOSED SET, deliberately — the role
+     * name can never originate from the wire, so a hostile manifest cannot aim the verb at a role
+     * portage never meant to hand over. Adding an entry here is a privilege-surface change and gets
+     * a security-review lane.
+     *
+     * SMS is deliberately ABSENT. It already ships via [setSmsRoleHolder] with its own transient
+     * acquire/write/relinquish discipline and its own hard self-gate, and it is currently broken on
+     * GOS (#61) — folding it in here would entangle this verb with that bug and widen what one call
+     * can do.
+     */
+    enum class RoleTarget(internal val roleName: String) {
+        BROWSER("android.app.role.BROWSER"),
+        DIALER("android.app.role.DIALER"),
+        HOME("android.app.role.HOME"),
     }
 
     /** What the connected device verifiably allows — gates checklist items and wizard copy. */
@@ -232,3 +319,9 @@ internal fun AdbBridge.ShellResult.toOpResult(): AdbBridge.OpResult = when (this
 }
 
 private const val MAX_REASON_CHARS = 200
+
+/**
+ * A plausible package name in `cmd role get-role-holders` output. Deliberately the same shape the
+ * callers validate with: anything else on that stream is noise, not a holder.
+ */
+private val PACKAGE_LINE = Regex("""[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+""")

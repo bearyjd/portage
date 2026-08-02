@@ -33,9 +33,20 @@ that resolve them before any wire code is written.
 
 Add a self-describing, **streamed** multi-file container for the existing `ItemKind.APK`, install it through
 **narrow injected seams** (never a direct `:providers → :adb-bridge` dependency), reconcile splits against the
-target device, and layer **deferred, default-safe** permission parity on top. No `PROTOCOL_VERSION` bump (the kind
-is already in the append-only enum; an older receiver lacking the handler degrades via `UNKNOWN_KIND`, consistent
-with how `WALLPAPER`/`SOUND_SELECTION`/`APP_BACKUP_RELAY` were added).
+target device, and layer **deferred, default-safe** permission parity on top. No `PROTOCOL_VERSION` bump — but for
+one narrow reason only: `APK` **already exists** in the enum, so this ADR adds a payload format for an existing
+kind, not a new kind.
+
+> **CORRECTION (#122, 2026-08-01).** The original text justified the no-bump by saying an older receiver
+> "degrades via `UNKNOWN_KIND`, consistent with how `WALLPAPER`/`SOUND_SELECTION`/`APP_BACKUP_RELAY` were
+> added". Both halves are wrong and the reasoning must not be reused. `ItemKind` is serialized by **Kotlin
+> constant name** (the `wire` strings carry no `@SerialName`), so a peer lacking the constant fails with a hard
+> `SerializationException` at MANIFEST DECODE — verified by probe, and `ignoreUnknownKeys` does not help because
+> it governs object keys, not enum values. `UNKNOWN_KIND` only covers a peer that HAS the constant but no
+> handler. And those three kinds were never "added" later: they shipped in v1. Every kind added after v1 bumped
+> (`user.file`→2, `sound.file`→3, `mms`→4, `roles`→5). **Adding a new `ItemKind` REQUIRES a `PROTOCOL_VERSION`
+> bump**; without one both peers advertise the same version, QR validation passes, and the transfer dies after
+> pairing instead of refusing cleanly before it. See PROTOCOL.md.
 
 ## Decisions locked
 

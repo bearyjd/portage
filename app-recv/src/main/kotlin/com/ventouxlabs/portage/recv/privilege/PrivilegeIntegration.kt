@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import com.ventouxlabs.portage.providers.apk.ApkSilentInstaller
 import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
 import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
+import com.ventouxlabs.portage.providers.roles.RoleRestorer
 import com.ventouxlabs.portage.providers.settings.TierOneGrant
 
 /**
@@ -37,6 +38,19 @@ class PrivilegeWiring(
     val targetDeclaredPermissions: TargetDeclaredPermissions,
     val tierOneGrant: TierOneGrant,
     val optInPermissionGranter: RuntimePermissionGranter,
+    /**
+     * Restores a captured default-app role (#122). degoogle maps onto the bridge's typed
+     * RoleTarget; play gets [RoleRestorer.Unavailable] because it ships no bridge. Only ever
+     * invoked from an explicit per-role user action — the shell path shows no confirm dialog.
+     */
+    val roleRestorer: RoleRestorer,
+    /**
+     * Whether this BUILD can restore roles at all. False on play, which ships no bridge — so the
+     * receiver must not offer a "set as default" affordance it can never honour. Distinct from the
+     * per-attempt outcome: on degoogle this is true even before the bridge is connected, and a
+     * failed attempt then leaves the row offered rather than claiming success.
+     */
+    val canRestoreRoles: Boolean,
 )
 
 /**

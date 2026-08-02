@@ -39,10 +39,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ventouxlabs.portage.providers.bluetooth.RePairEntry
+import com.ventouxlabs.portage.providers.roles.RestorableRole
+import com.ventouxlabs.portage.providers.roles.RoleRestoreCandidate
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.inventory.InstallStore
 import com.ventouxlabs.portage.providers.permission.PermissionAllowlist
@@ -50,6 +54,7 @@ import com.ventouxlabs.portage.providers.relay.RelayApp
 import com.ventouxlabs.portage.providers.relay.RelayRestorePrompt
 import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.recv.FailedItem
+import com.ventouxlabs.portage.recv.ReceiverState
 import com.ventouxlabs.portage.recv.ItemPhase
 import com.ventouxlabs.portage.recv.ItemProgress
 import com.ventouxlabs.portage.recv.OptInPermissions
@@ -204,19 +209,27 @@ fun DoneScreen(
     apkInstallPrompts: List<ApkInstallPrompt> = emptyList(),
     restoredPermissions: List<RestoredPermissions> = emptyList(),
     optInPermissions: List<OptInPermissions> = emptyList(),
+    roleCandidates: List<RoleRestoreCandidate> = emptyList(),
+    restoredRoles: List<RestorableRole> = emptyList(),
+    roleAttempts: Map<RestorableRole, ReceiverState.RoleAttempt> = emptyMap(),
     failedItems: List<FailedItem> = emptyList(),
     onInstall: (InstallAction) -> Unit = {},
     onInstallApk: (ApkInstallPrompt) -> Unit = {},
     onGrantOptIn: (packageName: String, permissions: List<String>) -> Unit = { _, _ -> },
+    onRestoreRole: (RestorableRole, String) -> Unit = { _, _ -> },
     onOpenBluetoothSettings: () -> Unit = {},
     onOpenRelayApp: (RelayRestorePrompt) -> Unit = {},
     backupActionLabel: String = "Open backup settings",
     onOpenBackup: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
+    // Every list that can render a section below MUST be checked here. A section missing from this
+    // guard is invisible exactly when it is the only thing that happened — the summary-only branch
+    // returns before the section list is ever reached.
     if (installActions.isEmpty() && repairEntries.isEmpty() &&
         relayPrompts.isEmpty() && apkInstallPrompts.isEmpty() && restoredPermissions.isEmpty() &&
-        optInPermissions.isEmpty() && failedItems.isEmpty()
+        optInPermissions.isEmpty() && failedItems.isEmpty() &&
+        roleCandidates.isEmpty() && restoredRoles.isEmpty()
     ) {
         Column(
             modifier = modifier
@@ -308,6 +321,20 @@ fun DoneScreen(
                 item {
                     Spacer(Modifier.height(s.lg))
                     OptInPermissionsSection(optInPermissions = optInPermissions, onGrantOptIn = onGrantOptIn)
+                }
+            }
+            if (roleCandidates.isNotEmpty() || restoredRoles.isNotEmpty()) {
+                // DEFAULT APPS (#122). The shell path applies a role change with NO system confirm
+                // dialog, so this tap is the ONLY consent that exists. One tap per role, never a
+                // "restore all" — each default is a separate decision.
+                item {
+                    Spacer(Modifier.height(s.lg))
+                    DefaultRolesSection(
+                        candidates = roleCandidates,
+                        restored = restoredRoles,
+                        attempts = roleAttempts,
+                        onRestoreRole = onRestoreRole,
+                    )
                 }
             }
             if (installActions.isNotEmpty()) {
@@ -969,4 +996,137 @@ internal fun statusReason(status: ItemStatus): String? = when (status) {
 internal fun isTerminal(status: ItemStatus): Boolean = when (status) {
     ItemStatus.OK, ItemStatus.HASH_MISMATCH, ItemStatus.WRITE_ERROR -> false
     ItemStatus.SKIPPED, ItemStatus.UNKNOWN_KIND, ItemStatus.OVERSIZE -> true
+}
+
+/** Human label for a carried default-app role. */
+private fun roleLabel(role: RestorableRole): String = when (role) {
+    RestorableRole.BROWSER -> "Browser"
+    RestorableRole.DIALER -> "Phone"
+    RestorableRole.HOME -> "Home screen"
+}
+
+/**
+ * The default-app restore surface (#122).
+ *
+ * Consent lives HERE and nowhere else. Restoring a role through the bridge shows **no system
+ * confirm dialog** — the platform will not ask on portage's behalf — so this tap is the only thing
+ * standing between "portage knows your old default" and "portage changed your default". Hence:
+ * one explicit tap per role, no "restore all", and nothing pre-selected.
+ *
+ * Only roles whose app is actually installed here are ever offered, so a tap cannot point a role at
+ * something missing. That filter is NOT in the apply provider (it cannot be — Tier-0 installs land
+ * after apply returns); the ViewModel applies it against a live installed-set read when it builds
+ * Done, on every resume, and once more at tap time. A role that fails to apply stays offered rather
+ * than moving to "set" — portage must not claim a default it did not set.
+ */
+/**
+ * The user-facing reason a role restore did not take. Null when there is nothing to say — the role
+ * is untouched, still running, or succeeded (success removes the row rather than annotating it).
+ *
+ * The two failures are deliberately worded differently because the user's next move differs:
+ * REJECTED is terminal for that app, UNAVAILABLE is worth retrying once the bridge is up.
+ */
+private fun roleAttemptMessage(attempt: ReceiverState.RoleAttempt?): String? = when (attempt) {
+    ReceiverState.RoleAttempt.REJECTED ->
+        "This phone wouldn't let that app take the role — it may not support being the default."
+    ReceiverState.RoleAttempt.UNAVAILABLE ->
+        "Couldn't reach the setup bridge. Turn Wireless debugging back on and try again."
+    ReceiverState.RoleAttempt.IN_FLIGHT, null -> null
+}
+
+@Composable
+private fun DefaultRolesSection(
+    candidates: List<RoleRestoreCandidate>,
+    restored: List<RestorableRole>,
+    attempts: Map<RestorableRole, ReceiverState.RoleAttempt>,
+    onRestoreRole: (RestorableRole, String) -> Unit,
+) {
+    val s = LocalSpacing.current
+    Column {
+        Text(
+            text = "DEFAULT APPS · ${candidates.size + restored.size}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.height(s.sm))
+        HairlineDivider()
+        Spacer(Modifier.height(s.md))
+        Text(
+            text = "These were your defaults on the old phone. portage won't switch them over by " +
+                "itself — choose each one you want.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        candidates.forEach { candidate ->
+            val attempt = attempts[candidate.role]
+            val inFlight = attempt == ReceiverState.RoleAttempt.IN_FLIGHT
+            Column(Modifier.fillMaxWidth().padding(top = s.md)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = roleLabel(candidate.role),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground,
+                        )
+                        Text(
+                            text = candidate.packageName,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    // Disabled while the bridge round-trip runs. It can take up to 90 s (it may
+                    // have to connect first), and without this the tap looked like it did nothing,
+                    // inviting more taps that each queued another attempt behind the first.
+                    SwissTextAction(
+                        text = if (inFlight) "SETTING…" else "SET",
+                        enabled = !inFlight,
+                        onClick = { onRestoreRole(candidate.role, candidate.packageName) },
+                    )
+                }
+                // Say why it failed. The two reasons call for different actions, and saying
+                // nothing — the previous behaviour — was indistinguishable from a dead button.
+                roleAttemptMessage(attempt)?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = s.xs),
+                    )
+                }
+            }
+        }
+        restored.forEach { role ->
+            Row(
+                // The completed row is a STATE, not an action. It previously read "SET" — the same
+                // word as the tappable affordance, separated only by colour — so a user could
+                // reasonably tap the inert one and a screen reader announced both identically. The
+                // wording now differs, and stateDescription carries the distinction non-visually,
+                // which matters here because an honest consent surface is the whole point of the
+                // feature.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = s.md)
+                    .semantics { stateDescription = "Set as default" },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = roleLabel(role),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "DEFAULT",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
 }

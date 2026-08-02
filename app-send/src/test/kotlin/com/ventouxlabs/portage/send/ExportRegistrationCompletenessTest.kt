@@ -10,6 +10,8 @@
 package com.ventouxlabs.portage.send
 
 import com.ventouxlabs.portage.model.ItemKind
+import com.ventouxlabs.portage.providers.roles.DefaultRolesStore
+import com.ventouxlabs.portage.providers.roles.RestorableRole
 import com.ventouxlabs.portage.providers.bluetooth.BluetoothStore
 import com.ventouxlabs.portage.providers.bluetooth.BondedDevice
 import com.ventouxlabs.portage.providers.calendar.CalendarStore
@@ -64,6 +66,7 @@ class ExportRegistrationCompletenessTest {
             wallpaperStore = CompletenessWallpaperStore,
             soundStore = CompletenessSoundStore,
             bluetoothStore = CompletenessBluetoothStore,
+            defaultRolesStore = CompletenessDefaultRolesStore,
         )
 
         val registered = providers.map { it.kind }.distinct()
@@ -73,6 +76,12 @@ class ExportRegistrationCompletenessTest {
 
         assertThat(registered).containsExactlyElementsIn(expected)
     }
+}
+
+private object CompletenessDefaultRolesStore : DefaultRolesStore {
+    // Returns null for every role — the point of this fixture is that the KIND SET is decoupled
+    // from fake data richness, so the completeness assertion cannot pass vacuously.
+    override fun currentHolder(role: RestorableRole): String? = null
 }
 
 private object CompletenessContactsStore : ContactsStore {

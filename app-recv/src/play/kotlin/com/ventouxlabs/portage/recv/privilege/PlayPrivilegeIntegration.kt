@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import com.ventouxlabs.portage.providers.apk.ApkSilentInstaller
 import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
 import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
+import com.ventouxlabs.portage.providers.roles.RoleRestorer
 import com.ventouxlabs.portage.providers.settings.TierOneGrant
 
 /**
@@ -54,6 +55,9 @@ internal fun playWiring(): PrivilegeWiring = PrivilegeWiring(
     targetDeclaredPermissions = TargetDeclaredPermissions.None,
     tierOneGrant = TierOneGrant.Unavailable,
     optInPermissionGranter = RuntimePermissionGranter.NoOp,
+    // No bridge in this flavor, so role restore is structurally impossible — not merely disabled.
+    roleRestorer = RoleRestorer.Unavailable,
+    canRestoreRoles = false,
 )
 
 /** `play`: the Tier-0 stub — no `:adb-bridge`, no `:wizard`, no privilege. */

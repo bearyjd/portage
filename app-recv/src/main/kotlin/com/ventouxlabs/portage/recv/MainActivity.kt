@@ -30,6 +30,7 @@ import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
 import com.ventouxlabs.portage.providers.inventory.AppRecord
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.bluetooth.BtPairingsApplyProvider
+import com.ventouxlabs.portage.providers.roles.DefaultRolesApplyProvider
 import com.ventouxlabs.portage.providers.calendar.AndroidCalendarStore
 import com.ventouxlabs.portage.providers.calendar.CalendarApplyProvider
 import com.ventouxlabs.portage.providers.calendar.CalendarStore
@@ -134,6 +135,11 @@ class MainActivity : ComponentActivity() {
         // Returning from the system change-default prompt: re-check whether portage is still the
         // default SMS app so the in-app "restore" affordance clears once the role is handed back.
         viewModel.refreshSmsRoleStrand()
+        // Returning from the system APK-install confirm dialogs: the apps this transfer carried may
+        // only NOW exist, so re-evaluate which carried default-app roles are restorable (#122).
+        // Without this the headline case ("restore my defaults after reinstalling my apps") stays
+        // filtered out — the installs complete strictly after the roles item applied.
+        viewModel.refreshRoleCandidates()
         // Returning from Settings mid-wizard: Developer options / Wireless debugging may have just been
         // toggled — let the active flavor's privilege integration advance (degoogle: wizard recheck;
         // play: no-op).
@@ -250,6 +256,10 @@ private class ReceiverViewModelFactory(
                         // Explicit SAF-selected user files land in the public Downloads/Portage
                         // collection through MediaStore; no broad storage permission or path is trusted.
                         userFileWrite = AndroidUserFileStore(context)::write,
+                        // degoogle: true once a bridge exists; play: always false, so the carried
+                        // defaults report SKIPPED rather than counting as moved (nothing is
+                        // restorable on a build with no bridge).
+                        canRestoreRoles = { wiring.canRestoreRoles },
                         sinks = sinks,
                     ),
                 )
@@ -267,6 +277,14 @@ private class ReceiverViewModelFactory(
             // auto-grant granter (that one is DEFAULT_SAFE-belt-filtered and runs inside the silent
             // install). play: RuntimePermissionGranter.NoOp — the Done-screen opt-in grants nothing.
             optInPermissionGranter = wiring.optInPermissionGranter,
+            roleRestorer = wiring.roleRestorer,
+            canRestoreRoles = wiring.canRestoreRoles,
+            // Live installed-set read for the role offers (#122) — called fresh on every surface,
+            // never cached, because Tier-0 APK installs complete after apply returns.
+            installedPackages = {
+                runCatching { AndroidInventorySource(context.packageManager).installedPackageNames() }
+                    .getOrDefault(emptySet())
+            },
             // Keeps the process alive + CPU awake for the item stream via a short-lived foreground
             // service so a screen-off can't reset the streaming socket mid-frame (#85).
             transferKeepAlive = ForegroundServiceKeepAlive(context),
@@ -310,6 +328,9 @@ internal fun buildApplyProviders(
     permissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
     targetDeclaredPermissions: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
     tierOneGrant: TierOneGrant = TierOneGrant.Unavailable,
+    // Whether this build can set a default-app role at all (#122): false on play, which ships no
+    // bridge. Only shapes the reported item status, never what is surfaced.
+    canRestoreRoles: () -> Boolean = { false },
 ): List<ApplyProvider> = listOf(
     ContactsApplyProvider(contactsStore, contactImportJournal),
     CalendarApplyProvider(calendarStore),
@@ -353,6 +374,15 @@ internal fun buildApplyProviders(
     // to Phase 2) and carries no link keys (non-transferable). No platform dependency, so it cannot
     // bond by construction.
     BtPairingsApplyProvider(sinks.onRepairEntries),
+    // Tier 1: the sender's default browser / dialer / launcher CHOICE (#122). Applies NOTHING — it
+    // validates and surfaces candidates for an explicit per-role tap. The shell path shows no system
+    // confirm dialog, so silently applying would be power without consent; the restore runs from the
+    // ViewModel on user action. Whether each candidate's app is INSTALLED is decided by the
+    // ViewModel against a live read, not here — Tier-0 installs land after apply returns.
+    DefaultRolesApplyProvider(
+        canRestore = canRestoreRoles,
+        onCandidates = sinks.onRoleCandidates,
+    ),
     // Tier 0: COURIER for a user-exported, app-encrypted backup (Signal/Molly/Aegis; PRP-06).
     // portage relays the OPAQUE file the user picked — it NEVER decrypts, parses, or imports it,
     // and never holds the passphrase.
