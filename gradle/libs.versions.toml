@@ -12,8 +12,8 @@ minSdk = "31"                 # Android 12 = Pixel 6 launch floor
 compileSdk = "37"             # Android 17 = current verified test device; compile-only toolchain posture (#140)
 targetSdk = "36"              # Held separately: target-SDK behavioural changes require their own review (#140)
 # AndroidX
-coreKtx = "1.18.0"
-lifecycle = "2.10.0"
+coreKtx = "1.19.0"
+lifecycle = "2.11.0"
 activityCompose = "1.13.0"
 composeBom = "2026.06.01"     # verify latest
 # Kotlin libraries
