@@ -9,37 +9,17 @@
  */
 package com.ventouxlabs.portage.recv.install
 
-import com.ventouxlabs.portage.adbbridge.AdbBridge.PrivilegedCapability
-import com.ventouxlabs.portage.wizard.PrivilegeWizard
 import com.google.common.truth.Truth.assertThat
+import com.ventouxlabs.portage.adbbridge.AdbBridge.PrivilegedCapability
 import org.junit.Test
 
-/** D6 capability plumbing: read the probed set from the wizard step; choose the silent seam. */
+/** A completed probe is the sole authority for selecting the silent-install seam (#86). */
 class CapabilitySnapshotTest {
 
     @Test
-    fun `a Ready step exposes its probed capabilities`() {
-        val step = PrivilegeWizard.Step.Ready(
-            setOf(PrivilegedCapability.SHELL, PrivilegedCapability.SILENT_INSTALL),
-        )
-        assertThat(capabilitiesOf(step))
-            .containsExactly(PrivilegedCapability.SHELL, PrivilegedCapability.SILENT_INSTALL)
-    }
-
-    @Test
-    fun `every non-Ready step yields the empty set (safe Tier-0 direction)`() {
-        // Process death / not-yet-run / skipped all lose the set → emptySet → Tier-0 fallback.
-        assertThat(capabilitiesOf(PrivilegeWizard.Step.Idle)).isEmpty()
-        assertThat(capabilitiesOf(PrivilegeWizard.Step.Probing)).isEmpty()
-        assertThat(capabilitiesOf(PrivilegeWizard.Step.Skipped)).isEmpty()
-    }
-
-    @Test
-    fun `hasSilentInstall is true only when SILENT_INSTALL is in a Ready step`() {
-        assertThat(hasSilentInstall(PrivilegeWizard.Step.Ready(setOf(PrivilegedCapability.SILENT_INSTALL))))
-            .isTrue()
-        assertThat(hasSilentInstall(PrivilegeWizard.Step.Ready(setOf(PrivilegedCapability.SHELL))))
-            .isFalse()
-        assertThat(hasSilentInstall(PrivilegeWizard.Step.Skipped)).isFalse()
+    fun `only a positive SILENT_INSTALL probe selects the silent seam`() {
+        assertThat(hasSilentInstall(setOf(PrivilegedCapability.SILENT_INSTALL))).isTrue()
+        assertThat(hasSilentInstall(setOf(PrivilegedCapability.SHELL))).isFalse()
+        assertThat(hasSilentInstall(emptySet())).isFalse()
     }
 }
