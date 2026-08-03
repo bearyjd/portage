@@ -22,7 +22,6 @@ import com.ventouxlabs.portage.providers.settings.TierOneGrant
 import com.ventouxlabs.portage.recv.install.AdbApkInstaller
 import com.ventouxlabs.portage.recv.install.AdbRuntimePermissionGranter
 import com.ventouxlabs.portage.recv.install.androidTargetDeclaredPermissions
-import com.ventouxlabs.portage.recv.install.hasSilentInstall
 import com.ventouxlabs.portage.recv.roles.AdbRoleRestorer
 import com.ventouxlabs.portage.recv.ui.WizardScreen
 import com.ventouxlabs.portage.wizard.PrivilegeWizard
@@ -50,8 +49,9 @@ object DegooglePrivilegeIntegration : PrivilegeIntegration {
             // The P6 stdin-streaming silent installer (AdbApkInstaller → pm install-write -S .. - over
             // the bridge); self-guards via AdbBridge.connect() and degrades to Tier-0 when unavailable.
             silentInstaller = AdbApkInstaller(bridge),
-            // SILENT_INSTALL capability read from the wizard's probed set (Ready → caps, else emptySet).
-            hasSilentInstall = { hasSilentInstall(PrivilegeWizardHolder.get(context).step.value) },
+            // The completed probe survives leaving the wizard's transient Ready state (#86). Until a
+            // positive probe exists (or after an unsupported probe), stay on the normal Tier-0 path.
+            hasSilentInstall = { PrivilegeWizardHolder.hasSilentInstall(context) },
             // Runtime-permission parity (ADR-006 D5), silent-install path only.
             permissionGranter = AdbRuntimePermissionGranter(bridge),
             // The target's declared set, read from PackageManager post-install.
