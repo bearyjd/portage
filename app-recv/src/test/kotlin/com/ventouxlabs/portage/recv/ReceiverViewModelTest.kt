@@ -333,6 +333,36 @@ class ReceiverViewModelTest {
         assertThat(done.installActions).isEmpty()
     }
 
+    @Test
+    fun `a failed item reaches Done with its display name, not its raw item id`() = runTest(dispatcher) {
+        val contacts = FakeApply(ItemKind.CONTACTS_VCF)
+        val calls = FakeApply(ItemKind.CALL_LOG, ApplyOutcome(ItemStatus.WRITE_ERROR, "no space left"))
+        val channel = happyChannel()
+        val vm = viewModel(
+            channel,
+            registryFactory = ApplyRegistryFactory { _ -> ApplyProviderRegistry(listOf(contacts, calls)) },
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        val done = vm.state.value as ReceiverState.Done
+        assertThat(done.moved).isEqualTo(1)
+        assertThat(done.skipped).isEqualTo(1)
+        // The name is only reachable from the Transferring state, so doneStateFrom MUST read it
+        // before the transition to Done. Read afterwards, nameById is empty and every failed row
+        // silently degrades to "#2" — a user staring at "#2 NOT SAVED" learns nothing about which
+        // of their things did not make it over.
+        val failed = done.failedItems.single()
+        assertThat(failed.itemId).isEqualTo(2)
+        assertThat(failed.displayName).isEqualTo("Call history")
+        assertThat(failed.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(failed.detail).isEqualTo("no space left")
+    }
+
     // ---- transfer keep-alive (#85): foreground-service lifecycle around the item stream ----
 
     @Test
