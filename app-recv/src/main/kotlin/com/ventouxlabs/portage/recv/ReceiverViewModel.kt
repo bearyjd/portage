@@ -79,9 +79,10 @@ class ReceiverViewModel(
     // on the Done screen; none performs a silent side effect — they produce user-driven checklists.
     applyRegistryFactory: ApplyRegistryFactory =
         ApplyRegistryFactory { _ -> ApplyProviderRegistry(emptyList()) },
-    // Called on reset to abandon sealed-but-uncommitted PackageInstaller sessions from this run.
-    // No-op default; production wires PackageInstallerApkInstaller.abandonUncommittedSessions (fix 5).
-    abandonSessions: () -> Unit = {},
+    // Called on [reset] (return-home) to abandon any sealed-but-uncommitted PackageInstaller
+    // sessions from this run. Injected from `:app-recv` so the ViewModel stays Android-free (fix 5).
+    // No-op default; production wires PackageInstallerApkInstaller.abandonUncommittedSessions.
+    private val abandonSessions: () -> Unit = {},
     // POST-Done opt-in dangerous-permission grant (ADR-006 D5, Phase 5d-2). DISTINCT from the apply
     // provider's auto-grant seam: that one runs INSIDE the silent-install apply, belt-filtered to
     // DEFAULT_SAFE, and has already disconnected by the time Done shows. THIS one is user-driven — it
@@ -193,13 +194,6 @@ class ReceiverViewModel(
      */
     private val _smsRoleStrand = MutableStateFlow<SmsRoleStrand?>(null)
     val smsRoleStrand: StateFlow<SmsRoleStrand?> = _smsRoleStrand.asStateFlow()
-
-    /**
-     * Called on [reset] (return-home) to abandon any sealed-but-uncommitted `PackageInstaller`
-     * sessions from this run. Injected from `:app-recv` so the ViewModel stays Android-free (fix 5).
-     * Default is a no-op; production wires [PackageInstallerApkInstaller.abandonUncommittedSessions].
-     */
-    private val onAbandonSessions: () -> Unit = abandonSessions
 
     private val applyRegistry: ApplyProviderRegistry =
         applyRegistryFactory.create(
@@ -385,27 +379,9 @@ class ReceiverViewModel(
                     return@launch
                 }
                 ensureActive() // a reset() mid-run must not be overwritten by Done
-                val moved = results.count { it.status == ItemStatus.OK }
-                val nameById = (_state.value as? ReceiverState.Transferring)
-                    ?.items?.associate { it.itemId to it.displayName }
-                    ?: emptyMap()
-                val failedItems = results
-                    .filter { it.status != ItemStatus.OK }
-                    .map { r -> FailedItem(r.itemId, nameById[r.itemId] ?: "#${r.itemId}", r.status, r.detail) }
-                _state.value = ReceiverState.Done(
-                    moved = moved,
-                    skipped = results.size - moved,
-                    installActions = _installActions.value,
-                    repairEntries = _repairEntries.value,
-                    relayPrompts = _relayPrompts.value,
-                    apkInstallPrompts = _apkInstallPrompts.value,
-                    restoredPermissions = _restoredPermissions.value,
-                    optInPermissions = _optInPermissions.value,
-                    roleCandidates = restorableCandidates(),
-                    restoredRoles = _restoredRoles.value,
-                    roleAttempts = _roleAttempts.value,
-                    failedItems = failedItems,
-                )
+                // Built while the state is still Transferring — doneStateFrom reads it for the
+                // per-item display names.
+                _state.value = doneStateFrom(results)
                 channel?.close()
                 channel = null
             } catch (c: CancellationException) {
@@ -424,6 +400,38 @@ class ReceiverViewModel(
                 transferKeepAlive.stop()
             }
         }
+    }
+
+    /**
+     * Assemble the Done snapshot from the run's results plus whatever the apply providers pushed
+     * into the [DoneSinks] flows.
+     *
+     * Done — not those flows — is what the screen renders and what [restoreRole] and [grantOptIn]
+     * validate a user's tap against, so it is built in exactly one place. MUST be called while the
+     * state is still [ReceiverState.Transferring]: the per-item display names come from that state,
+     * and a failed item read after the transition would fall back to "#id".
+     */
+    private fun doneStateFrom(results: List<ItemResult>): ReceiverState.Done {
+        val moved = results.count { it.status == ItemStatus.OK }
+        val nameById = (_state.value as? ReceiverState.Transferring)
+            ?.items?.associate { it.itemId to it.displayName }
+            ?: emptyMap()
+        return ReceiverState.Done(
+            moved = moved,
+            skipped = results.size - moved,
+            installActions = _installActions.value,
+            repairEntries = _repairEntries.value,
+            relayPrompts = _relayPrompts.value,
+            apkInstallPrompts = _apkInstallPrompts.value,
+            restoredPermissions = _restoredPermissions.value,
+            optInPermissions = _optInPermissions.value,
+            roleCandidates = restorableCandidates(),
+            restoredRoles = _restoredRoles.value,
+            roleAttempts = _roleAttempts.value,
+            failedItems = results
+                .filter { it.status != ItemStatus.OK }
+                .map { r -> FailedItem(r.itemId, nameById[r.itemId] ?: "#${r.itemId}", r.status, r.detail) },
+        )
     }
 
     /**
@@ -692,7 +700,7 @@ class ReceiverViewModel(
         // the prompt list — a user who never tapped install and hits Home must not leave APK bytes
         // lingering in uncommitted sessions (fix 5). Best-effort: abandonUncommittedSessions is
         // wrapped in runCatching inside the adapter so this can never throw.
-        onAbandonSessions()
+        abandonSessions()
         _installActions.value = emptyList()
         _repairEntries.value = emptyList()
         _relayPrompts.value = emptyList()
@@ -743,35 +751,6 @@ class ReceiverViewModel(
         channel?.close()
         super.onCleared()
     }
-}
-
-/**
- * The Done-screen sinks the apply providers feed (ADR-006). All are checklists/prompts/summaries the
- * user works through on the Done screen, NEVER silent side effects: [onInstallActions] the app-inventory
- * reinstall list, [onRepairEntries] the bonded-Bluetooth re-pair list (PRP-07 Phase 1 — display only,
- * never createBond), [onRelayPrompt] the per-app-backup re-link reminder (PRP-06 — portage hands off the
- * OPAQUE file and never imports it), [onApkInstallPrompt] the Tier-0 install rows, [onPermissionsRestored]
- * the auto-granted default-safe perms summary (ADR-006 D5), [onOptInPermissions] the opt-in dangerous-perm
- * surface (ADR-006 D5, Phase 5d — DATA ONLY, nothing granted from it).
- *
- * Bundled into one holder so adding a sink is a one-line change here, not a positional-param churn across
- * every [ApplyRegistryFactory] call site (production + tests).
- */
-data class DoneSinks(
-    val onInstallActions: (List<InstallAction>) -> Unit,
-    val onRepairEntries: (List<RePairEntry>) -> Unit,
-    val onRelayPrompt: (RelayRestorePrompt) -> Unit,
-    val onApkInstallPrompt: (ApkInstallPrompt) -> Unit,
-    val onPermissionsRestored: (packageName: String, permissions: List<String>) -> Unit,
-    val onOptInPermissions: (packageName: String, permissions: List<String>) -> Unit,
-    /** Default-app roles the sender had, that are installed here and could be restored (#122). */
-    val onRoleCandidates: (List<RoleRestoreCandidate>) -> Unit,
-)
-
-/** Builds the compiled apply registry, wired to the receiver's Done-screen [DoneSinks]. A `fun interface`
- *  so production wires real providers while tests pass a trivial lambda. */
-fun interface ApplyRegistryFactory {
-    fun create(sinks: DoneSinks): ApplyProviderRegistry
 }
 
 /**
