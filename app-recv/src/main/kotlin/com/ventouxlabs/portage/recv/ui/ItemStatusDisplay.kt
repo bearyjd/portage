@@ -11,12 +11,16 @@ package com.ventouxlabs.portage.recv.ui
 
 import com.ventouxlabs.portage.model.ItemStatus
 
-/**
+/*
  * How a per-item verdict is worded on screen. Pure string mapping, kept apart from the composables
- * so it stays unit-testable (see `ItemStatusDisplayTest` — there is no Robolectric in this repo, so
- * a pure seam is the only JVM-testable surface the Done screen has).
+ * so it stays unit-testable (see ItemStatusDisplayTest — there is no Robolectric in this repo, so a
+ * pure seam is the only JVM-testable surface these strings have).
+ *
+ * A block comment, not KDoc: it describes the file, and a KDoc separated from the next declaration
+ * by a blank line silently documents nothing.
  */
 
+/** The verdict word shown right-aligned on a failed row. */
 internal fun statusWord(status: ItemStatus): String = when (status) {
     ItemStatus.OK -> "MOVED"
     ItemStatus.SKIPPED -> "SKIPPED"
@@ -40,7 +44,3 @@ internal fun isTerminal(status: ItemStatus): Boolean = when (status) {
     ItemStatus.OK, ItemStatus.HASH_MISMATCH, ItemStatus.WRITE_ERROR -> false
     ItemStatus.SKIPPED, ItemStatus.UNKNOWN_KIND, ItemStatus.OVERSIZE -> true
 }
-
-/** "REINSTALL · 3 APPS" — the count decides singular vs plural. */
-internal fun sectionHeading(label: String, count: Int, unit: String, units: String): String =
-    "$label · $count ${if (count == 1) unit else units}"

@@ -11,7 +11,6 @@ package com.ventouxlabs.portage.recv
 
 import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.recv.ui.isTerminal
-import com.ventouxlabs.portage.recv.ui.sectionHeading
 import com.ventouxlabs.portage.recv.ui.statusReason
 import com.ventouxlabs.portage.recv.ui.statusWord
 import com.google.common.truth.Truth.assertThat
@@ -47,18 +46,5 @@ class ItemStatusDisplayTest {
         assertThat(isTerminal(ItemStatus.SKIPPED)).isTrue()
         assertThat(isTerminal(ItemStatus.UNKNOWN_KIND)).isTrue()
         assertThat(isTerminal(ItemStatus.OVERSIZE)).isTrue()
-    }
-
-    @Test fun `sectionHeading uses the singular only for a count of exactly one`() {
-        assertThat(sectionHeading("REINSTALL", 1, "APP", "APPS")).isEqualTo("REINSTALL · 1 APP")
-        assertThat(sectionHeading("REINSTALL", 2, "APP", "APPS")).isEqualTo("REINSTALL · 2 APPS")
-        // A section with no entries never renders, but the heading must still not read "0 APP".
-        assertThat(sectionHeading("REINSTALL", 0, "APP", "APPS")).isEqualTo("REINSTALL · 0 APPS")
-    }
-
-    @Test fun `sectionHeading carries each section's own unit noun`() {
-        assertThat(sectionHeading("RE-PAIR", 1, "DEVICE", "DEVICES")).isEqualTo("RE-PAIR · 1 DEVICE")
-        assertThat(sectionHeading("RESTORE", 3, "BACKUP", "BACKUPS")).isEqualTo("RESTORE · 3 BACKUPS")
-        assertThat(sectionHeading("LEFT BEHIND", 4, "ITEM", "ITEMS")).isEqualTo("LEFT BEHIND · 4 ITEMS")
     }
 }

@@ -43,9 +43,16 @@ import com.ventouxlabs.portage.recv.ui.theme.LocalSpacing
  * row. The section functions carry the rationale for what they surface.
  */
 
+/** "REINSTALL · 3 APPS" — the count decides singular vs plural. */
+internal fun sectionHeading(label: String, count: Int, unit: String, units: String): String =
+    "$label · $count ${if (count == 1) unit else units}"
+
 /**
  * One Done-screen list section. Renders nothing when [entries] is empty, so callers stay
  * declarative — an empty section must not emit its header, or the screen claims work it didn't do.
+ *
+ * `DoneSectionsTest` holds that emit-nothing-when-empty guarantee by driving each section function
+ * with a recording [LazyListScope] and counting emissions.
  */
 private fun <T> LazyListScope.doneSection(
     label: String,
