@@ -110,11 +110,14 @@ class ReceiverViewModel(
     // can't reset the streaming socket mid-frame (#85). NoOp default (tests/previews); production
     // wires a foreground-service-backed implementation. Driven start-before-phase / stop-in-finally.
     private val transferKeepAlive: TransferKeepAlive = TransferKeepAlive.NoOp,
-    // The data phase runs here, NOT on viewModelScope's main dispatcher. Socket reads, sha256
-    // staging to disk, and every provider apply are blocking work; on Main they freeze the UI and,
-    // worse, stall the ack loop until the sender gives up mid-stream (#158 — an 859-event calendar
-    // killed a transfer on real hardware after ~9 s, well inside any deadline). Injected rather
-    // than hardcoded so tests keep virtual-time control via StandardTestDispatcher.
+    // The data phase runs here, NOT on viewModelScope's main dispatcher. Note the socket itself was
+    // never the problem — NoiseSecureChannel already wraps send/receive in Dispatchers.IO. What ran
+    // on Main was everything BETWEEN the frames: the per-chunk sha256, the staging writes, and every
+    // provider apply. That put Main on the critical path of the ack loop (and cost two dispatcher
+    // round-trips per frame), so a slow apply stalled acks until the sender gave up mid-stream
+    // (#158 — an 859-event calendar killed a transfer on real hardware after ~9 s, well inside any
+    // deadline). Injected rather than hardcoded so tests keep virtual-time control via
+    // StandardTestDispatcher.
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
 
@@ -211,29 +214,34 @@ class ReceiverViewModel(
                 // apply's "incompatible on this device — get it from the store" fallback feed this sink, and
                 // items apply sequentially in arbitrary order. Dedup by package so a reinstall row and an
                 // incompatible-APK row for the same app never key the LazyColumn twice.
+                // Every append below uses update {}, NOT read-then-assign. These sinks are invoked
+                // from the apply path, which runs on [ioDispatcher] (#158), while reset() clears the
+                // same flows from Main — a plain assignment loses whichever write lands first (the
+                // reasoning [restoreRole] already spells out). They were safe only while everything
+                // shared the main thread.
                 onInstallActions = { actions ->
-                    _installActions.value = (_installActions.value + actions).distinctBy { it.packageName }
+                    _installActions.update { (it + actions).distinctBy { a -> a.packageName } }
                 },
                 onRepairEntries = { entries -> _repairEntries.value = entries },
                 // Relay items arrive one per apply call; append each prompt so multiple relayed backups
                 // (e.g. Signal AND Aegis in one session) all surface on the Done screen.
-                onRelayPrompt = { prompt -> _relayPrompts.value = _relayPrompts.value + prompt },
+                onRelayPrompt = { prompt -> _relayPrompts.update { it + prompt } },
                 // APK items arrive one per apply call; append each Tier-0 install prompt so multiple apps
                 // in one session all surface their one-tap install row on the Done screen.
-                onApkInstallPrompt = { prompt -> _apkInstallPrompts.value = _apkInstallPrompts.value + prompt },
+                onApkInstallPrompt = { prompt -> _apkInstallPrompts.update { it + prompt } },
                 // Parity re-grants arrive one per silently-installed app; append each so every app's
                 // restored permissions surface on the Done screen (dedup by package — one row per app).
                 onPermissionsRestored = { packageName, permissions ->
-                    _restoredPermissions.value =
-                        (_restoredPermissions.value + RestoredPermissions(packageName, permissions))
-                            .distinctBy { it.packageName }
+                    _restoredPermissions.update {
+                        (it + RestoredPermissions(packageName, permissions)).distinctBy { r -> r.packageName }
+                    }
                 },
                 // Opt-in dangerous perms arrive one per silently-installed app; append (dedup by package).
                 // DATA ONLY — surfaced for an explicit confirm on Done; nothing is granted here (Phase 5d UI).
                 onOptInPermissions = { packageName, permissions ->
-                    _optInPermissions.value =
-                        (_optInPermissions.value + OptInPermissions(packageName, permissions))
-                            .distinctBy { it.packageName }
+                    _optInPermissions.update {
+                        (it + OptInPermissions(packageName, permissions)).distinctBy { o -> o.packageName }
+                    }
                 },
                 // Default-app role candidates (#122). DATA ONLY — dedup by role so a hostile or
                 // duplicated snapshot cannot produce two rows for one role.
@@ -374,11 +382,15 @@ class ReceiverViewModel(
                             userFileMaxTotalBytes = UserFileHeader.MAX_TOTAL_BYTES,
                         ).let { receiver ->
                             // Off Main for the whole stream (#158). Deliberately INSIDE
-                            // withSmsRoleIfNeeded, not outside it: the SMS role handoff fires an
-                            // interactive system dialog and must keep running on the caller's
-                            // (main) context — that path is hardware-verified and must not regress.
-                            // Applies stay strictly sequential; withContext suspends until the
-                            // stream completes, so applyStaged's setNextItemId invariant holds.
+                            // withSmsRoleIfNeeded, not outside it: acquireRole/relinquishTo launch
+                            // an interactive system dialog through ActivityResultLauncher, which is
+                            // NOT thread-safe and must stay on the caller's (main) context. That
+                            // path is hardware-verified (#61) and must not regress — hoisting this
+                            // withContext outward would move both onto IO. Pinned by
+                            // `the SMS role handoff stays on the main dispatcher …`.
+                            // Applies stay strictly sequential because ItemStreamReceiver processes
+                            // items one at a time on a single coroutine (see applyStaged's
+                            // INVARIANT note) — withContext adds no parallelism.
                             withContext(ioDispatcher) {
                                 receiver.run(
                                     channel = ch,
@@ -524,11 +536,17 @@ class ReceiverViewModel(
         return outcome
     }
 
+    // update {}, NOT read-then-assign: this is called from the apply/stream callbacks, which run on
+    // [ioDispatcher] (#158), while reset() sets _state to Idle from Main. A plain
+    // `val current = _state.value; _state.value = current.copy(...)` can interleave with that write
+    // and RESURRECT the Transferring state the user just dismissed. Same reasoning as [restoreRole].
     private fun updateItem(itemId: Int, transform: (ItemProgress) -> ItemProgress) {
-        val current = _state.value as? ReceiverState.Transferring ?: return
-        _state.value = current.copy(
-            items = current.items.map { if (it.itemId == itemId) transform(it) else it },
-        )
+        _state.update { current ->
+            if (current !is ReceiverState.Transferring) return@update current
+            current.copy(
+                items = current.items.map { if (it.itemId == itemId) transform(it) else it },
+            )
+        }
     }
 
     /**
