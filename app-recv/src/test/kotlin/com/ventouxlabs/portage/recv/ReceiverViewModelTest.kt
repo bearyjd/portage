@@ -45,9 +45,11 @@ import com.ventouxlabs.portage.transport.SecureChannel
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -59,6 +61,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.security.MessageDigest
+import kotlin.coroutines.ContinuationInterceptor
 
 private fun sha256(bytes: ByteArray): String =
     MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
@@ -83,9 +86,20 @@ private class FakeChannel(vararg incoming: ProtocolMessage?) : SecureChannel {
     val sent = mutableListOf<ProtocolMessage>()
     var closed = false
 
+    /**
+     * Dispatcher the stream loop itself ran on, sampled on every read. This fake does NOT hop
+     * contexts (the real NoiseSecureChannel wraps its socket in Dispatchers.IO, but that is the
+     * transport's business), so whatever this records is the context ItemStreamReceiver.run was
+     * driven on. Used by `the data phase runs off the main dispatcher` to pin run() DIRECTLY
+     * rather than inferring it from where an apply happened to land.
+     */
+    val receiveInterceptors = mutableListOf<ContinuationInterceptor?>()
+
     override suspend fun send(message: ProtocolMessage) { sent += message }
-    override suspend fun receive(): ProtocolMessage? =
-        if (queue.isEmpty()) null else queue.removeFirst()
+    override suspend fun receive(): ProtocolMessage? {
+        receiveInterceptors += currentCoroutineContext()[ContinuationInterceptor]
+        return if (queue.isEmpty()) null else queue.removeFirst()
+    }
     override fun close() { closed = true }
 }
 
@@ -144,6 +158,26 @@ private class FakeSmsRoleCoordinator(
     override fun onRoleRestored() {
         roleRestoredCalls++
     }
+}
+
+/**
+ * Records which dispatcher the role handoff ran on. Separate from [FakeSmsRoleCoordinator] so the
+ * existing role-behaviour tests keep their simpler fake; this one exists only to pin the #158
+ * withContext placement (see `the SMS role handoff stays on the main dispatcher …`).
+ */
+private class RecordingSmsRoleCoordinator : SmsRoleCoordinator {
+    var acquireRanOn: ContinuationInterceptor? = null
+    var relinquishRanOn: ContinuationInterceptor? = null
+    override fun priorDefaultPackage(): String? = "com.example.messages"
+    override suspend fun acquireRole(): Boolean {
+        acquireRanOn = currentCoroutineContext()[ContinuationInterceptor]
+        return true
+    }
+    override suspend fun relinquishTo(priorPackage: String?) {
+        relinquishRanOn = currentCoroutineContext()[ContinuationInterceptor]
+    }
+    override fun currentStrand(): SmsRoleStrand? = null
+    override fun onRoleRestored() = Unit
 }
 
 /** Records start/stop calls so tests can pin the keep-alive lifecycle around the data phase (#85). */
@@ -216,6 +250,7 @@ class ReceiverViewModelTest {
         stagingDir = tmp.root,
         smsRoleCoordinator = coordinator,
         applyRegistryFactory = ApplyRegistryFactory { _ -> ApplyProviderRegistry(listOf(sms)) },
+        ioDispatcher = dispatcher,
     )
 
     @Before
@@ -242,6 +277,10 @@ class ReceiverViewModelTest {
         stagingDir = tmp.root,
         applyRegistryFactory = registryFactory,
         transferKeepAlive = keepAlive,
+        // Production runs the data phase on Dispatchers.IO (#158). Tests hand it the same
+        // StandardTestDispatcher the rest of the suite runs on, so the item stream stays on
+        // virtual time — otherwise the deadline tests would race real wall-clock.
+        ioDispatcher = dispatcher,
     )
 
     @Test
@@ -333,6 +372,119 @@ class ReceiverViewModelTest {
         assertThat(done.installActions).isEmpty()
     }
 
+    /**
+     * #158 regression guard. The data phase must run on the injected IO dispatcher, never on
+     * viewModelScope's Main. The socket was never the issue (NoiseSecureChannel already wraps
+     * send/receive in Dispatchers.IO); what ran on Main was everything between the frames — the
+     * per-chunk sha256, the staging writes, and every apply — which put Main on the ack loop's
+     * critical path. On hardware an 859-event calendar stalled it until the sender hung up.
+     *
+     * Every other test here hands the VM the SAME dispatcher it installs as Main, which keeps
+     * virtual time simple but makes them all blind to this: delete the `withContext(ioDispatcher)`
+     * in onConfirm() and they stay green (verified by mutation). So this one passes a SECOND
+     * dispatcher — a distinct object sharing the one [kotlinx.coroutines.test.TestCoroutineScheduler],
+     * so the clock stays virtual.
+     *
+     * It pins the STREAM LOOP, not just the applies. Asserting only on the apply's dispatcher was
+     * not enough: narrowing the withContext to wrap just `applyRegistry.apply(...)` — which would
+     * put the sha256, the staging writes and the ITEM_ACK sends back on Main, most of the original
+     * stall — still passed. So the fake channel samples its own context on every read, and the
+     * assertion covers both.
+     */
+    @Test
+    fun `the data phase runs off the main dispatcher`() = runTest(dispatcher) {
+        val io = StandardTestDispatcher(dispatcher.scheduler)
+        var applyRanOn: ContinuationInterceptor? = null
+        val recordingContacts = object : ApplyProvider {
+            override val kind = ItemKind.CONTACTS_VCF
+            override suspend fun apply(source: InputStream): ApplyOutcome {
+                applyRanOn = currentCoroutineContext()[ContinuationInterceptor]
+                return ApplyOutcome(ItemStatus.OK, "applied 1, skipped 0")
+            }
+        }
+        val channel = happyChannel()
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(channel),
+            nowEpochSeconds = { 1_000 },
+            appVersion = "test",
+            osFingerprint = "test-fingerprint",
+            stagingDir = tmp.root,
+            applyRegistryFactory = ApplyRegistryFactory { _ ->
+                ApplyProviderRegistry(listOf(recordingContacts, FakeApply(ItemKind.CALL_LOG)))
+            },
+            ioDispatcher = io,
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+        // Drop the HELLO/manifest reads — that handshake legitimately runs on Main. Only the reads
+        // after onConfirm() are the data phase.
+        channel.receiveInterceptors.clear()
+
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Done::class.java)
+        assertThat(applyRanOn).isSameInstanceAs(io)
+        // The stream loop itself, not just the applies — and it must have actually read something.
+        assertThat(channel.receiveInterceptors).isNotEmpty()
+        assertThat(channel.receiveInterceptors.toSet()).containsExactly(io)
+    }
+
+    /**
+     * The #158 withContext sits INSIDE withSmsRoleIfNeeded on purpose: acquireRole/relinquishTo
+     * drive an interactive system dialog through ActivityResultLauncher, which is not thread-safe
+     * and must stay on the caller's main context. That path is hardware-verified (#61).
+     *
+     * Nothing stopped a later "cleanup" from hoisting the withContext out to wrap the role handoff
+     * too — the placement was the single most fragile decision in the change and had no test. This
+     * pins both halves at once: the role handoff on Main, the apply on IO.
+     */
+    @Test
+    fun `the SMS role handoff stays on the main dispatcher while the stream runs off it`() = runTest(dispatcher) {
+        val io = StandardTestDispatcher(dispatcher.scheduler)
+        var applyRanOn: ContinuationInterceptor? = null
+        val coordinator = RecordingSmsRoleCoordinator()
+        val sms = object : ApplyProvider {
+            override val kind = ItemKind.SMS
+            override suspend fun apply(source: InputStream): ApplyOutcome {
+                applyRanOn = currentCoroutineContext()[ContinuationInterceptor]
+                return ApplyOutcome(ItemStatus.OK, "applied 1, skipped 0")
+            }
+        }
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(smsChannel()),
+            nowEpochSeconds = { 1_000 },
+            appVersion = "test",
+            osFingerprint = "test-fingerprint",
+            stagingDir = tmp.root,
+            smsRoleCoordinator = coordinator,
+            applyRegistryFactory = ApplyRegistryFactory { _ -> ApplyProviderRegistry(listOf(sms)) },
+            ioDispatcher = io,
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+        vm.onToggle(3) // SMS is opt-in — not pre-checked
+
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Done::class.java)
+        // The dialog-driving calls stayed on Main. (The interceptor is Dispatchers.Main itself —
+        // setMain installs `dispatcher` as its DELEGATE, so the context still reports the main
+        // dispatcher. Comparing against io is the load-bearing half: it is what goes wrong if the
+        // withContext is ever hoisted to wrap withSmsRoleIfNeeded.)
+        assertThat(coordinator.acquireRanOn).isSameInstanceAs(Dispatchers.Main)
+        assertThat(coordinator.relinquishRanOn).isSameInstanceAs(Dispatchers.Main)
+        assertThat(coordinator.acquireRanOn).isNotSameInstanceAs(io)
+        assertThat(coordinator.relinquishRanOn).isNotSameInstanceAs(io)
+        // ...while the stream they wrap did not.
+        assertThat(applyRanOn).isSameInstanceAs(io)
+    }
+
     @Test
     fun `a failed item reaches Done with its display name, not its raw item id`() = runTest(dispatcher) {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
@@ -407,6 +559,7 @@ class ReceiverViewModelTest {
             stagingDir = tmp.root,
             dataPhaseTimeoutMs = 1_000L,
             transferKeepAlive = keepAlive,
+            ioDispatcher = dispatcher,
         )
         vm.startScanning()
         vm.onQrScanned("good-qr")
@@ -472,6 +625,7 @@ class ReceiverViewModelTest {
             appVersion = "test",
             osFingerprint = "test-fingerprint",
             stagingDir = tmp.root,
+            ioDispatcher = dispatcher,
         )
         vm.startScanning()
         vm.onQrScanned("good-qr")
@@ -485,6 +639,112 @@ class ReceiverViewModelTest {
         assertThat(failed.reason).contains("timed out")
         assertThat(channel.closed).isTrue()
         assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // block cancelled → staging swept
+    }
+
+    /**
+     * The same aggregate-cap timeout, but ACROSS a real dispatcher boundary.
+     *
+     * The test above (and the keep-alive timeout twin) pass ioDispatcher = dispatcher, so
+     * `withContext` takes the undispatched fast path and the #158 change is effectively erased —
+     * they cannot see the interaction this test exists for. That interaction is the riskiest
+     * surface the change touches: `withTimeoutOrNull` must cancel a child running on ANOTHER
+     * dispatcher and still return null rather than letting a CancellationException escape (the
+     * timeout identity has to survive the copy kotlinx makes as the exception crosses the
+     * withContext boundary), while the watchdog concurrently closes the channel to unblock a
+     * read parked in native code.
+     *
+     * Fails as a visible Failed("timed out"), not a hang and not a swallowed cancel — and the
+     * finallys on the unwind still sweep staging across the boundary.
+     */
+    @Test
+    fun `the aggregate cap still fires when the stream runs on another dispatcher`() = runTest(dispatcher) {
+        val io = StandardTestDispatcher(dispatcher.scheduler)
+        val channel = StallingChannel(ProtocolMessage.Manifest(manifest))
+        val keepAlive = FakeKeepAlive()
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(channel),
+            nowEpochSeconds = { 1_000 },
+            dataPhaseTimeoutMs = 1_000L,
+            appVersion = "test",
+            osFingerprint = "test-fingerprint",
+            stagingDir = tmp.root,
+            transferKeepAlive = keepAlive,
+            ioDispatcher = io,
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Reviewing::class.java)
+
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        val failed = vm.state.value as ReceiverState.Failed
+        assertThat(failed.reason).contains("timed out") // null, NOT an escaped CancellationException
+        assertThat(channel.closed).isTrue()
+        assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // finallys ran across the boundary
+        assertThat(keepAlive.stops).isEqualTo(1) // released on the timeout unwind
+    }
+
+    /**
+     * reset() while the stream is genuinely live, across a dispatcher boundary. Nothing covered
+     * reset()-mid-transfer before this.
+     *
+     * HONEST SCOPE — read before trusting this test. It does NOT guard the `update {}` change in
+     * updateItem, and cannot: reproducing that lost update needs TRUE parallelism (read Transferring
+     * → reset() → write), and the read/write pair has no suspension point between them, so a test
+     * dispatcher can never interleave there. Reverting updateItem to read-then-assign leaves this
+     * green — verified by mutation. Atomicity here rests on review, not on this test.
+     *
+     * What it DOES cover, which is real and was previously untested: an item is delivered and
+     * applied first, so updateItem actually runs on the IO dispatcher under a live stream; then
+     * reset() lands while the stream is parked mid-transfer, and a late stream event — an in-flight
+     * callback arriving after the user already left — must not repaint the dismissed screen.
+     */
+    @Test
+    fun `reset mid-stream tears down and a late stream event cannot repaint the screen`() = runTest(dispatcher) {
+        val io = StandardTestDispatcher(dispatcher.scheduler)
+        val contacts = FakeApply(ItemKind.CONTACTS_VCF)
+        // Manifest + ONE complete item, THEN park: the item applies (driving updateItem through
+        // RECEIVING → APPLYING → DONE on `io`) and the stream is still live on the next read.
+        val channel = StallingChannel(
+            ProtocolMessage.Manifest(manifest),
+            *itemFrames(contactsMeta, contactsBytes).toTypedArray(),
+        )
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(channel),
+            nowEpochSeconds = { 1_000 },
+            appVersion = "test",
+            osFingerprint = "test-fingerprint",
+            stagingDir = tmp.root,
+            applyRegistryFactory = ApplyRegistryFactory { _ -> ApplyProviderRegistry(listOf(contacts)) },
+            ioDispatcher = io,
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        vm.onConfirm()
+        // runCurrent, NOT advanceUntilIdle: the channel parks forever after the item, so advancing
+        // virtual time would blow past the aggregate deadline and fail the transfer before reset()
+        // ever ran. This drains the queued work at the current instant, leaving the stream live and
+        // parked on the next read — the state reset() has to interrupt.
+        runCurrent()
+        val mid = vm.state.value as ReceiverState.Transferring
+        assertThat(contacts.calls).isEqualTo(1) // the apply really ran, so updateItem really ran
+        assertThat(mid.items.single { it.itemId == contactsMeta.itemId }.phase).isEqualTo(ItemPhase.DONE)
+
+        vm.reset()
+        runCurrent()
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Idle::class.java)
+        assertThat(channel.closed).isTrue()
+
+        // A stream callback still in flight when the user left must not resurrect Transferring.
+        vm.onReceiveEvent(ItemStreamReceiver.Event.ItemProgressed(contactsMeta.itemId, 99L, contactsMeta.size))
+        runCurrent()
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Idle::class.java)
     }
 
     @Test
@@ -655,6 +915,7 @@ class ReceiverViewModelTest {
             applyRegistryFactory = ApplyRegistryFactory { sinks ->
                 ApplyProviderRegistry(listOf(AppInventoryApplyProvider(source, sinks.onInstallActions)))
             },
+            ioDispatcher = dispatcher,
         )
         vm.startScanning()
         vm.onQrScanned("good-qr")
@@ -712,6 +973,7 @@ class ReceiverViewModelTest {
             applyRegistryFactory = ApplyRegistryFactory { sinks ->
                 ApplyProviderRegistry(listOf(BtPairingsApplyProvider(sinks.onRepairEntries)))
             },
+            ioDispatcher = dispatcher,
         )
         vm.startScanning()
         vm.onQrScanned("good-qr")
@@ -789,6 +1051,7 @@ class ReceiverViewModelTest {
                     ),
                 )
             },
+            ioDispatcher = dispatcher,
         )
         vm.startScanning()
         vm.onQrScanned("good-qr")

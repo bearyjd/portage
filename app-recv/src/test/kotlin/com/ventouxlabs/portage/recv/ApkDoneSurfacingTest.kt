@@ -159,6 +159,7 @@ class ApkDoneSurfacingTest {
             appVersion = "test",
             osFingerprint = "test",
             stagingDir = tmp.newFolder("staging"),
+            ioDispatcher = dispatcher,
             optInPermissionGranter = optInGranter,
             applyRegistryFactory =
                 ApplyRegistryFactory { sinks ->
@@ -204,6 +205,7 @@ class ApkDoneSurfacingTest {
             appVersion = "test",
             osFingerprint = "test",
             stagingDir = tmp.newFolder("staging-reset"),
+            ioDispatcher = dispatcher,
             abandonSessions = { abandonCalled = true },
             applyRegistryFactory = ApplyRegistryFactory { sinks ->
                 ApplyProviderRegistry(

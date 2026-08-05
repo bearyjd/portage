@@ -140,6 +140,7 @@ class RoleRestoreBeltTest {
             appVersion = "test",
             osFingerprint = "test",
             stagingDir = tmp.newFolder("staging-${System.nanoTime()}"),
+            ioDispatcher = dispatcher,
             roleRestorer = restorer,
             canRestoreRoles = canRestoreRoles,
             installedPackages = { installed.toSet() },
