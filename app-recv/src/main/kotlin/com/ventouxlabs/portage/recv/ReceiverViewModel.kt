@@ -41,6 +41,8 @@ import com.ventouxlabs.portage.transport.PairingCodecImpl
 import com.ventouxlabs.portage.transport.SecureChannel
 import com.ventouxlabs.portage.transport.withDataPhaseDeadline
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,6 +51,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
 
@@ -107,6 +110,12 @@ class ReceiverViewModel(
     // can't reset the streaming socket mid-frame (#85). NoOp default (tests/previews); production
     // wires a foreground-service-backed implementation. Driven start-before-phase / stop-in-finally.
     private val transferKeepAlive: TransferKeepAlive = TransferKeepAlive.NoOp,
+    // The data phase runs here, NOT on viewModelScope's main dispatcher. Socket reads, sha256
+    // staging to disk, and every provider apply are blocking work; on Main they freeze the UI and,
+    // worse, stall the ack loop until the sender gives up mid-stream (#158 — an 859-event calendar
+    // killed a transfer on real hardware after ~9 s, well inside any deadline). Injected rather
+    // than hardcoded so tests keep virtual-time control via StandardTestDispatcher.
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ReceiverState>(ReceiverState.Idle)
@@ -363,12 +372,22 @@ class ReceiverViewModel(
                                 ItemKind.USER_FILE to UserFileHeader.MAX_ITEM_BYTES,
                             ),
                             userFileMaxTotalBytes = UserFileHeader.MAX_TOTAL_BYTES,
-                        ).run(
-                            channel = ch,
-                            expected = selected.associateBy { it.itemId },
-                            apply = ::applyStaged,
-                            onEvent = ::onReceiveEvent,
-                        )
+                        ).let { receiver ->
+                            // Off Main for the whole stream (#158). Deliberately INSIDE
+                            // withSmsRoleIfNeeded, not outside it: the SMS role handoff fires an
+                            // interactive system dialog and must keep running on the caller's
+                            // (main) context — that path is hardware-verified and must not regress.
+                            // Applies stay strictly sequential; withContext suspends until the
+                            // stream completes, so applyStaged's setNextItemId invariant holds.
+                            withContext(ioDispatcher) {
+                                receiver.run(
+                                    channel = ch,
+                                    expected = selected.associateBy { it.itemId },
+                                    apply = ::applyStaged,
+                                    onEvent = ::onReceiveEvent,
+                                )
+                            }
+                        }
                     }
                 }
                 if (results == null) {

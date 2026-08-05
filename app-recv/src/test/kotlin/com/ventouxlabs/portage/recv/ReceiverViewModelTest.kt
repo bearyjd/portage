@@ -45,6 +45,7 @@ import com.ventouxlabs.portage.transport.SecureChannel
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -59,6 +60,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.security.MessageDigest
+import kotlin.coroutines.ContinuationInterceptor
 
 private fun sha256(bytes: ByteArray): String =
     MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
@@ -216,6 +218,7 @@ class ReceiverViewModelTest {
         stagingDir = tmp.root,
         smsRoleCoordinator = coordinator,
         applyRegistryFactory = ApplyRegistryFactory { _ -> ApplyProviderRegistry(listOf(sms)) },
+        ioDispatcher = dispatcher,
     )
 
     @Before
@@ -242,6 +245,10 @@ class ReceiverViewModelTest {
         stagingDir = tmp.root,
         applyRegistryFactory = registryFactory,
         transferKeepAlive = keepAlive,
+        // Production runs the data phase on Dispatchers.IO (#158). Tests hand it the same
+        // StandardTestDispatcher the rest of the suite runs on, so the item stream stays on
+        // virtual time — otherwise the deadline tests would race real wall-clock.
+        ioDispatcher = dispatcher,
     )
 
     @Test
@@ -333,6 +340,54 @@ class ReceiverViewModelTest {
         assertThat(done.installActions).isEmpty()
     }
 
+    /**
+     * #158 regression guard. The data phase — socket reads, sha256 staging to disk, and every
+     * provider apply — must run on the injected IO dispatcher, never on viewModelScope's Main. On
+     * hardware an 859-event calendar held Main long enough that the receiver stopped acking and the
+     * sender hung up mid-stream.
+     *
+     * Every other test here hands the VM the SAME dispatcher it installs as Main, which keeps
+     * virtual time simple but makes them all blind to this: delete the `withContext(ioDispatcher)`
+     * in onConfirm() and they stay green (verified by mutation). So this one passes a SECOND
+     * dispatcher — a distinct object sharing the one [kotlinx.coroutines.test.TestCoroutineScheduler],
+     * so the clock stays virtual — and pins where the apply actually ran. The apply is called from
+     * inside `ItemStreamReceiver.run`, so pinning it pins the whole stream.
+     */
+    @Test
+    fun `the data phase runs off the main dispatcher`() = runTest(dispatcher) {
+        val io = StandardTestDispatcher(dispatcher.scheduler)
+        var applyRanOn: ContinuationInterceptor? = null
+        val recordingContacts = object : ApplyProvider {
+            override val kind = ItemKind.CONTACTS_VCF
+            override suspend fun apply(source: InputStream): ApplyOutcome {
+                applyRanOn = currentCoroutineContext()[ContinuationInterceptor]
+                return ApplyOutcome(ItemStatus.OK, "applied 1, skipped 0")
+            }
+        }
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(happyChannel()),
+            nowEpochSeconds = { 1_000 },
+            appVersion = "test",
+            osFingerprint = "test-fingerprint",
+            stagingDir = tmp.root,
+            applyRegistryFactory = ApplyRegistryFactory { _ ->
+                ApplyProviderRegistry(listOf(recordingContacts, FakeApply(ItemKind.CALL_LOG)))
+            },
+            ioDispatcher = io,
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Done::class.java)
+        assertThat(applyRanOn).isSameInstanceAs(io)
+        assertThat(applyRanOn).isNotSameInstanceAs(dispatcher)
+    }
+
     @Test
     fun `a failed item reaches Done with its display name, not its raw item id`() = runTest(dispatcher) {
         val contacts = FakeApply(ItemKind.CONTACTS_VCF)
@@ -407,6 +462,7 @@ class ReceiverViewModelTest {
             stagingDir = tmp.root,
             dataPhaseTimeoutMs = 1_000L,
             transferKeepAlive = keepAlive,
+            ioDispatcher = dispatcher,
         )
         vm.startScanning()
         vm.onQrScanned("good-qr")
@@ -472,6 +528,7 @@ class ReceiverViewModelTest {
             appVersion = "test",
             osFingerprint = "test-fingerprint",
             stagingDir = tmp.root,
+            ioDispatcher = dispatcher,
         )
         vm.startScanning()
         vm.onQrScanned("good-qr")
@@ -655,6 +712,7 @@ class ReceiverViewModelTest {
             applyRegistryFactory = ApplyRegistryFactory { sinks ->
                 ApplyProviderRegistry(listOf(AppInventoryApplyProvider(source, sinks.onInstallActions)))
             },
+            ioDispatcher = dispatcher,
         )
         vm.startScanning()
         vm.onQrScanned("good-qr")
@@ -712,6 +770,7 @@ class ReceiverViewModelTest {
             applyRegistryFactory = ApplyRegistryFactory { sinks ->
                 ApplyProviderRegistry(listOf(BtPairingsApplyProvider(sinks.onRepairEntries)))
             },
+            ioDispatcher = dispatcher,
         )
         vm.startScanning()
         vm.onQrScanned("good-qr")
@@ -789,6 +848,7 @@ class ReceiverViewModelTest {
                     ),
                 )
             },
+            ioDispatcher = dispatcher,
         )
         vm.startScanning()
         vm.onQrScanned("good-qr")
