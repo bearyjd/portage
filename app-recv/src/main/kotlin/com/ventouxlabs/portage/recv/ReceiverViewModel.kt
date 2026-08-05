@@ -118,6 +118,11 @@ class ReceiverViewModel(
     // (#158 — an 859-event calendar killed a transfer on real hardware after ~9 s, well inside any
     // deadline). Injected rather than hardcoded so tests keep virtual-time control via
     // StandardTestDispatcher.
+    //
+    // KEEP THIS Dispatchers.IO in production. Sequentiality comes from ItemStreamReceiver's single
+    // coroutine, NOT from the dispatcher, so a "safer-looking" limitedParallelism(1) buys nothing
+    // AND costs a thread hop per frame: NoiseSecureChannel's own withContext(Dispatchers.IO) skips
+    // dispatch only while the outer interceptor already IS Dispatchers.IO.
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
 
@@ -214,11 +219,23 @@ class ReceiverViewModel(
                 // apply's "incompatible on this device — get it from the store" fallback feed this sink, and
                 // items apply sequentially in arbitrary order. Dedup by package so a reinstall row and an
                 // incompatible-APK row for the same app never key the LazyColumn twice.
-                // Every append below uses update {}, NOT read-then-assign. These sinks are invoked
-                // from the apply path, which runs on [ioDispatcher] (#158), while reset() clears the
-                // same flows from Main — a plain assignment loses whichever write lands first (the
+                // The APPENDS below use update {}, NOT read-then-assign. They are invoked from the
+                // apply path, which runs on [ioDispatcher] (#158), while reset() clears the same
+                // flows from Main — a plain assignment loses whichever write lands first (the
                 // reasoning [restoreRole] already spells out). They were safe only while everything
-                // shared the main thread.
+                // shared the main thread. Each lambda must be idempotent for the same CAS-retry
+                // reason documented on [updateItem]; re-reading `it` and re-appending is.
+                //
+                // SCOPE, precisely: update {} closes the LOST UPDATE. It does NOT order these
+                // against reset() — an apply still in flight can repopulate a sink AFTER reset()
+                // cleared it. That residual predates #158 (pre-change an apply could resume from a
+                // suspension point after reset() and push identically). It fails closed: reset()
+                // closes the channel, so the stream throws into catch(t) → fail() → Failed, and
+                // Done — the only screen that renders these — is never reached. A stale entry would
+                // have to survive into a LATER transfer's Done to be visible. Fully ordering it
+                // needs an epoch guard or a cancellable transfer job; deliberately out of scope.
+                // NOTE onRepairEntries is exempt: it REPLACES rather than appends, so update {}
+                // would change nothing (a replace has no read-modify-write to lose).
                 onInstallActions = { actions ->
                     _installActions.update { (it + actions).distinctBy { a -> a.packageName } }
                 },
@@ -366,39 +383,37 @@ class ReceiverViewModel(
                 val results = withDataPhaseDeadline(ch, dataPhaseTimeoutMs) {
                     withSmsRoleIfNeeded(needsSmsRole) {
                         ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
-                        ItemStreamReceiver(
-                            stagingDir = stagingDir,
-                            // Raise the per-item cap for the two large-payload kinds, each to its OWN
-                            // documented ceiling: the APP_BACKUP_RELAY opaque blob (PRP-06 §5) and the
-                            // APK container item (ADR-006 D4, 1 GiB via ApkContainerValidation). Every
-                            // other kind keeps the 64 MiB Tier-0 default — the raise never leaks into
-                            // the PII/Tier-0 item paths.
-                            maxBytesByKind = mapOf(
-                                ItemKind.APP_BACKUP_RELAY to MAX_RELAY_ITEM_BYTES,
-                                ItemKind.APK to ApkContainerValidation.MAX_APK_ITEM_BYTES,
-                                ItemKind.SOUND_FILE to SoundFileHeader.MAX_ITEM_BYTES,
-                                ItemKind.USER_FILE to UserFileHeader.MAX_ITEM_BYTES,
-                            ),
-                            userFileMaxTotalBytes = UserFileHeader.MAX_TOTAL_BYTES,
-                        ).let { receiver ->
-                            // Off Main for the whole stream (#158). Deliberately INSIDE
-                            // withSmsRoleIfNeeded, not outside it: acquireRole/relinquishTo launch
-                            // an interactive system dialog through ActivityResultLauncher, which is
-                            // NOT thread-safe and must stay on the caller's (main) context. That
-                            // path is hardware-verified (#61) and must not regress — hoisting this
-                            // withContext outward would move both onto IO. Pinned by
-                            // `the SMS role handoff stays on the main dispatcher …`.
-                            // Applies stay strictly sequential because ItemStreamReceiver processes
-                            // items one at a time on a single coroutine (see applyStaged's
-                            // INVARIANT note) — withContext adds no parallelism.
-                            withContext(ioDispatcher) {
-                                receiver.run(
-                                    channel = ch,
-                                    expected = selected.associateBy { it.itemId },
-                                    apply = ::applyStaged,
-                                    onEvent = ::onReceiveEvent,
-                                )
-                            }
+                        // Off Main for the whole stream (#158). Deliberately INSIDE
+                        // withSmsRoleIfNeeded, not outside it: acquireRole/relinquishTo launch an
+                        // interactive system dialog through ActivityResultLauncher, which is NOT
+                        // thread-safe and must stay on the caller's (main) context. That path is
+                        // hardware-verified (#61) and must not regress — hoisting this withContext
+                        // outward would move both onto IO. Pinned by
+                        // `the SMS role handoff stays on the main dispatcher …`.
+                        // Applies stay strictly sequential because ItemStreamReceiver processes
+                        // items one at a time on a single coroutine (see applyStaged's INVARIANT
+                        // note) — withContext adds no parallelism.
+                        withContext(ioDispatcher) {
+                            ItemStreamReceiver(
+                                stagingDir = stagingDir,
+                                // Raise the per-item cap for the two large-payload kinds, each to
+                                // its OWN documented ceiling: the APP_BACKUP_RELAY opaque blob
+                                // (PRP-06 §5) and the APK container item (ADR-006 D4, 1 GiB via
+                                // ApkContainerValidation). Every other kind keeps the 64 MiB Tier-0
+                                // default — the raise never leaks into the PII/Tier-0 item paths.
+                                maxBytesByKind = mapOf(
+                                    ItemKind.APP_BACKUP_RELAY to MAX_RELAY_ITEM_BYTES,
+                                    ItemKind.APK to ApkContainerValidation.MAX_APK_ITEM_BYTES,
+                                    ItemKind.SOUND_FILE to SoundFileHeader.MAX_ITEM_BYTES,
+                                    ItemKind.USER_FILE to UserFileHeader.MAX_ITEM_BYTES,
+                                ),
+                                userFileMaxTotalBytes = UserFileHeader.MAX_TOTAL_BYTES,
+                            ).run(
+                                channel = ch,
+                                expected = selected.associateBy { it.itemId },
+                                apply = ::applyStaged,
+                                onEvent = ::onReceiveEvent,
+                            )
                         }
                     }
                 }
@@ -529,6 +544,14 @@ class ReceiverViewModel(
         } catch (c: CancellationException) {
             throw c
         } catch (t: Throwable) {
+            // Throwable, NOT Exception, is DELIBERATE: PROTOCOL.md §5 requires that a failed item
+            // never aborts the batch, which is what lets a 12-item transfer survive one bad
+            // provider. Narrowing this to Exception would let an Error unwind the whole stream —
+            // a protocol change, not a cleanup.
+            // The accepted cost: an Error is a PROCESS-level failure, not a per-item one, so an
+            // OOM on a multi-GiB relay/APK item (caps: 2 GiB / 1 GiB) also degrades to a single
+            // WRITE_ERROR row and the stream keeps staging. Revisit if OOM is ever observed in the
+            // wild — the fix would be to fail the batch on Error specifically, not to widen here.
             ApplyOutcome(ItemStatus.WRITE_ERROR, t.message ?: "apply failed")
         }
         val phase = if (outcome.status == ItemStatus.OK) ItemPhase.DONE else ItemPhase.FAILED
@@ -540,6 +563,12 @@ class ReceiverViewModel(
     // [ioDispatcher] (#158), while reset() sets _state to Idle from Main. A plain
     // `val current = _state.value; _state.value = current.copy(...)` can interleave with that write
     // and RESURRECT the Transferring state the user just dismissed. Same reasoning as [restoreRole].
+    //
+    // [transform] MUST BE IDEMPOTENT. update {} is a compare-and-set LOOP: under contention it
+    // re-invokes the lambda against the re-read value. Every caller assigns ABSOLUTE values
+    // (bytesReceived = event.bytesReceived, which ItemStreamReceiver already sends as a running
+    // total) — never deltas. `it.copy(bytesReceived = it.bytesReceived + chunk)` would look correct
+    // and silently double-count on every retry.
     private fun updateItem(itemId: Int, transform: (ItemProgress) -> ItemProgress) {
         _state.update { current ->
             if (current !is ReceiverState.Transferring) return@update current
