@@ -49,6 +49,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -638,6 +639,97 @@ class ReceiverViewModelTest {
         assertThat(failed.reason).contains("timed out")
         assertThat(channel.closed).isTrue()
         assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // block cancelled → staging swept
+    }
+
+    /**
+     * The same aggregate-cap timeout, but ACROSS a real dispatcher boundary.
+     *
+     * The test above (and the keep-alive timeout twin) pass ioDispatcher = dispatcher, so
+     * `withContext` takes the undispatched fast path and the #158 change is effectively erased —
+     * they cannot see the interaction this test exists for. That interaction is the riskiest
+     * surface the change touches: `withTimeoutOrNull` must cancel a child running on ANOTHER
+     * dispatcher and still return null rather than letting a CancellationException escape (the
+     * timeout identity has to survive the copy kotlinx makes as the exception crosses the
+     * withContext boundary), while the watchdog concurrently closes the channel to unblock a
+     * read parked in native code.
+     *
+     * Fails as a visible Failed("timed out"), not a hang and not a swallowed cancel — and the
+     * finallys on the unwind still sweep staging across the boundary.
+     */
+    @Test
+    fun `the aggregate cap still fires when the stream runs on another dispatcher`() = runTest(dispatcher) {
+        val io = StandardTestDispatcher(dispatcher.scheduler)
+        val channel = StallingChannel(ProtocolMessage.Manifest(manifest))
+        val keepAlive = FakeKeepAlive()
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(channel),
+            nowEpochSeconds = { 1_000 },
+            dataPhaseTimeoutMs = 1_000L,
+            appVersion = "test",
+            osFingerprint = "test-fingerprint",
+            stagingDir = tmp.root,
+            transferKeepAlive = keepAlive,
+            ioDispatcher = io,
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Reviewing::class.java)
+
+        vm.onConfirm()
+        advanceUntilIdle()
+
+        val failed = vm.state.value as ReceiverState.Failed
+        assertThat(failed.reason).contains("timed out") // null, NOT an escaped CancellationException
+        assertThat(channel.closed).isTrue()
+        assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // finallys ran across the boundary
+        assertThat(keepAlive.stops).isEqualTo(1) // released on the timeout unwind
+    }
+
+    /**
+     * reset() while the stream is live, across a dispatcher boundary — the interleaving that
+     * motivated switching updateItem and the DoneSinks appends to `update {}`. No test covered
+     * reset()-mid-transfer at all before this.
+     *
+     * Pins the OUTCOME rather than the race: the user who taps Home must not be left looking at
+     * a Transferring screen. This cannot deterministically reproduce the lost update itself —
+     * that needs true parallelism, and the read/write pair has no suspension point between it —
+     * so it guards the reachable end state, not the window.
+     */
+    @Test
+    fun `reset during a live stream does not leave the transfer screen up`() = runTest(dispatcher) {
+        val io = StandardTestDispatcher(dispatcher.scheduler)
+        val channel = StallingChannel(ProtocolMessage.Manifest(manifest))
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = FakeFactory(channel),
+            nowEpochSeconds = { 1_000 },
+            appVersion = "test",
+            osFingerprint = "test-fingerprint",
+            stagingDir = tmp.root,
+            ioDispatcher = io,
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        vm.onConfirm()
+        // runCurrent, NOT advanceUntilIdle: the stalled channel never completes, so advancing
+        // virtual time would blow past the aggregate deadline and fail the transfer before reset()
+        // ever ran. This drains the queued work at the current instant, leaving the stream live
+        // and parked — which is the state reset() has to interrupt.
+        runCurrent()
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Transferring::class.java)
+
+        vm.reset()
+        runCurrent()
+
+        // Idle (clean exit) or Failed (the closed channel surfaced first) are both acceptable —
+        // Transferring is not: that is the dismissed screen coming back.
+        assertThat(vm.state.value).isNotInstanceOf(ReceiverState.Transferring::class.java)
+        assertThat(channel.closed).isTrue()
+        assertThat(tmp.root.listFiles().orEmpty()).isEmpty()
     }
 
     @Test
