@@ -688,19 +688,30 @@ class ReceiverViewModelTest {
     }
 
     /**
-     * reset() while the stream is live, across a dispatcher boundary — the interleaving that
-     * motivated switching updateItem and the DoneSinks appends to `update {}`. No test covered
-     * reset()-mid-transfer at all before this.
+     * reset() while the stream is genuinely live, across a dispatcher boundary. Nothing covered
+     * reset()-mid-transfer before this.
      *
-     * Pins the OUTCOME rather than the race: the user who taps Home must not be left looking at
-     * a Transferring screen. This cannot deterministically reproduce the lost update itself —
-     * that needs true parallelism, and the read/write pair has no suspension point between it —
-     * so it guards the reachable end state, not the window.
+     * HONEST SCOPE — read before trusting this test. It does NOT guard the `update {}` change in
+     * updateItem, and cannot: reproducing that lost update needs TRUE parallelism (read Transferring
+     * → reset() → write), and the read/write pair has no suspension point between them, so a test
+     * dispatcher can never interleave there. Reverting updateItem to read-then-assign leaves this
+     * green — verified by mutation. Atomicity here rests on review, not on this test.
+     *
+     * What it DOES cover, which is real and was previously untested: an item is delivered and
+     * applied first, so updateItem actually runs on the IO dispatcher under a live stream; then
+     * reset() lands while the stream is parked mid-transfer, and a late stream event — an in-flight
+     * callback arriving after the user already left — must not repaint the dismissed screen.
      */
     @Test
-    fun `reset during a live stream does not leave the transfer screen up`() = runTest(dispatcher) {
+    fun `reset mid-stream tears down and a late stream event cannot repaint the screen`() = runTest(dispatcher) {
         val io = StandardTestDispatcher(dispatcher.scheduler)
-        val channel = StallingChannel(ProtocolMessage.Manifest(manifest))
+        val contacts = FakeApply(ItemKind.CONTACTS_VCF)
+        // Manifest + ONE complete item, THEN park: the item applies (driving updateItem through
+        // RECEIVING → APPLYING → DONE on `io`) and the stream is still live on the next read.
+        val channel = StallingChannel(
+            ProtocolMessage.Manifest(manifest),
+            *itemFrames(contactsMeta, contactsBytes).toTypedArray(),
+        )
         val vm = ReceiverViewModel(
             pairingCodec = FakeCodec(),
             channelFactory = FakeFactory(channel),
@@ -708,6 +719,7 @@ class ReceiverViewModelTest {
             appVersion = "test",
             osFingerprint = "test-fingerprint",
             stagingDir = tmp.root,
+            applyRegistryFactory = ApplyRegistryFactory { _ -> ApplyProviderRegistry(listOf(contacts)) },
             ioDispatcher = io,
         )
         vm.startScanning()
@@ -715,21 +727,24 @@ class ReceiverViewModelTest {
         advanceUntilIdle()
 
         vm.onConfirm()
-        // runCurrent, NOT advanceUntilIdle: the stalled channel never completes, so advancing
+        // runCurrent, NOT advanceUntilIdle: the channel parks forever after the item, so advancing
         // virtual time would blow past the aggregate deadline and fail the transfer before reset()
-        // ever ran. This drains the queued work at the current instant, leaving the stream live
-        // and parked — which is the state reset() has to interrupt.
+        // ever ran. This drains the queued work at the current instant, leaving the stream live and
+        // parked on the next read — the state reset() has to interrupt.
         runCurrent()
-        assertThat(vm.state.value).isInstanceOf(ReceiverState.Transferring::class.java)
+        val mid = vm.state.value as ReceiverState.Transferring
+        assertThat(contacts.calls).isEqualTo(1) // the apply really ran, so updateItem really ran
+        assertThat(mid.items.single { it.itemId == contactsMeta.itemId }.phase).isEqualTo(ItemPhase.DONE)
 
         vm.reset()
         runCurrent()
-
-        // Idle (clean exit) or Failed (the closed channel surfaced first) are both acceptable —
-        // Transferring is not: that is the dismissed screen coming back.
-        assertThat(vm.state.value).isNotInstanceOf(ReceiverState.Transferring::class.java)
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Idle::class.java)
         assertThat(channel.closed).isTrue()
-        assertThat(tmp.root.listFiles().orEmpty()).isEmpty()
+
+        // A stream callback still in flight when the user left must not resurrect Transferring.
+        vm.onReceiveEvent(ItemStreamReceiver.Event.ItemProgressed(contactsMeta.itemId, 99L, contactsMeta.size))
+        runCurrent()
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Idle::class.java)
     }
 
     @Test
