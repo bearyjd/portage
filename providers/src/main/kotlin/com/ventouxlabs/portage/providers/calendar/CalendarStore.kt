@@ -21,4 +21,22 @@ interface CalendarStore {
     fun readAll(): List<EventRecord>
 
     fun insert(event: EventRecord): Boolean
+
+    /**
+     * Whether a calendar exists that events can actually be written to (#159). MUST have no side
+     * effects — it is called at REVIEW time, before the user has agreed to anything, to disclose
+     * up front that a local calendar will be created.
+     */
+    fun hasWritableCalendar(): Boolean
+
+    /**
+     * Create a local, account-less calendar named [displayName] to receive imported events, and
+     * return whether it now exists. Only called when [hasWritableCalendar] is false.
+     *
+     * A degoogled phone with no Google/Exchange account commonly has ZERO calendars, which makes
+     * this portage's target case rather than an edge one — without it, calendar transfer simply
+     * cannot work for the user portage is built for. Creation can still be refused (OEM policy,
+     * restricted profile), which returns false rather than throwing.
+     */
+    fun createLocalCalendar(displayName: String): Boolean
 }

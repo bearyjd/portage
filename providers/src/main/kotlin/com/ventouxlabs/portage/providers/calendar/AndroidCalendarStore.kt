@@ -11,6 +11,7 @@ package com.ventouxlabs.portage.providers.calendar
 
 import android.content.ContentResolver
 import android.content.ContentValues
+import android.provider.CalendarContract
 import android.provider.CalendarContract.Calendars
 import android.provider.CalendarContract.Events
 
@@ -79,6 +80,40 @@ class AndroidCalendarStore(private val resolver: ContentResolver) : CalendarStor
             }
         }
         return runCatching { resolver.insert(Events.CONTENT_URI, values) != null }.getOrDefault(false)
+    }
+
+    override fun hasWritableCalendar(): Boolean = writableCalendarId() != null
+
+    /**
+     * Create a local, account-less calendar (#159). Writing to [Calendars] requires sync-adapter
+     * query params — ACCOUNT_NAME/ACCOUNT_TYPE must be repeated in the URI as well as the values,
+     * and CALLER_IS_SYNCADAPTER must be set — but for [CalendarContract.ACCOUNT_TYPE_LOCAL] no
+     * registered sync adapter or account is involved, so WRITE_CALENDAR alone is enough.
+     *
+     * The calendar is OWNER access and VISIBLE so the events show up in whatever calendar app the
+     * user installs later, and it is local-only: nothing syncs it anywhere. Clears the id cache so
+     * the next insert re-resolves and finds it.
+     */
+    override fun createLocalCalendar(displayName: String): Boolean {
+        val account = displayName
+        val uri = Calendars.CONTENT_URI.buildUpon()
+            .appendQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER, "true")
+            .appendQueryParameter(Calendars.ACCOUNT_NAME, account)
+            .appendQueryParameter(Calendars.ACCOUNT_TYPE, CalendarContract.ACCOUNT_TYPE_LOCAL)
+            .build()
+        val values = ContentValues().apply {
+            put(Calendars.ACCOUNT_NAME, account)
+            put(Calendars.ACCOUNT_TYPE, CalendarContract.ACCOUNT_TYPE_LOCAL)
+            put(Calendars.NAME, displayName)
+            put(Calendars.CALENDAR_DISPLAY_NAME, displayName)
+            put(Calendars.CALENDAR_ACCESS_LEVEL, Calendars.CAL_ACCESS_OWNER)
+            put(Calendars.OWNER_ACCOUNT, account)
+            put(Calendars.VISIBLE, 1)
+            put(Calendars.SYNC_EVENTS, 1)
+        }
+        val created = runCatching { resolver.insert(uri, values) != null }.getOrDefault(false)
+        if (created) cachedCalendarId = null // force re-resolution so insert() finds the new one
+        return created
     }
 
     /** First writable calendar id, primary first; cached for the batch. */

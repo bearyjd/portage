@@ -106,6 +106,20 @@ object ReceiverChecklist {
     fun systemSettingsGrantNeeded(groups: List<ChecklistGroup>, canWriteSystem: Boolean): Boolean =
         !canWriteSystem && ItemKind.SETTINGS in selectedKinds(groups)
 
+    /**
+     * Whether to disclose, BEFORE the user taps "Bring it over", that applying the calendar will
+     * create a local calendar on this phone (#159).
+     *
+     * A degoogled phone with no Google/Exchange account commonly has zero calendars — portage's
+     * target user, not an edge case — and there is then nothing for `Events.CALENDAR_ID` to
+     * resolve to, so the apply creates an account-less local one to receive the events. That is a
+     * visible change to the user's device, so it is surfaced here rather than only reported
+     * afterwards on Done: the user can see it coming and uncheck Calendar if they would rather add
+     * an account first.
+     */
+    fun localCalendarWillBeCreated(groups: List<ChecklistGroup>, hasWritableCalendar: Boolean): Boolean =
+        !hasWritableCalendar && ItemKind.CALENDAR_ICS in selectedKinds(groups)
+
     /** Whether anything is selected (gates the "Bring it over" action). */
     fun hasSelection(groups: List<ChecklistGroup>): Boolean =
         groups.any { group -> group.items.any { it.checked } }

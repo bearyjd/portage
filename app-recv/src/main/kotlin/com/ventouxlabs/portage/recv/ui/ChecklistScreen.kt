@@ -49,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.model.Tier
+import com.ventouxlabs.portage.providers.calendar.CalendarApplyProvider
 import com.ventouxlabs.portage.recv.checklist.ChecklistGroup
 import com.ventouxlabs.portage.recv.checklist.ChecklistItem
 import com.ventouxlabs.portage.recv.checklist.ReceiverChecklist
@@ -70,6 +71,7 @@ fun ChecklistScreen(
     absentKinds: List<ItemKind> = emptyList(),
     systemSettingsGrantNeeded: Boolean = false,
     onGrantSystemSettings: () -> Unit = {},
+    localCalendarWillBeCreated: Boolean = false,
 ) {
     val s = LocalSpacing.current
     val hasSelection = remember(groups) { ReceiverChecklist.hasSelection(groups) }
@@ -99,6 +101,9 @@ fun ChecklistScreen(
                     AbsentRow(kind = kind)
                 }
             }
+        }
+        if (localCalendarWillBeCreated) {
+            LocalCalendarNotice()
         }
         if (systemSettingsGrantNeeded) {
             SystemSettingsGrantNotice(onGrant = onGrantSystemSettings)
@@ -147,6 +152,41 @@ private fun SystemSettingsGrantNotice(onGrant: () -> Unit) {
             text = "ALLOW ACCESS →",
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+/**
+ * Review-time disclosure that applying Calendar will CREATE a local calendar on this phone (#159),
+ * shown only when the phone has none and Calendar is still selected
+ * (see [ReceiverChecklist.localCalendarWillBeCreated]).
+ *
+ * Deliberately NOT tappable, unlike [SystemSettingsGrantNotice]: there is nothing for the user to
+ * grant or fix. It exists so a visible change to their device is announced BEFORE they tap "Bring
+ * it over" rather than only reported afterwards on Done — and the escape hatch is simply to
+ * uncheck Calendar, which makes this notice disappear.
+ */
+@Composable
+private fun LocalCalendarNotice() {
+    val s = LocalSpacing.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .padding(horizontal = s.gutter, vertical = s.md),
+    ) {
+        Text(
+            text = "CALENDAR · NOTHING TO ADD TO YET",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.height(s.xs))
+        Text(
+            text = "This phone has no calendar yet, so portage will make a local one called " +
+                "“${CalendarApplyProvider.LOCAL_CALENDAR_NAME}” to hold these events. It stays on " +
+                "this phone and syncs nowhere. Uncheck Calendar if you would rather add an account first.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onBackground,
         )
     }
 }

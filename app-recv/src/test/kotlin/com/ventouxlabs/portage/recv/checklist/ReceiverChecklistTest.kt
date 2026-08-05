@@ -172,4 +172,21 @@ class ReceiverChecklistTest {
         // SETTINGS selected and access already held → no prompt.
         assertThat(ReceiverChecklist.systemSettingsGrantNeeded(withSettings, canWriteSystem = true)).isFalse()
     }
+
+    @Test
+    fun `localCalendarWillBeCreated only when calendar is selected and the phone has none`() {
+        val base = ReceiverChecklist.build(manifest) // CALENDAR_ICS IS checked by default (Tier 0)
+
+        // The disclosure that #159 exists for: calendar selected, phone has zero calendars.
+        assertThat(ReceiverChecklist.localCalendarWillBeCreated(base, hasWritableCalendar = false)).isTrue()
+        // Phone already has one → nothing will be created, so say nothing.
+        assertThat(ReceiverChecklist.localCalendarWillBeCreated(base, hasWritableCalendar = true)).isFalse()
+
+        // Calendar unchecked → never disclose, even on a phone with no calendar: unchecking is
+        // exactly the escape hatch the disclosure offers, so it must not keep nagging afterwards.
+        val withoutCalendar = ReceiverChecklist.toggle(base, itemId = 2)
+        assertThat(ReceiverChecklist.selectedKinds(withoutCalendar)).doesNotContain(ItemKind.CALENDAR_ICS)
+        assertThat(ReceiverChecklist.localCalendarWillBeCreated(withoutCalendar, hasWritableCalendar = false))
+            .isFalse()
+    }
 }
