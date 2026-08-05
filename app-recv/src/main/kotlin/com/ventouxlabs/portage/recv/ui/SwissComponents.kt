@@ -26,10 +26,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.progressSemantics
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -61,7 +64,14 @@ fun SwissMasthead(
     label: String = "PORTAGE · RECEIVE",
 ) {
     val s = LocalSpacing.current
-    Box(modifier = modifier.fillMaxWidth()) {
+    // The masthead is the Scaffold's topBar. Material3 insets the CONTENT slot but not a custom
+    // topBar composable, and targetSdk 36 means Android 15+ draws edge-to-edge — so without this
+    // the running head renders underneath the system clock (#153).
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.statusBars),
+    ) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
