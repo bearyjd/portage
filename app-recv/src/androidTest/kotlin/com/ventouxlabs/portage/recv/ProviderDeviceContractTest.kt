@@ -11,9 +11,14 @@ package com.ventouxlabs.portage.recv
 
 import android.Manifest
 import android.app.role.RoleManager
+import android.content.ContentValues
 import android.content.ContentProviderOperation
 import android.content.ContentUris
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.CalendarContract
+import android.provider.CalendarContract.Calendars
+import android.provider.CalendarContract.Events
 import android.provider.CallLog.Calls
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Phone
@@ -23,10 +28,13 @@ import android.provider.ContactsContract.Groups
 import android.provider.ContactsContract.RawContacts
 import android.provider.MediaStore
 import android.provider.Telephony
+import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.ventouxlabs.portage.model.ItemStatus
+import com.ventouxlabs.portage.providers.calendar.AndroidCalendarStore
 import com.ventouxlabs.portage.providers.calllog.AndroidCallLogStore
 import com.ventouxlabs.portage.providers.calllog.CallLogApplyProvider
 import com.ventouxlabs.portage.providers.calllog.CallLogExportProvider
@@ -272,6 +280,122 @@ class ProviderDeviceContractTest {
         assertThat(downloadRows(USER_FILE_TRUNCATED_NAME)).isEmpty()
     }
 
+    /**
+     * #163 — the one thing JVM tests cannot reach: does the real CalendarProvider on this OS accept
+     * an account-less local calendar created by THIS app, from its own runtime grants?
+     *
+     * #159 ships `createLocalCalendar` on the assumption that [CalendarContract.ACCOUNT_TYPE_LOCAL]
+     * needs no registered sync adapter and no account. That is standard practice (Etar, Simple
+     * Calendar) but was unverified on GrapheneOS — and a code review passing on the diff cannot
+     * establish it. The `CalendarStore` seam is fully unit-tested with a fake, so the provider LOGIC
+     * around this call is covered; this test covers the call.
+     *
+     * SCOPE NOTE: this needs READ_CALENDAR as well as WRITE_CALENDAR, because it reads the row back
+     * to prove what was created. So it does NOT establish the stronger "WRITE_CALENDAR alone is
+     * enough" claim made at [AndroidCalendarStore.createLocalCalendar] — don't cite it for that.
+     *
+     * Drops the adopted shell identity first. That is defence-in-depth rather than load-bearing
+     * today: [adoptShellProviderPermissions] adopts an EXPLICIT list that has never included the
+     * calendar permissions, so calendar checks already fall through to the app's own grants. The
+     * drop exists so that adding a calendar permission to that list later cannot silently change
+     * what this test proves.
+     *
+     * On the SKIP-vs-FAIL question: the orchestration script grants both permissions before
+     * instrumenting and says so via `portage_grants_prepared`. Under the script a missing grant is
+     * therefore a HARNESS BUG, and must fail loudly — an assumption-skip is reported by JUnit as a
+     * pass, prints `OK (1 test)`, and satisfies the script's `grep -q '^OK ('` gate, so a #163 run
+     * that never executed would be indistinguishable from one that verified it. Hand-runs without
+     * the flag keep the skip.
+     */
+    @Test
+    fun calendarCreatesAccountLessLocalCalendarAndAcceptsEvents() {
+        instrumentation.uiAutomation.dropShellPermissionIdentity()
+        try {
+            val holdsGrants =
+                context.checkSelfPermission(Manifest.permission.WRITE_CALENDAR) ==
+                    PackageManager.PERMISSION_GRANTED &&
+                    context.checkSelfPermission(Manifest.permission.READ_CALENDAR) ==
+                    PackageManager.PERMISSION_GRANTED
+            if (InstrumentationRegistry.getArguments()
+                    .getString(GRANTS_PREPARED_ARG) == "true"
+            ) {
+                assertWithMessage(
+                    "device-contract.sh reported it prepared the calendar grants, but the app does " +
+                        "not hold them. That is a harness bug, not an unprepared device — failing " +
+                        "instead of skipping so the run cannot report OK without verifying #163.",
+                ).that(holdsGrants).isTrue()
+            } else {
+                assumeTrue(
+                    "app needs its OWN WRITE_CALENDAR/READ_CALENDAR grant — run scripts/device-contract.sh",
+                    holdsGrants,
+                )
+            }
+            deleteMarkerCalendars()
+            val store = AndroidCalendarStore(resolver)
+
+            // THE assertion #163 exists for: the platform accepts the local-calendar insert.
+            assertThat(store.createLocalCalendar(CALENDAR_MARKER)).isTrue()
+
+            // Exactly one, and genuinely account-less and writable — and not a second copy from a
+            // previous run. (Ghost-freedom comes from deleteMarkerCalendars going through the
+            // sync-adapter URI, NOT from this query, which would count a soft-deleted row rather
+            // than exclude it — that would surface here as a loud hasSize failure.)
+            val ids = markerCalendarIds()
+            assertThat(ids).hasSize(1)
+            resolver.query(
+                ContentUris.withAppendedId(Calendars.CONTENT_URI, ids.single()),
+                arrayOf(
+                    Calendars.ACCOUNT_TYPE, Calendars.CALENDAR_ACCESS_LEVEL,
+                    Calendars.VISIBLE, Calendars.CALENDAR_DISPLAY_NAME, Calendars.ACCOUNT_NAME,
+                ),
+                null, null, null,
+            )?.use { row ->
+                assertThat(row.moveToFirst()).isTrue()
+                assertThat(row.getString(0)).isEqualTo(CalendarContract.ACCOUNT_TYPE_LOCAL)
+                assertThat(row.getInt(1)).isAtLeast(Calendars.CAL_ACCESS_CONTRIBUTOR)
+                assertThat(row.getInt(2)).isEqualTo(1)
+                assertThat(row.getString(3)).isEqualTo(CALENDAR_MARKER)
+                // Asserted because deleteMarkerCalendars() SELECTS on ACCOUNT_NAME, and that column
+                // equals the display name only as an implementation detail of createLocalCalendar
+                // (`val account = displayName`). If that ever changes, the delete silently matches
+                // zero rows and marker calendars accumulate on real phones — this makes the cleanup
+                // contract self-verifying instead of failing a run later, after leaving data behind.
+                assertThat(row.getString(4)).isEqualTo(CALENDAR_MARKER)
+            } ?: error("created calendar ${ids.single()} was not readable back")
+
+            // And it is a usable insert target — an event lands in THAT calendar, which is the
+            // whole point (a created-but-unwritable calendar would still fail the user).
+            val values = ContentValues().apply {
+                put(Events.CALENDAR_ID, ids.single())
+                put(Events.TITLE, CALENDAR_EVENT_TITLE)
+                put(Events.DTSTART, CALENDAR_EVENT_START)
+                put(Events.DTEND, CALENDAR_EVENT_START + 3_600_000L)
+                put(Events.EVENT_TIMEZONE, "UTC")
+            }
+            assertThat(resolver.insert(Events.CONTENT_URI, values)).isNotNull()
+            resolver.query(
+                Events.CONTENT_URI,
+                arrayOf(Events._ID),
+                "${Events.CALENDAR_ID} = ? AND ${Events.TITLE} = ?",
+                arrayOf(ids.single().toString(), CALENDAR_EVENT_TITLE),
+                null,
+            )?.use { assertThat(it.count).isEqualTo(1) } ?: error("event query returned no cursor")
+
+            // hasWritableCalendar must now see it. A FRESH store on purpose: AndroidCalendarStore
+            // memoises the resolved id in `cachedCalendarId`, so reusing `store` above would risk
+            // asserting against a cached value rather than a real query.
+            //
+            // Two limits this deliberately does NOT prove, both needing a zero-calendar device
+            // (see #163/#164): the false→true flip (on a phone that already had calendars it was
+            // already true), and the cache-invalidation branch in createLocalCalendar — `store`'s
+            // cache was never populated before the create, so clearing it is a no-op here.
+            assertThat(AndroidCalendarStore(resolver).hasWritableCalendar()).isTrue()
+        } finally {
+            deleteMarkerCalendars()
+            adoptShellProviderPermissions()
+        }
+    }
+
     private fun cleanup() {
         val rawIds = mutableListOf<Long>()
         resolver.query(
@@ -317,6 +441,54 @@ class ProviderDeviceContractTest {
         File(context.cacheDir, "device-contract-call-journal").delete()
         deleteDownloads(USER_FILE_NAME)
         deleteDownloads(USER_FILE_TRUNCATED_NAME)
+        deleteMarkerCalendars()
+    }
+
+    /**
+     * Delete ONLY the reserved marker calendar (#163). Triple-scoped — local account type AND the
+     * marker account name AND the marker display name — because this suite runs on real phones
+     * carrying real Google calendars, and a loose selection here would delete a user's actual data.
+     * Deleting a calendar cascades its events, so the fixture event needs no separate sweep.
+     *
+     * Goes through the sync-adapter URI because that is how the calendar was created, so the
+     * ACCOUNT_NAME/ACCOUNT_TYPE params CalendarProvider2 ANDs into the selection line up with the
+     * row — which makes the delete NARROWER, not broader. (An earlier version of this comment
+     * justified it with a soft-"deleted=1" claim; that rule is documented for Events, and I have
+     * not verified it applies to Calendars, so it is not the reason.)
+     *
+     * A failure is logged rather than swallowed silently: it cannot be fatal (cleanup runs in
+     * @After, and throwing there would mask the real test result), but an invisible cleanup
+     * failure would leave residue that only shows up as a confusing `hasSize(1)` failure on the
+     * NEXT run.
+     */
+    private fun deleteMarkerCalendars() {
+        runCatching {
+            resolver.delete(
+                syncAdapterCalendars(CALENDAR_MARKER),
+                "${Calendars.ACCOUNT_TYPE} = ? AND ${Calendars.ACCOUNT_NAME} = ? AND " +
+                    "${Calendars.CALENDAR_DISPLAY_NAME} = ?",
+                arrayOf(CalendarContract.ACCOUNT_TYPE_LOCAL, CALENDAR_MARKER, CALENDAR_MARKER),
+            )
+        }.onFailure {
+            Log.w("PortageContract", "marker calendar cleanup failed; next run may see residue", it)
+        }
+    }
+
+    private fun syncAdapterCalendars(account: String): Uri =
+        Calendars.CONTENT_URI.buildUpon()
+            .appendQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER, "true")
+            .appendQueryParameter(Calendars.ACCOUNT_NAME, account)
+            .appendQueryParameter(Calendars.ACCOUNT_TYPE, CalendarContract.ACCOUNT_TYPE_LOCAL)
+            .build()
+
+    private fun markerCalendarIds(): List<Long> = buildList {
+        resolver.query(
+            Calendars.CONTENT_URI,
+            arrayOf(Calendars._ID),
+            "${Calendars.ACCOUNT_TYPE} = ? AND ${Calendars.CALENDAR_DISPLAY_NAME} = ?",
+            arrayOf(CalendarContract.ACCOUNT_TYPE_LOCAL, CALENDAR_MARKER),
+            null,
+        )?.use { while (it.moveToNext()) add(it.getLong(0)) }
     }
 
     private fun downloadRows(displayName: String): List<DownloadRow> {
@@ -407,6 +579,23 @@ class ProviderDeviceContractTest {
         const val USER_FILE_NAME = "portage-device-contract.bin"
         const val USER_FILE_TRUNCATED_NAME = "portage-device-contract-truncated.bin"
         const val USER_FILE_MIME = "application/octet-stream"
+
+        /**
+         * Reserved calendar marker (#163). Deliberately NOT
+         * [com.ventouxlabs.portage.providers.calendar.CalendarApplyProvider.LOCAL_CALENDAR_NAME]
+         * ("Imported"): cleanup deletes by this name, and a real user calendar must never be
+         * deletable by a test. `createLocalCalendar` takes the display name as a parameter, so a
+         * distinct marker exercises the identical platform call.
+         */
+        /**
+         * Set by scripts/device-contract.sh to say "I granted the calendar permissions". Turns the
+         * calendar test's assumption-skip into a hard failure, because under the script a missing
+         * grant is a harness bug — and a JUnit skip reports as OK, which the script's gate accepts.
+         */
+        const val GRANTS_PREPARED_ARG = "portage_grants_prepared"
+        const val CALENDAR_MARKER = "PORTAGE DEVICE CONTRACT CAL — SAFE TO DELETE"
+        const val CALENDAR_EVENT_TITLE = "PORTAGE DEVICE CONTRACT EVENT"
+        const val CALENDAR_EVENT_START = 1_893_456_200_000L
         val WEBSITE_FIXTURES = listOf(
             "CUSTOM" to Website.TYPE_CUSTOM,
             "HOMEPAGE" to Website.TYPE_HOMEPAGE,
