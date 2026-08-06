@@ -11,9 +11,14 @@ package com.ventouxlabs.portage.recv
 
 import android.Manifest
 import android.app.role.RoleManager
+import android.content.ContentValues
 import android.content.ContentProviderOperation
 import android.content.ContentUris
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.CalendarContract
+import android.provider.CalendarContract.Calendars
+import android.provider.CalendarContract.Events
 import android.provider.CallLog.Calls
 import android.provider.ContactsContract
 import android.provider.ContactsContract.CommonDataKinds.Phone
@@ -27,6 +32,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.google.common.truth.Truth.assertThat
 import com.ventouxlabs.portage.model.ItemStatus
+import com.ventouxlabs.portage.providers.calendar.AndroidCalendarStore
 import com.ventouxlabs.portage.providers.calllog.AndroidCallLogStore
 import com.ventouxlabs.portage.providers.calllog.CallLogApplyProvider
 import com.ventouxlabs.portage.providers.calllog.CallLogExportProvider
@@ -272,6 +278,85 @@ class ProviderDeviceContractTest {
         assertThat(downloadRows(USER_FILE_TRUNCATED_NAME)).isEmpty()
     }
 
+    /**
+     * #163 — the one thing JVM tests cannot reach: does the real CalendarProvider on this OS accept
+     * an account-less local calendar, created by THIS app with only WRITE_CALENDAR?
+     *
+     * #159 ships `createLocalCalendar` on the assumption that [CalendarContract.ACCOUNT_TYPE_LOCAL]
+     * needs no registered sync adapter and no account. That is standard practice (Etar, Simple
+     * Calendar) but was unverified on GrapheneOS — and a code review passing on the diff cannot
+     * establish it. The `CalendarStore` seam is fully unit-tested with a fake, so the provider LOGIC
+     * around this call is covered; this test covers the call.
+     *
+     * Runs WITHOUT the adopted shell identity on purpose. Adopting shell would prove the provider
+     * accepts the insert from *shell*, which is not the production caller — portage does this with
+     * its own runtime-granted WRITE_CALENDAR. Skips (rather than fails) if the grant is absent, so
+     * the suite still passes on a device the orchestration script has not prepared.
+     */
+    @Test
+    fun calendarCreatesAccountLessLocalCalendarAndAcceptsEvents() {
+        instrumentation.uiAutomation.dropShellPermissionIdentity()
+        try {
+            assumeTrue(
+                "app needs its OWN WRITE_CALENDAR/READ_CALENDAR grant — run scripts/device-contract.sh",
+                context.checkSelfPermission(Manifest.permission.WRITE_CALENDAR) ==
+                    PackageManager.PERMISSION_GRANTED &&
+                    context.checkSelfPermission(Manifest.permission.READ_CALENDAR) ==
+                    PackageManager.PERMISSION_GRANTED,
+            )
+            deleteMarkerCalendars()
+            val store = AndroidCalendarStore(resolver)
+
+            // THE assertion #163 exists for: the platform accepts the local-calendar insert.
+            assertThat(store.createLocalCalendar(CALENDAR_MARKER)).isTrue()
+
+            // Exactly one, and it is genuinely account-less and writable — not a soft-deleted
+            // ghost, and not a second copy from a previous run.
+            val ids = markerCalendarIds()
+            assertThat(ids).hasSize(1)
+            resolver.query(
+                ContentUris.withAppendedId(Calendars.CONTENT_URI, ids.single()),
+                arrayOf(
+                    Calendars.ACCOUNT_TYPE, Calendars.CALENDAR_ACCESS_LEVEL,
+                    Calendars.VISIBLE, Calendars.CALENDAR_DISPLAY_NAME,
+                ),
+                null, null, null,
+            )?.use { row ->
+                assertThat(row.moveToFirst()).isTrue()
+                assertThat(row.getString(0)).isEqualTo(CalendarContract.ACCOUNT_TYPE_LOCAL)
+                assertThat(row.getInt(1)).isAtLeast(Calendars.CAL_ACCESS_CONTRIBUTOR)
+                assertThat(row.getInt(2)).isEqualTo(1)
+                assertThat(row.getString(3)).isEqualTo(CALENDAR_MARKER)
+            } ?: error("created calendar ${ids.single()} was not readable back")
+
+            // And it is a usable insert target — an event lands in THAT calendar, which is the
+            // whole point (a created-but-unwritable calendar would still fail the user).
+            val values = ContentValues().apply {
+                put(Events.CALENDAR_ID, ids.single())
+                put(Events.TITLE, CALENDAR_EVENT_TITLE)
+                put(Events.DTSTART, CALENDAR_EVENT_START)
+                put(Events.DTEND, CALENDAR_EVENT_START + 3_600_000L)
+                put(Events.EVENT_TIMEZONE, "UTC")
+            }
+            assertThat(resolver.insert(Events.CONTENT_URI, values)).isNotNull()
+            resolver.query(
+                Events.CONTENT_URI,
+                arrayOf(Events._ID),
+                "${Events.CALENDAR_ID} = ? AND ${Events.TITLE} = ?",
+                arrayOf(ids.single().toString(), CALENDAR_EVENT_TITLE),
+                null,
+            )?.use { assertThat(it.count).isEqualTo(1) } ?: error("event query returned no cursor")
+
+            // hasWritableCalendar must now see it. NOTE this cannot prove the false→true flip on a
+            // phone that already had calendars (it was already true); the zero-calendar half of
+            // #163 needs a device with none — see the issue.
+            assertThat(AndroidCalendarStore(resolver).hasWritableCalendar()).isTrue()
+        } finally {
+            deleteMarkerCalendars()
+            adoptShellProviderPermissions()
+        }
+    }
+
     private fun cleanup() {
         val rawIds = mutableListOf<Long>()
         resolver.query(
@@ -317,6 +402,45 @@ class ProviderDeviceContractTest {
         File(context.cacheDir, "device-contract-call-journal").delete()
         deleteDownloads(USER_FILE_NAME)
         deleteDownloads(USER_FILE_TRUNCATED_NAME)
+        deleteMarkerCalendars()
+    }
+
+    /**
+     * Delete ONLY the reserved marker calendar (#163). Triple-scoped — local account type AND the
+     * marker account name AND the marker display name — because this suite runs on real phones
+     * carrying real Google calendars, and a loose selection here would delete a user's actual data.
+     * Deleting a calendar cascades its events, so the fixture event needs no separate sweep.
+     *
+     * Must go through the sync-adapter URI: a plain delete on [Calendars] is a soft "deleted=1"
+     * mark that a sync adapter is expected to finish, which would leave the row behind and make
+     * the next run's "exactly one" assertion flap.
+     */
+    private fun deleteMarkerCalendars() {
+        runCatching {
+            resolver.delete(
+                syncAdapterCalendars(CALENDAR_MARKER),
+                "${Calendars.ACCOUNT_TYPE} = ? AND ${Calendars.ACCOUNT_NAME} = ? AND " +
+                    "${Calendars.CALENDAR_DISPLAY_NAME} = ?",
+                arrayOf(CalendarContract.ACCOUNT_TYPE_LOCAL, CALENDAR_MARKER, CALENDAR_MARKER),
+            )
+        }
+    }
+
+    private fun syncAdapterCalendars(account: String): Uri =
+        Calendars.CONTENT_URI.buildUpon()
+            .appendQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER, "true")
+            .appendQueryParameter(Calendars.ACCOUNT_NAME, account)
+            .appendQueryParameter(Calendars.ACCOUNT_TYPE, CalendarContract.ACCOUNT_TYPE_LOCAL)
+            .build()
+
+    private fun markerCalendarIds(): List<Long> = buildList {
+        resolver.query(
+            Calendars.CONTENT_URI,
+            arrayOf(Calendars._ID),
+            "${Calendars.ACCOUNT_TYPE} = ? AND ${Calendars.CALENDAR_DISPLAY_NAME} = ?",
+            arrayOf(CalendarContract.ACCOUNT_TYPE_LOCAL, CALENDAR_MARKER),
+            null,
+        )?.use { while (it.moveToNext()) add(it.getLong(0)) }
     }
 
     private fun downloadRows(displayName: String): List<DownloadRow> {
@@ -407,6 +531,17 @@ class ProviderDeviceContractTest {
         const val USER_FILE_NAME = "portage-device-contract.bin"
         const val USER_FILE_TRUNCATED_NAME = "portage-device-contract-truncated.bin"
         const val USER_FILE_MIME = "application/octet-stream"
+
+        /**
+         * Reserved calendar marker (#163). Deliberately NOT
+         * [com.ventouxlabs.portage.providers.calendar.CalendarApplyProvider.LOCAL_CALENDAR_NAME]
+         * ("Imported"): cleanup deletes by this name, and a real user calendar must never be
+         * deletable by a test. `createLocalCalendar` takes the display name as a parameter, so a
+         * distinct marker exercises the identical platform call.
+         */
+        const val CALENDAR_MARKER = "PORTAGE DEVICE CONTRACT CAL — SAFE TO DELETE"
+        const val CALENDAR_EVENT_TITLE = "PORTAGE DEVICE CONTRACT EVENT"
+        const val CALENDAR_EVENT_START = 1_893_456_200_000L
         val WEBSITE_FIXTURES = listOf(
             "CUSTOM" to Website.TYPE_CUSTOM,
             "HOMEPAGE" to Website.TYPE_HOMEPAGE,

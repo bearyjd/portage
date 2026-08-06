@@ -153,7 +153,15 @@ needs it — prefer the smallest scoped command):
   `ContentResolver` writes): `scripts/device-contract.sh` — requires an attached/authorized `adb`
   device, installs the debug APK + test APK, temporarily takes the SMS role, and restores it via a
   trap on exit. Never run outside this script (it's destructive-but-self-cleaning, not idempotent
-  standalone).
+  standalone). It accepts an optional `'<class>#<method>'` filter; **a filtered run whose name
+  doesn't mention SMS skips the default-SMS role handoff entirely**, which is what makes it safe to
+  point at a phone with real data:
+  `scripts/device-contract.sh 'com.ventouxlabs.portage.recv.ProviderDeviceContractTest#calendarCreatesAccountLessLocalCalendarAndAcceptsEvents'`.
+  Tests that need a permission the app itself must hold (calendar, #163) are granted via `pm grant`
+  and revoked on exit if the script granted them — deliberately NOT via
+  `adoptShellPermissionIdentity`, which would prove the provider accepts the call from *shell*
+  rather than from portage. The script uses your normal `GRADLE_USER_HOME`: an isolated one breaks
+  JDK-17 toolchain resolution on any machine where 17 exists only as Gradle's auto-provisioned JDK.
 - No Robolectric is configured anywhere in the repo — `ContentResolver`-touching code is either
   unit-tested behind a hand-written `Store` seam (see "Provider authoring" below) with no real
   Android framework involved, or left to `ProviderDeviceContractTest` (hardware-only). There is no
