@@ -28,6 +28,7 @@ import android.provider.ContactsContract.Groups
 import android.provider.ContactsContract.RawContacts
 import android.provider.MediaStore
 import android.provider.Telephony
+import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.google.common.truth.Truth.assertThat
@@ -411,9 +412,16 @@ class ProviderDeviceContractTest {
      * carrying real Google calendars, and a loose selection here would delete a user's actual data.
      * Deleting a calendar cascades its events, so the fixture event needs no separate sweep.
      *
-     * Must go through the sync-adapter URI: a plain delete on [Calendars] is a soft "deleted=1"
-     * mark that a sync adapter is expected to finish, which would leave the row behind and make
-     * the next run's "exactly one" assertion flap.
+     * Goes through the sync-adapter URI because that is how the calendar was created, so the
+     * ACCOUNT_NAME/ACCOUNT_TYPE params CalendarProvider2 ANDs into the selection line up with the
+     * row — which makes the delete NARROWER, not broader. (An earlier version of this comment
+     * justified it with a soft-"deleted=1" claim; that rule is documented for Events, and I have
+     * not verified it applies to Calendars, so it is not the reason.)
+     *
+     * A failure is logged rather than swallowed silently: it cannot be fatal (cleanup runs in
+     * @After, and throwing there would mask the real test result), but an invisible cleanup
+     * failure would leave residue that only shows up as a confusing `hasSize(1)` failure on the
+     * NEXT run.
      */
     private fun deleteMarkerCalendars() {
         runCatching {
@@ -423,6 +431,8 @@ class ProviderDeviceContractTest {
                     "${Calendars.CALENDAR_DISPLAY_NAME} = ?",
                 arrayOf(CalendarContract.ACCOUNT_TYPE_LOCAL, CALENDAR_MARKER, CALENDAR_MARKER),
             )
+        }.onFailure {
+            Log.w("PortageContract", "marker calendar cleanup failed; next run may see residue", it)
         }
     }
 
