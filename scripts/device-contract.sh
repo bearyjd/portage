@@ -117,7 +117,8 @@ export ANDROID_SERIAL="$serial"
 # the system JDK is 21), a scratch gradle home cannot see it AND has no download repositories
 # configured, so the build dies at "Cannot find a Java installation ... languageVersion=17" before
 # a single test runs. --no-daemon already gives the isolation the scratch dir was reaching for.
-# Still overridable for CI, which sets its own.
+# Still overridable by the caller if they need an isolated cache. (No CI workflow runs
+# this script — it needs a physical device — so there is no CI-sets-its-own case to serve.)
 export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
 
 ./gradlew :app-recv:assembleDegoogleDebug :app-recv:assembleDegoogleDebugAndroidTest --no-daemon
@@ -136,9 +137,11 @@ fi
 if test -n "$filter"; then
   result="$(adb -s "$serial" shell am instrument -w \
     -e class "$filter" \
+    -e portage_grants_prepared true \
     "$pkg.test/androidx.test.runner.AndroidJUnitRunner")"
 else
   result="$(adb -s "$serial" shell am instrument -w \
+    -e portage_grants_prepared true \
     "$pkg.test/androidx.test.runner.AndroidJUnitRunner")"
 fi
 printf '%s\n' "$result"

@@ -151,17 +151,26 @@ needs it — prefer the smallest scoped command):
   :app-send:testDegoogleDebugUnitTest :app-send:testPlayDebugUnitTest`.
 - Device-only instrumentation test (`app-recv`'s `ProviderDeviceContractTest`, real
   `ContentResolver` writes): `scripts/device-contract.sh` — requires an attached/authorized `adb`
-  device, installs the debug APK + test APK, temporarily takes the SMS role, and restores it via a
-  trap on exit. Never run outside this script (it's destructive-but-self-cleaning, not idempotent
-  standalone). It accepts an optional `'<class>#<method>'` filter; **a filtered run whose name
-  doesn't mention SMS skips the default-SMS role handoff entirely**, which is what makes it safe to
-  point at a phone with real data:
+  device, installs the debug APK + test APK, **may take** the SMS role (see below), and restores via
+  a trap on EXIT/INT/TERM. Never run outside this script (it's destructive-but-self-cleaning, not
+  idempotent standalone). It accepts an optional `'<class>#<method>'` filter, which **narrows** the
+  blast radius — it does not eliminate it:
   `scripts/device-contract.sh 'com.ventouxlabs.portage.recv.ProviderDeviceContractTest#calendarCreatesAccountLessLocalCalendarAndAcceptsEvents'`.
-  Tests that need a permission the app itself must hold (calendar, #163) are granted via `pm grant`
-  and revoked on exit if the script granted them — deliberately NOT via
-  `adoptShellPermissionIdentity`, which would prove the provider accepts the call from *shell*
-  rather than from portage. The script uses your normal `GRADLE_USER_HOME`: an isolated one breaks
-  JDK-17 toolchain resolution on any machine where 17 exists only as Gradle's auto-provisioned JDK.
+  A filter naming a specific `#method` that isn't SMS skips the default-SMS role handoff (a
+  class-only filter does NOT — it still runs the SMS test, so it fails closed and takes the role).
+  What a filtered run **still** does: `install -r` over whatever `app-recv` is on the device, grant
+  and then revoke calendar permissions (`pm revoke` leaves *denied*, not *never-asked* — it can
+  degrade a real user's next calendar import until they re-grant in-app), and run the
+  `@Before`/`@After` contacts/call-log/downloads sweeps for whichever tests are selected.
+  Tests needing a permission the app itself must hold (calendar, #163) are granted via `pm grant`
+  scoped to the current user — deliberately NOT via `adoptShellPermissionIdentity`, which would
+  prove the provider accepts the call from *shell* rather than from portage.
+  **Reading the result:** the script's gate is `grep -q '^OK ('`, and a JUnit *assumption skip*
+  also prints `OK`. The calendar test guards against that — the script passes
+  `-e portage_grants_prepared true`, which turns its skip into a hard failure — but for any other
+  test, confirm the output doesn't report an assumption failure before treating green as verified.
+  The script uses your normal `GRADLE_USER_HOME`: an isolated one breaks JDK-17 toolchain
+  resolution on any machine where 17 exists only as Gradle's auto-provisioned JDK.
 - No Robolectric is configured anywhere in the repo — `ContentResolver`-touching code is either
   unit-tested behind a hand-written `Store` seam (see "Provider authoring" below) with no real
   Android framework involved, or left to `ProviderDeviceContractTest` (hardware-only). There is no
