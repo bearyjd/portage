@@ -94,6 +94,8 @@ private object CompletenessCalendarStore : CalendarStore {
     override fun count() = 0
     override fun readAll(): List<EventRecord> = emptyList()
     override fun insert(event: EventRecord) = true
+    override fun hasWritableCalendar() = true
+    override fun createLocalCalendar(displayName: String) = false
 }
 
 private object CompletenessCallLogStore : CallLogStore {

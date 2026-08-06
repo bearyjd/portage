@@ -35,13 +35,16 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -49,6 +52,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ventouxlabs.portage.providers.calendar.AndroidCalendarStore
 import com.ventouxlabs.portage.providers.inventory.InstallAction
 import com.ventouxlabs.portage.providers.relay.RelayRestorePrompt
 import com.ventouxlabs.portage.recv.ReceiverState
@@ -261,6 +265,13 @@ private fun ReviewingBody(
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         canWriteSystem = android.provider.Settings.System.canWrite(context)
     }
+    // Starts TRUE = "assume there is a calendar, disclose nothing" (#159). See
+    // [probeHasWritableCalendar]: a claim we cannot verify is worse than saying nothing.
+    var hasWritableCalendar by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        // ContentResolver query — off the main thread (#158), never in composition.
+        hasWritableCalendar = withContext(Dispatchers.IO) { probeHasWritableCalendar(context) }
+    }
     ChecklistScreen(
         senderName = current.senderName,
         groups = current.groups,
@@ -284,7 +295,32 @@ private fun ReviewingBody(
         systemSettingsGrantNeeded =
             ReceiverChecklist.systemSettingsGrantNeeded(current.groups, canWriteSystem),
         onGrantSystemSettings = { launchManageWriteSettings(context) },
+        localCalendarWillBeCreated =
+            ReceiverChecklist.localCalendarWillBeCreated(current.groups, hasWritableCalendar),
     )
+}
+
+/**
+ * Does this phone have a calendar events can be written to? (#159)
+ *
+ * Returns TRUE — "say nothing" — whenever the answer cannot be established, which is the
+ * conservative direction for a *disclosure*: announcing "portage will create a calendar" and then
+ * not creating one would be its own dishonesty. Two cases collapse to that:
+ *
+ *  - READ_CALENDAR is not held yet. Apply-time permissions are requested at "Bring it over", so on
+ *    a first-ever transfer the review screen genuinely cannot know. The Done screen still reports
+ *    truthfully after the fact, which is the fallback; from the second transfer on (permission now
+ *    held) the up-front disclosure works.
+ *  - The query throws or the provider is unavailable.
+ *
+ * Blocking ContentResolver work — callers MUST run it off the main thread (#158).
+ */
+private fun probeHasWritableCalendar(context: Context): Boolean {
+    val granted = ContextCompat.checkSelfPermission(context, ReceiverChecklist.READ_CALENDAR) ==
+        PackageManager.PERMISSION_GRANTED
+    if (!granted) return true
+    return runCatching { AndroidCalendarStore(context.contentResolver).hasWritableCalendar() }
+        .getOrDefault(true)
 }
 
 /**
