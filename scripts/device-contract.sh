@@ -11,6 +11,9 @@ set -euo pipefail
 #     own next calendar import until they re-grant it in-app.
 #   - The default-SMS role is handed back to the prior holder, but the handover is not atomic.
 #   - A run killed hard (SIGKILL, yanked cable) skips the trap entirely.
+#   - app-recv ITSELF is installed and NOT uninstalled on exit (only the .test APK is).
+#     Now that detection runs post-install this script works on a phone that never had it,
+#     so it can leave an app behind: `adb uninstall com.ventouxlabs.portage.recv` after.
 # Prefer a scratch device. On a daily driver, use a `#method` filter and read the list below.
 #
 # Usage:

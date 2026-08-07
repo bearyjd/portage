@@ -378,10 +378,9 @@ class ProviderDeviceContractTest {
             // THE assertion #163 exists for: the platform accepts the local-calendar insert.
             assertThat(store.createLocalCalendar(calendarRunMarker)).isTrue()
 
-            // Exactly one. The marker is unique per run, so a second row here could only mean the
-            // create inserted twice. (Ghost-freedom comes from deleteCreatedCalendars going through
-            // the sync-adapter URI, NOT from this query, which would count a soft-deleted row
-            // rather than exclude it — that would surface as a loud hasSize failure.)
+            // Exactly one. The marker is unique to this test instance, so a second row could only
+            // mean the create inserted twice — and a soft-deleted row from an earlier run cannot
+            // appear here at all, since no earlier run shared this marker.
             val ids = runMarkerCalendarIds()
             assertThat(ids).hasSize(1)
             // Record BEFORE the assertions below: if any of them fail, cleanup must still remove
@@ -400,11 +399,12 @@ class ProviderDeviceContractTest {
                 assertThat(row.getInt(1)).isAtLeast(Calendars.CAL_ACCESS_CONTRIBUTOR)
                 assertThat(row.getInt(2)).isEqualTo(1)
                 assertThat(row.getString(3)).isEqualTo(calendarRunMarker)
-                // Cleanup now deletes by recorded _ID, so it no longer DEPENDS on this column. Kept
-                // as a contract assertion on createLocalCalendar itself: it writes the caller's
-                // display name to ACCOUNT_NAME/OWNER_ACCOUNT too (`val account = displayName`), and
-                // the sync-adapter delete URI is built from that same string, so a change here
-                // would break the URI's account params even though the _ID selection would survive.
+                // LOAD-BEARING FOR CLEANUP, despite the _ID selection. deleteCreatedCalendars
+                // builds its sync-adapter URI from `calendarRunMarker`, not from what the provider
+                // actually wrote, and CalendarProvider2 ANDs that URI's account_name/account_type
+                // into the delete. So if createLocalCalendar ever stopped mirroring displayName
+                // into ACCOUNT_NAME (`val account = displayName`), the delete would match zero rows
+                // and the calendar would strand on the device. Do not remove this as redundant.
                 assertThat(row.getString(4)).isEqualTo(calendarRunMarker)
             } ?: error("created calendar ${ids.single()} was not readable back")
 
@@ -526,7 +526,15 @@ class ProviderDeviceContractTest {
                 }
             }.onFailure {
                 remaining += id
-                Log.w("PortageContract", "cleanup failed for calendar $id — will retry", it)
+                // Deliberately does NOT promise a retry: this runs at most twice (the test's
+                // finally, then @After), and on the second the instance is discarded with the id
+                // still undeleted. Naming the calendar is what lets an operator remove it by hand.
+                Log.w(
+                    "PortageContract",
+                    "cleanup failed for calendar $id (\"$calendarRunMarker\") — if this was the " +
+                        "final attempt, delete it by hand",
+                    it,
+                )
             }
         }
         createdCalendarIds.clear()
@@ -639,13 +647,6 @@ class ProviderDeviceContractTest {
         const val USER_FILE_TRUNCATED_NAME = "portage-device-contract-truncated.bin"
         const val USER_FILE_MIME = "application/octet-stream"
 
-        /**
-         * Reserved calendar marker (#163). Deliberately NOT
-         * [com.ventouxlabs.portage.providers.calendar.CalendarApplyProvider.LOCAL_CALENDAR_NAME]
-         * ("Imported"): cleanup deletes by this name, and a real user calendar must never be
-         * deletable by a test. `createLocalCalendar` takes the display name as a parameter, so a
-         * distinct marker exercises the identical platform call.
-         */
         /**
          * Set by scripts/device-contract.sh to say "I granted the calendar permissions". Turns the
          * calendar test's assumption-skip into a hard failure, because under the script a missing
