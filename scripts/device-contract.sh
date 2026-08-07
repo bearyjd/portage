@@ -4,6 +4,15 @@ set -euo pipefail
 # Device-only provider contract tests. Destructive-but-self-cleaning, NOT idempotent
 # standalone — always run through this script, never `am instrument` by hand.
 #
+# "Self-cleaning" means it removes what it CREATED. It does NOT restore the device to its exact
+# prior state, and the difference matters on a phone someone actually uses:
+#   - `pm revoke` leaves a permission explicitly DENIED, not "never requested". If the owner had
+#     never been asked for calendar access, they end up denied — which silently degrades portage's
+#     own next calendar import until they re-grant it in-app.
+#   - The default-SMS role is handed back to the prior holder, but the handover is not atomic.
+#   - A run killed hard (SIGKILL, yanked cable) skips the trap entirely.
+# Prefer a scratch device. On a daily driver, use a `#method` filter and read the list below.
+#
 # Usage:
 #   scripts/device-contract.sh                      # whole suite
 #   scripts/device-contract.sh '<class>#<method>'   # ONE test (see BLAST RADIUS below)
@@ -78,7 +87,7 @@ fi
 
 prior=""
 if test "$needs_sms" = "1"; then
-  prior="$(adb -s "$serial" shell cmd role get-role-holders "$role" | tr -d '\r' | head -1)"
+  prior="$(adb -s "$serial" shell cmd role get-role-holders --user "$user" "$role" | tr -d '\r' | head -1)"
 fi
 
 # The calendar contract test (#163) runs under the APP's own permissions, not an adopted shell
@@ -87,19 +96,16 @@ fi
 # CAVEAT: `pm revoke` restores "denied", NOT "never requested" — a device that had never been asked
 # ends up with the permission explicitly user-set-denied. Close enough for a scratch state, but it
 # is not a byte-exact restore.
+# Populated AFTER the install below — see there for why. Declared here so the trap, which is
+# installed before any device mutation, always has a defined (possibly empty) list to revoke.
 granted_calendar=""
-for perm in android.permission.READ_CALENDAR android.permission.WRITE_CALENDAR; do
-  if ! perm_granted_for_user "$perm"; then
-    granted_calendar="$granted_calendar $perm"
-  fi
-done
 
 restore_device() {
   if test "$needs_sms" = "1"; then
     if test -n "$prior" && test "$prior" != "$pkg"; then
-      adb -s "$serial" shell cmd role add-role-holder "$role" "$prior" >/dev/null || true
+      adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$prior" >/dev/null || true
     elif test -z "$prior"; then
-      adb -s "$serial" shell cmd role remove-role-holder "$role" "$pkg" >/dev/null || true
+      adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null || true
     fi
   fi
   for perm in $granted_calendar; do
@@ -127,22 +133,53 @@ test_apk="$(find app-recv/build/outputs/apk/androidTest/degoogle/debug -name '*.
 test -f "$test_apk" || { echo "Instrumentation APK not found" >&2; exit 1; }
 adb -s "$serial" install -r "$test_apk" >/dev/null
 
+# Detect AFTER installing, not before. `dumpsys package <pkg>` on a phone that does not have
+# app-recv yet prints no user block at all, and perm_granted_for_user correctly refuses to guess —
+# which meant the harness exited before installing anything, i.e. it could not run on a fresh
+# device. Detecting post-install is also still correct for "what did the user have before we
+# touched it": `install -r` preserves existing grants, and a genuinely fresh install has none, so
+# we grant and the trap revokes exactly what we added.
+for perm in android.permission.READ_CALENDAR android.permission.WRITE_CALENDAR; do
+  if ! perm_granted_for_user "$perm"; then
+    granted_calendar="$granted_calendar $perm"
+  fi
+done
+
 for perm in $granted_calendar; do
   adb -s "$serial" shell pm grant --user "$user" "$pkg" "$perm" >/dev/null
 done
 if test "$needs_sms" = "1"; then
-  adb -s "$serial" shell cmd role add-role-holder "$role" "$pkg" >/dev/null
+  adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$pkg" >/dev/null
 fi
 
 if test -n "$filter"; then
-  result="$(adb -s "$serial" shell am instrument -w \
+  result="$(adb -s "$serial" shell am instrument -w --user "$user" \
     -e class "$filter" \
     -e portage_grants_prepared true \
     "$pkg.test/androidx.test.runner.AndroidJUnitRunner")"
 else
-  result="$(adb -s "$serial" shell am instrument -w \
+  result="$(adb -s "$serial" shell am instrument -w --user "$user" \
     -e portage_grants_prepared true \
     "$pkg.test/androidx.test.runner.AndroidJUnitRunner")"
 fi
 printf '%s\n' "$result"
-printf '%s\n' "$result" | grep -q '^OK ('
+
+# `grep -q '^OK ('` alone is NOT a sufficient gate. Two ways a run reports OK having verified
+# nothing, both seen in this repo's history of fail-open gates:
+#
+#  1. `OK (0 tests)` — a filter that is well-formed but names no existing test (a typo'd #method)
+#     selects an empty set, and AndroidJUnitRunner's request builder deliberately turns that into a
+#     blank runner rather than an error. Nothing ran; the gate accepted it.
+#  2. An assumption-skip counts toward the OK line. The calendar test hard-fails instead when
+#     `portage_grants_prepared` is set, but that only covers that one test.
+#
+# So require the OK line AND a non-zero test count. Anything else — FAILURES, a crash, a missing
+# OK line, or zero tests — is a failure.
+printf '%s\n' "$result" | grep -q '^OK (' || {
+  echo "device-contract: instrumentation did not report OK" >&2; exit 1; }
+ran="$(printf '%s\n' "$result" | sed -n 's/^OK (\([0-9]\{1,\}\) test.*/\1/p' | head -1)"
+test -n "$ran" || { echo "device-contract: could not parse the test count from the OK line" >&2; exit 1; }
+test "$ran" -gt 0 || {
+  echo "device-contract: OK (0 tests) — nothing ran. Check the filter names a real class#method." >&2
+  exit 1; }
+echo "device-contract: $ran test(s) executed"

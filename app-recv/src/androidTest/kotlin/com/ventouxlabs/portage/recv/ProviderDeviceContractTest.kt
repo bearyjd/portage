@@ -62,6 +62,7 @@ import org.junit.runner.RunWith
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.UUID
 
 /**
  * Destructive-but-self-cleaning contract tests against Android's real providers. The orchestration
@@ -73,6 +74,23 @@ class ProviderDeviceContractTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
     private val resolver = context.contentResolver
+
+    /**
+     * Per-RUN calendar identity, and the ids this run actually created (#165 codex review, P1).
+     *
+     * The previous version swept a FIXED marker name. That has no provenance predicate: any
+     * account-less local calendar whose account type, account name and display name happened to
+     * match would be deleted along with its events — and because cleanup() runs from @Before/@After
+     * for EVERY test, the sweep fired even on runs that never create a calendar. On a suite pointed
+     * at phones holding real data that is too wide a blast radius for a convenience.
+     *
+     * A UUID makes collision impossible, and deleting by recorded _ID means cleanup can only ever
+     * remove rows this run inserted. Cost, accepted: a run killed between create and cleanup leaves
+     * one obviously-named calendar behind that no later run will sweep. That is a visible, manually
+     * deletable artifact — strictly better than a sweep that can match someone's real calendar.
+     */
+    private val calendarRunMarker = "PORTAGE CONTRACT ${UUID.randomUUID()} — SAFE TO DELETE"
+    private val createdCalendarIds = mutableListOf<Long>()
 
     @Before
     fun adoptProviderPermissions() {
@@ -330,18 +348,21 @@ class ProviderDeviceContractTest {
                     holdsGrants,
                 )
             }
-            deleteMarkerCalendars()
+            deleteCreatedCalendars()
             val store = AndroidCalendarStore(resolver)
 
             // THE assertion #163 exists for: the platform accepts the local-calendar insert.
-            assertThat(store.createLocalCalendar(CALENDAR_MARKER)).isTrue()
+            assertThat(store.createLocalCalendar(calendarRunMarker)).isTrue()
 
-            // Exactly one, and genuinely account-less and writable — and not a second copy from a
-            // previous run. (Ghost-freedom comes from deleteMarkerCalendars going through the
-            // sync-adapter URI, NOT from this query, which would count a soft-deleted row rather
-            // than exclude it — that would surface here as a loud hasSize failure.)
-            val ids = markerCalendarIds()
+            // Exactly one. The marker is unique per run, so a second row here could only mean the
+            // create inserted twice. (Ghost-freedom comes from deleteCreatedCalendars going through
+            // the sync-adapter URI, NOT from this query, which would count a soft-deleted row
+            // rather than exclude it — that would surface as a loud hasSize failure.)
+            val ids = runMarkerCalendarIds()
             assertThat(ids).hasSize(1)
+            // Record BEFORE the assertions below: if any of them fail, cleanup must still remove
+            // the calendar this run created rather than leaving it on someone's phone.
+            createdCalendarIds += ids
             resolver.query(
                 ContentUris.withAppendedId(Calendars.CONTENT_URI, ids.single()),
                 arrayOf(
@@ -354,13 +375,13 @@ class ProviderDeviceContractTest {
                 assertThat(row.getString(0)).isEqualTo(CalendarContract.ACCOUNT_TYPE_LOCAL)
                 assertThat(row.getInt(1)).isAtLeast(Calendars.CAL_ACCESS_CONTRIBUTOR)
                 assertThat(row.getInt(2)).isEqualTo(1)
-                assertThat(row.getString(3)).isEqualTo(CALENDAR_MARKER)
-                // Asserted because deleteMarkerCalendars() SELECTS on ACCOUNT_NAME, and that column
-                // equals the display name only as an implementation detail of createLocalCalendar
-                // (`val account = displayName`). If that ever changes, the delete silently matches
-                // zero rows and marker calendars accumulate on real phones — this makes the cleanup
-                // contract self-verifying instead of failing a run later, after leaving data behind.
-                assertThat(row.getString(4)).isEqualTo(CALENDAR_MARKER)
+                assertThat(row.getString(3)).isEqualTo(calendarRunMarker)
+                // Cleanup now deletes by recorded _ID, so it no longer DEPENDS on this column. Kept
+                // as a contract assertion on createLocalCalendar itself: it writes the caller's
+                // display name to ACCOUNT_NAME/OWNER_ACCOUNT too (`val account = displayName`), and
+                // the sync-adapter delete URI is built from that same string, so a change here
+                // would break the URI's account params even though the _ID selection would survive.
+                assertThat(row.getString(4)).isEqualTo(calendarRunMarker)
             } ?: error("created calendar ${ids.single()} was not readable back")
 
             // And it is a usable insert target — an event lands in THAT calendar, which is the
@@ -391,7 +412,7 @@ class ProviderDeviceContractTest {
             // cache was never populated before the create, so clearing it is a no-op here.
             assertThat(AndroidCalendarStore(resolver).hasWritableCalendar()).isTrue()
         } finally {
-            deleteMarkerCalendars()
+            deleteCreatedCalendars()
             adoptShellProviderPermissions()
         }
     }
@@ -441,7 +462,7 @@ class ProviderDeviceContractTest {
         File(context.cacheDir, "device-contract-call-journal").delete()
         deleteDownloads(USER_FILE_NAME)
         deleteDownloads(USER_FILE_TRUNCATED_NAME)
-        deleteMarkerCalendars()
+        deleteCreatedCalendars()
     }
 
     /**
@@ -461,16 +482,23 @@ class ProviderDeviceContractTest {
      * failure would leave residue that only shows up as a confusing `hasSize(1)` failure on the
      * NEXT run.
      */
-    private fun deleteMarkerCalendars() {
-        runCatching {
-            resolver.delete(
-                syncAdapterCalendars(CALENDAR_MARKER),
-                "${Calendars.ACCOUNT_TYPE} = ? AND ${Calendars.ACCOUNT_NAME} = ? AND " +
-                    "${Calendars.CALENDAR_DISPLAY_NAME} = ?",
-                arrayOf(CalendarContract.ACCOUNT_TYPE_LOCAL, CALENDAR_MARKER, CALENDAR_MARKER),
-            )
-        }.onFailure {
-            Log.w("PortageContract", "marker calendar cleanup failed; next run may see residue", it)
+    private fun deleteCreatedCalendars() {
+        if (createdCalendarIds.isEmpty()) return
+        val ids = createdCalendarIds.toList()
+        createdCalendarIds.clear()
+        ids.forEach { id ->
+            runCatching {
+                // Sync-adapter URI so the delete is a real removal that cascades events, rather
+                // than the soft "deleted=1" mark a plain delete would leave for a sync adapter to
+                // finish. Selecting on _ID means this can only touch a row this run inserted.
+                resolver.delete(
+                    ContentUris.withAppendedId(syncAdapterCalendars(calendarRunMarker), id),
+                    null,
+                    null,
+                )
+            }.onFailure {
+                Log.w("PortageContract", "cleanup failed for calendar $id — delete it by hand", it)
+            }
         }
     }
 
@@ -481,12 +509,12 @@ class ProviderDeviceContractTest {
             .appendQueryParameter(Calendars.ACCOUNT_TYPE, CalendarContract.ACCOUNT_TYPE_LOCAL)
             .build()
 
-    private fun markerCalendarIds(): List<Long> = buildList {
+    private fun runMarkerCalendarIds(): List<Long> = buildList {
         resolver.query(
             Calendars.CONTENT_URI,
             arrayOf(Calendars._ID),
             "${Calendars.ACCOUNT_TYPE} = ? AND ${Calendars.CALENDAR_DISPLAY_NAME} = ?",
-            arrayOf(CalendarContract.ACCOUNT_TYPE_LOCAL, CALENDAR_MARKER),
+            arrayOf(CalendarContract.ACCOUNT_TYPE_LOCAL, calendarRunMarker),
             null,
         )?.use { while (it.moveToNext()) add(it.getLong(0)) }
     }
@@ -593,7 +621,6 @@ class ProviderDeviceContractTest {
          * grant is a harness bug — and a JUnit skip reports as OK, which the script's gate accepts.
          */
         const val GRANTS_PREPARED_ARG = "portage_grants_prepared"
-        const val CALENDAR_MARKER = "PORTAGE DEVICE CONTRACT CAL — SAFE TO DELETE"
         const val CALENDAR_EVENT_TITLE = "PORTAGE DEVICE CONTRACT EVENT"
         const val CALENDAR_EVENT_START = 1_893_456_200_000L
         val WEBSITE_FIXTURES = listOf(
