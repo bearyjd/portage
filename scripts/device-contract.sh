@@ -92,7 +92,8 @@ fi
 
 # The calendar contract test (#163) runs under the APP's own permissions, not an adopted shell
 # identity — adopting shell would prove the provider accepts the insert from shell, which is not
-# the production caller. Grant here, and revoke on exit ONLY what we granted.
+# the production caller. Detection and granting both happen AFTER the install below; the trap
+# revokes ONLY what we granted.
 # CAVEAT: `pm revoke` restores "denied", NOT "never requested" — a device that had never been asked
 # ends up with the permission explicitly user-set-denied. Close enough for a scratch state, but it
 # is not a byte-exact restore.
