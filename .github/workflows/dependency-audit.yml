@@ -12,6 +12,11 @@ on:
   schedule:
     # Weekly, so a CVE newly disclosed against an UNCHANGED dependency still trips the gate.
     - cron: '17 6 * * 1'
+  # Manual re-trigger — see the same note in build.yml. This gate additionally needs it because a
+  # run can be CANCELLED (no runner) rather than failing, and `gh pr checks` renders that as a bare
+  # `fail` on a security gate. Being able to re-run on demand is the difference between confirming
+  # "infrastructure, not an advisory" and merging past a red you never explained.
+  workflow_dispatch:
 
 concurrency:
   group: dependency-audit-${{ github.ref }}

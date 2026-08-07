@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual re-trigger. Added after a push event to main was DROPPED (2026-08-06, merge b5b2f7c):
+  # GitHub created zero check-runs for the merge commit — not queued, not failed, absent — during
+  # an Actions degradation that had already left a dependency-audit job hanging 2h30m. A dropped
+  # push event cannot be replayed, and with no dispatch trigger the only ways to re-run these gates
+  # on main were an empty commit or another merge. That left `main` carrying an unverified commit
+  # with no in-band recourse, which is not an acceptable state for the branch that gates releases.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref.
 concurrency:
