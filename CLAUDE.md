@@ -152,7 +152,12 @@ needs it — prefer the smallest scoped command):
 - Device-only instrumentation test (`app-recv`'s `ProviderDeviceContractTest`, real
   `ContentResolver` writes): `scripts/device-contract.sh` — requires an attached/authorized `adb`
   device, installs the debug APK + test APK, **may take** the SMS role (see below), and restores via
-  a trap on EXIT/INT/TERM. Never run outside this script (it's destructive-but-self-cleaning, not
+  a trap on EXIT/INT/TERM. The role handback is **verified by re-reading the holder, and a failed
+  restore fails the run** with a loud `RESTORE FAILED` naming the package — `add-role-holder` can
+  report success without the role moving, and the previous version swallowed that and exited 0 with
+  portage still the device's texting app. Relatedly, the script refuses to take the role at all if it
+  could not first read the current holder, since it could not then give it back.
+  Never run outside this script (it's destructive-but-self-cleaning, not
   idempotent standalone). It accepts an optional `'<class>#<method>'` filter, which **narrows** the
   blast radius — it does not eliminate it:
   `scripts/device-contract.sh 'com.ventouxlabs.portage.recv.ProviderDeviceContractTest#calendarCreatesAccountLessLocalCalendarAndAcceptsEvents'`.
@@ -165,10 +170,14 @@ needs it — prefer the smallest scoped command):
   Tests needing a permission the app itself must hold (calendar, #163) are granted via `pm grant`
   scoped to the current user — deliberately NOT via `adoptShellPermissionIdentity`, which would
   prove the provider accepts the call from *shell* rather than from portage.
-  **Reading the result:** the script's gate is `grep -q '^OK ('`, and a JUnit *assumption skip*
-  also prints `OK`. The calendar test guards against that — the script passes
-  `-e portage_grants_prepared true`, which turns its skip into a hard failure — but for any other
-  test, confirm the output doesn't report an assumption failure before treating green as verified.
+  **Reading the result:** a JUnit *assumption skip* also prints `OK` and counts toward the test
+  total, so the gate is `grep -q '^OK ('` **plus a non-zero parsed test count** (`OK (0 tests)` is a
+  well-formed filter that named nothing). Against the skip itself, every precondition in the suite
+  goes through one `requireOrAssume` helper: the script passes `-e portage_grants_prepared true`,
+  and under that flag an unmet precondition is a hard failure rather than a skip, because the script
+  has already prepared the device. Hand-runs without the flag keep the skip — so if you invoke
+  `am instrument` yourself, confirm the output reports no assumption failure before treating green
+  as verified. Add new preconditions via `requireOrAssume`, never a bare `assumeTrue`.
   The script uses your normal `GRADLE_USER_HOME`: an isolated one breaks JDK-17 toolchain
   resolution on any machine where 17 exists only as Gradle's auto-provisioned JDK.
 - No Robolectric is configured anywhere in the repo — `ContentResolver`-touching code is either

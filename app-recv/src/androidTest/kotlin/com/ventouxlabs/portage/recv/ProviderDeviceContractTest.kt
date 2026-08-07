@@ -68,8 +68,9 @@ import java.util.UUID
  * Destructive-but-self-cleaning contract tests against Android's real providers. The orchestration
  * script installs the debug app, preserves/restores the SMS holder, and runs this suite. Contacts,
  * call-log, SMS and user-file fixtures use reserved marker values and are deleted before and after
- * their test; the calendar fixture instead uses a per-run UUID and is deleted by recorded `_ID`,
- * because a name-based sweep can match a real user calendar (see [deleteCreatedCalendars]).
+ * their test; the calendar fixture instead uses a UUID minted per test instance and is deleted by
+ * recorded `_ID`, because a name-based sweep can match a real user calendar (see
+ * [deleteCreatedCalendars]).
  */
 @RunWith(AndroidJUnit4::class)
 class ProviderDeviceContractTest {
@@ -78,7 +79,15 @@ class ProviderDeviceContractTest {
     private val resolver = context.contentResolver
 
     /**
-     * Per-RUN calendar identity, and the ids this run actually created (#165 codex review, P1).
+     * Calendar identity for THIS TEST INSTANCE, and the ids it actually created (#165 codex review,
+     * P1).
+     *
+     * SCOPE — read this before reasoning about cleanup: JUnit4 constructs a **fresh instance of the
+     * test class per `@Test` method**, so both of these are per-METHOD, not per-run. Nothing carries
+     * from one test method to the next, and the retry budget for a delete that fails is exactly the
+     * two calls inside a single method — the calendar test's own `finally`, then `@After`. After
+     * that the instance is discarded and a still-undeleted id is gone, which is why
+     * [deleteCreatedCalendars] logs at ERROR with everything needed to delete the row by hand.
      *
      * The previous version swept a FIXED marker name. That has no provenance predicate: any
      * account-less local calendar whose account type, account name and display name happened to
@@ -87,11 +96,11 @@ class ProviderDeviceContractTest {
      * at phones holding real data that is too wide a blast radius for a convenience.
      *
      * A UUID makes collision impossible, and deleting by recorded _ID means cleanup can only ever
-     * remove rows this run inserted. Cost, accepted: a run killed between create and cleanup leaves
-     * one obviously-named calendar behind that no later run will sweep. That is a visible, manually
-     * deletable artifact — strictly better than a sweep that can match someone's real calendar.
+     * remove rows this instance inserted. Cost, accepted: a run killed between create and cleanup
+     * leaves one obviously-named calendar behind that no later run will sweep. That is a visible,
+     * manually deletable artifact — strictly better than a sweep that can match a real calendar.
      */
-    private val calendarRunMarker = "PORTAGE CONTRACT ${UUID.randomUUID()} — SAFE TO DELETE"
+    private val calendarMarker = "PORTAGE CONTRACT ${UUID.randomUUID()} — SAFE TO DELETE"
     private val createdCalendarIds = mutableListOf<Long>()
 
     @Before
@@ -212,7 +221,10 @@ class ProviderDeviceContractTest {
                 assertThat(row.first).isEqualTo(providerType)
                 assertThat(row.second).isEqualTo("Portage custom".takeIf { type == "CUSTOM" })
             }
-        }
+            // Without this the 16 assertions above are SKIPPED on a null cursor and the test still
+            // reports OK — `?.use {}` evaluates to null and the method just falls through. Every
+            // read in the calendar test got this treatment; this one was missed.
+        } ?: error("ContactsProvider returned no cursor for the website fixtures")
         Unit
     }
 
@@ -372,20 +384,28 @@ class ProviderDeviceContractTest {
                     PackageManager.PERMISSION_GRANTED,
                 "app needs its OWN WRITE_CALENDAR/READ_CALENDAR grant — run scripts/device-contract.sh",
             )
-            deleteCreatedCalendars()
+            // No deleteCreatedCalendars() here: JUnit4 builds a fresh instance per @Test, so
+            // createdCalendarIds is provably empty at this point and the call returned at its
+            // isEmpty() guard. It was load-bearing under the old fixed-marker sweep, which could
+            // clear a previous run's residue; by-id deletion cannot see anything but this instance.
             val store = AndroidCalendarStore(resolver)
 
             // THE assertion #163 exists for: the platform accepts the local-calendar insert.
-            assertThat(store.createLocalCalendar(calendarRunMarker)).isTrue()
+            assertThat(store.createLocalCalendar(calendarMarker)).isTrue()
+
+            // Record whatever the read-back found BEFORE asserting anything about it, including the
+            // size. createLocalCalendar returns a Boolean rather than an id, so this query is the
+            // only provenance available — and if the hasSize assert fired first, a calendar the
+            // platform really did create would be left on the device with no id recorded and no
+            // marker sweep to catch it later. Recording the whole list also covers the both-rows
+            // case, so a double insert cleans up completely instead of half-way.
+            val ids = markerCalendarIds()
+            createdCalendarIds += ids
 
             // Exactly one. The marker is unique to this test instance, so a second row could only
             // mean the create inserted twice — and a soft-deleted row from an earlier run cannot
             // appear here at all, since no earlier run shared this marker.
-            val ids = runMarkerCalendarIds()
             assertThat(ids).hasSize(1)
-            // Record BEFORE the assertions below: if any of them fail, cleanup must still remove
-            // the calendar this run created rather than leaving it on someone's phone.
-            createdCalendarIds += ids
             resolver.query(
                 ContentUris.withAppendedId(Calendars.CONTENT_URI, ids.single()),
                 arrayOf(
@@ -398,14 +418,16 @@ class ProviderDeviceContractTest {
                 assertThat(row.getString(0)).isEqualTo(CalendarContract.ACCOUNT_TYPE_LOCAL)
                 assertThat(row.getInt(1)).isAtLeast(Calendars.CAL_ACCESS_CONTRIBUTOR)
                 assertThat(row.getInt(2)).isEqualTo(1)
-                assertThat(row.getString(3)).isEqualTo(calendarRunMarker)
-                // LOAD-BEARING FOR CLEANUP, despite the _ID selection. deleteCreatedCalendars
-                // builds its sync-adapter URI from `calendarRunMarker`, not from what the provider
-                // actually wrote, and CalendarProvider2 ANDs that URI's account_name/account_type
-                // into the delete. So if createLocalCalendar ever stopped mirroring displayName
-                // into ACCOUNT_NAME (`val account = displayName`), the delete would match zero rows
-                // and the calendar would strand on the device. Do not remove this as redundant.
-                assertThat(row.getString(4)).isEqualTo(calendarRunMarker)
+                assertThat(row.getString(3)).isEqualTo(calendarMarker)
+                // Not redundant with the _ID selection above. [deleteCalendarRow] builds its
+                // sync-adapter URI from `calendarMarker`, not from what the provider actually
+                // wrote, and CalendarProvider2 ANDs that URI's account_name/account_type into the
+                // delete. So if createLocalCalendar ever stopped mirroring displayName into
+                // ACCOUNT_NAME (`val account = displayName`), every sync-adapter delete would match
+                // zero rows. That no longer strands the calendar — deleteCalendarRow falls back to
+                // a plain _ID URI — but this assert is what names the CAUSE instead of leaving a
+                // silent fallback to paper over it. Do not remove it as redundant.
+                assertThat(row.getString(4)).isEqualTo(calendarMarker)
             } ?: error("created calendar ${ids.single()} was not readable back")
 
             // And it is a usable insert target — an event lands in THAT calendar, which is the
@@ -441,6 +463,19 @@ class ProviderDeviceContractTest {
         }
     }
 
+    /**
+     * Sweep the fixed-marker fixtures, before AND after every test.
+     *
+     * The queries here are deliberately null-tolerant, unlike every other read in this file: cleanup
+     * runs from `@After`, so raising would replace the real test result with a cleanup error. A
+     * fixture that survives is visible on the next run instead (the markers are stable), which is
+     * the tradeoff being made — not an oversight.
+     *
+     * The @Before call is NOT redundant, despite JUnit4's fresh-instance-per-method: these fixtures
+     * are matched by FIXED marker values, so they outlive the instance that made them and a run
+     * killed hard leaves residue for the next run to clear. Only [deleteCreatedCalendars] is
+     * instance-scoped, and so can only ever do work on the @After path.
+     */
     private fun cleanup() {
         val rawIds = mutableListOf<Long>()
         resolver.query(
@@ -494,51 +529,71 @@ class ProviderDeviceContractTest {
      * predecessor swept a fixed marker name, which had no provenance predicate and could match a
      * user's real account-less calendar; an `_ID` recorded at insert time cannot.
      *
-     * Goes through the sync-adapter URI because that is how the calendar was created, so the
-     * ACCOUNT_NAME/ACCOUNT_TYPE params CalendarProvider2 ANDs in line up with the row. Whether that
-     * also avoids a soft "deleted=1" ghost is a rule documented for Events which I have NOT verified
-     * applies to Calendars — so it is not claimed as the reason here or below.
-     *
      * A failure is logged, never thrown: this runs from @After, where throwing would mask the real
-     * test result. Ids that fail to delete are KEPT so the next cleanup call retries them — the
-     * `finally` and @After both call this precisely so a transient failure gets a second chance.
+     * test result. So the log IS the failure report, and it has to be good enough to act on.
+     *
+     * An id is retained for retry when the delete threw AND when it matched ZERO rows. The zero case
+     * used to be logged and dropped, which was the wrong half to give up on: a zero-row delete
+     * throws nothing, so the id was discarded while the calendar stayed on the device — the exact
+     * "reported clean without being clean" shape this suite exists to avoid.
      */
     private fun deleteCreatedCalendars() {
         if (createdCalendarIds.isEmpty()) return
-        // Retain anything that fails: clearing up front would make a failed delete permanent,
-        // because the second cleanup call would see an empty list and skip the retry.
+        // Retain rather than clear up front: clearing would make a failed delete permanent, because
+        // the second call would see an empty list and skip the retry.
         val remaining = mutableListOf<Long>()
         createdCalendarIds.forEach { id ->
-            runCatching {
-                // Selecting by _ID means this can only ever touch a row this run inserted.
-                resolver.delete(
-                    ContentUris.withAppendedId(syncAdapterCalendars(calendarRunMarker), id),
-                    null,
-                    null,
-                )
-            }.onSuccess { rows ->
-                // A delete matching ZERO rows throws nothing, so discarding this count would make a
-                // wrong URI or a silently-refused delete look like success while the calendar stays
-                // on the device. Nothing to retry (a repeat would match zero again) — the point is
-                // that it stops being invisible.
-                if (rows == 0) {
-                    Log.w("PortageContract", "cleanup matched no rows for calendar $id — delete it by hand")
-                }
-            }.onFailure {
-                remaining += id
-                // Deliberately does NOT promise a retry: this runs at most twice (the test's
-                // finally, then @After), and on the second the instance is discarded with the id
-                // still undeleted. Naming the calendar is what lets an operator remove it by hand.
-                Log.w(
-                    "PortageContract",
-                    "cleanup failed for calendar $id (\"$calendarRunMarker\") — if this was the " +
-                        "final attempt, delete it by hand",
-                    it,
-                )
-            }
+            val attempt = runCatching { deleteCalendarRow(id) }
+            val rows = attempt.getOrNull()
+            if (rows != null && rows > 0) return@forEach
+
+            remaining += id
+            // ERROR, not WARN, and always naming BOTH the id and the display name. This function
+            // cannot tell whether it is the final attempt — it runs at most twice, both inside one
+            // test method, after which the instance is discarded and the id is gone — so every
+            // failure has to carry everything an operator needs to delete the row by hand.
+            Log.e(
+                "PortageContract",
+                "cleanup did not delete calendar $id (\"$calendarMarker\") — " +
+                    if (rows == 0) {
+                        "both the sync-adapter and plain _ID deletes matched no rows. " +
+                            "If it is still on the device, delete it by hand."
+                    } else {
+                        "the delete threw. If this was the final attempt, delete it by hand."
+                    },
+                attempt.exceptionOrNull(),
+            )
         }
         createdCalendarIds.clear()
         createdCalendarIds += remaining
+    }
+
+    /**
+     * Delete one calendar row by `_ID`: sync-adapter URI first, plain `_ID` URI if that matches
+     * nothing. Returns the rows actually deleted.
+     *
+     * The sync-adapter URI is tried first because it is how the calendar was created, so the
+     * ACCOUNT_NAME/ACCOUNT_TYPE params CalendarProvider2 ANDs into the delete line up with the row.
+     * But those params are rebuilt from [calendarMarker] rather than read back from what the
+     * provider actually wrote, so they can stop matching without anything throwing — and the failure
+     * is silent and total: zero rows, no exception, calendar left on the phone. The concrete way in
+     * is the calendar test's own ACCOUNT_NAME assertion failing, which aborts before the account
+     * name is ever confirmed to equal the marker.
+     *
+     * The plain [ContentUris] URI carries no account predicate, so it cannot miss for that reason.
+     * It is a narrower operation, not a looser one: `_ID` is still the selection, so this can only
+     * ever touch the row this instance recorded at insert time. Whether it leaves a soft
+     * `deleted=1` ghost is a rule documented for Events that I have NOT verified applies to
+     * Calendars — but a ghost is strictly better than a visible calendar on someone's phone.
+     */
+    private fun deleteCalendarRow(id: Long): Int {
+        val viaSyncAdapter = resolver.delete(
+            ContentUris.withAppendedId(syncAdapterCalendars(calendarMarker), id),
+            null,
+            null,
+        )
+        if (viaSyncAdapter > 0) return viaSyncAdapter
+        return resolver.delete(ContentUris.withAppendedId(Calendars.CONTENT_URI, id), null, null)
     }
 
     private fun syncAdapterCalendars(account: String): Uri =
@@ -548,19 +603,32 @@ class ProviderDeviceContractTest {
             .appendQueryParameter(Calendars.ACCOUNT_TYPE, CalendarContract.ACCOUNT_TYPE_LOCAL)
             .build()
 
-    private fun runMarkerCalendarIds(): List<Long> = buildList {
-        resolver.query(
+    /**
+     * Every read below hard-fails on a null cursor rather than degrading to an empty result.
+     *
+     * A null cursor is a provider-level failure, and "no rows" is what a caller cannot distinguish
+     * it from. That is not hypothetical squeamishness: [downloadRows] backs
+     * `assertThat(downloadRows(...)).isEmpty()`, where a null cursor would have made a provider
+     * failure look exactly like the row-was-deleted outcome the test claims to prove. The counters
+     * happen to fail closed against today's `isEqualTo(1)` callers, but `?: 0` is the same shape and
+     * flips the moment someone asserts a count of zero.
+     *
+     * The deliberate exception is [cleanup]'s own queries — see the note there.
+     */
+    private fun markerCalendarIds(): List<Long> = buildList {
+        val cursor = resolver.query(
             Calendars.CONTENT_URI,
             arrayOf(Calendars._ID),
             "${Calendars.ACCOUNT_TYPE} = ? AND ${Calendars.CALENDAR_DISPLAY_NAME} = ?",
-            arrayOf(CalendarContract.ACCOUNT_TYPE_LOCAL, calendarRunMarker),
+            arrayOf(CalendarContract.ACCOUNT_TYPE_LOCAL, calendarMarker),
             null,
-        )?.use { while (it.moveToNext()) add(it.getLong(0)) }
+        ) ?: error("CalendarProvider returned no cursor for the run marker")
+        cursor.use { while (it.moveToNext()) add(it.getLong(0)) }
     }
 
     private fun downloadRows(displayName: String): List<DownloadRow> {
         val rows = mutableListOf<DownloadRow>()
-        resolver.query(
+        val cursor = resolver.query(
             MediaStore.Downloads.EXTERNAL_CONTENT_URI,
             arrayOf(
                 MediaStore.Downloads._ID,
@@ -571,43 +639,58 @@ class ProviderDeviceContractTest {
             "${MediaStore.Downloads.DISPLAY_NAME} = ?",
             arrayOf(displayName),
             null,
-        )?.use { cursor ->
-            while (cursor.moveToNext()) {
+        ) ?: error("MediaStore returned no cursor for downloads named \"$displayName\"")
+        cursor.use {
+            while (it.moveToNext()) {
                 rows += DownloadRow(
                     uri = ContentUris.withAppendedId(
                         MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                        cursor.getLong(0),
+                        it.getLong(0),
                     ),
-                    mimeType = cursor.getString(1),
-                    relativePath = cursor.getString(2),
-                    pending = cursor.getInt(3),
+                    mimeType = it.getString(1),
+                    relativePath = it.getString(2),
+                    pending = it.getInt(3),
                 )
             }
         }
         return rows
     }
 
+    /** Best-effort, and must not throw: this runs from @After, where it would mask the result. */
     private fun deleteDownloads(displayName: String) {
-        downloadRows(displayName).forEach { resolver.delete(it.uri, null, null) }
+        runCatching { downloadRows(displayName) }
+            .onSuccess { rows -> rows.forEach { resolver.delete(it.uri, null, null) } }
+            .onFailure {
+                Log.e(
+                    "PortageContract",
+                    "cleanup could not enumerate downloads named \"$displayName\" — " +
+                        "delete it by hand from Download/Portage/",
+                    it,
+                )
+            }
     }
 
     private fun countCalls(): Int =
-        resolver.query(
-            Calls.CONTENT_URI,
-            arrayOf(Calls._ID),
-            "${Calls.NUMBER} = ? AND ${Calls.DATE} = ?",
-            arrayOf(CALL_NUMBER, CALL_DATE.toString()),
-            null,
-        )?.use { it.count } ?: 0
+        (
+            resolver.query(
+                Calls.CONTENT_URI,
+                arrayOf(Calls._ID),
+                "${Calls.NUMBER} = ? AND ${Calls.DATE} = ?",
+                arrayOf(CALL_NUMBER, CALL_DATE.toString()),
+                null,
+            ) ?: error("CallLogProvider returned no cursor for the fixture call")
+            ).use { it.count }
 
     private fun countSms(): Int =
-        resolver.query(
-            Telephony.Sms.CONTENT_URI,
-            arrayOf(Telephony.Sms._ID),
-            "${Telephony.Sms.ADDRESS} = ? AND ${Telephony.Sms.BODY} = ?",
-            arrayOf(SMS_ADDRESS, SMS_BODY),
-            null,
-        )?.use { it.count } ?: 0
+        (
+            resolver.query(
+                Telephony.Sms.CONTENT_URI,
+                arrayOf(Telephony.Sms._ID),
+                "${Telephony.Sms.ADDRESS} = ? AND ${Telephony.Sms.BODY} = ?",
+                arrayOf(SMS_ADDRESS, SMS_BODY),
+                null,
+            ) ?: error("SmsProvider returned no cursor for the fixture message")
+            ).use { it.count }
 
     private class FixtureCallStore(private val record: CallRecord) :
         com.ventouxlabs.portage.providers.calllog.CallLogStore {
