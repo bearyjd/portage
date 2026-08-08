@@ -39,6 +39,7 @@ set -uo pipefail
 #   perm_granted_for_user's `return 2` paths -> `return 1`             PERM_NO_RUNTIME_SECTION
 #   signal handlers -> `trap restore_device INT TERM` (resume, no exit) SIGTERM_MID_RUN
 #   the `trap -p INT` install check removed                            SIGINT_UNTRAPPABLE_REFUSES
+#   the take-time read-back retry loop -> a single immediate read                TAKE_VISIBLE_LATE
 #   whole-string `case` filter guard -> the line-oriented grep          FILTER_NEWLINE
 #
 # Recorded so nobody re-derives them:
@@ -60,6 +61,10 @@ set -uo pipefail
 #     any `tr -d` left the suite green while every real run aborted after taking the SMS role.
 #   - ANDROID_SERIAL=STUBSERIAL is exported on every invocation deliberately: if the stub `adb` ever
 #     failed to land on PATH, a real `adb` would fail on that serial rather than touching a phone.
+#   - RUNTIME is ~13s, nearly all of it the script's take-time read-back retry burning its ~3s budget
+#     in the scenarios that never converge. Do NOT add a test-only env knob to shorten it in the
+#     production script: a timing override that exists for the tests is the kind of thing that later
+#     gets set in anger on a real device, and 13s in a 10-minute job buys nothing worth that.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_UNDER_TEST="${SCRIPT_UNDER_TEST:-$REPO_ROOT/scripts/device-contract.sh}"
@@ -96,6 +101,7 @@ setup_tree() {
 #   role_read_silent  flag: get-role-holders emits NOTHING at all and exits 0
 #   handback_ignored  flag: add/remove-role-holder reports success WITHOUT moving the role
 #   take_ignored      flag: the TAKE is silently refused; the reader stays healthy
+#   take_visible_after file: N — the take lands but reads report the OLD holder N more times
 #   revoke_ignored    flag: pm revoke reports success without revoking
 #   perm_read_broken  flag: dumpsys emits no User block for the package at all
 #   perm_no_runtime_section flag: dumpsys emits a User block with no "runtime permissions:" section
@@ -103,6 +109,7 @@ setup_tree() {
 #   role_read_bare_token  flag: emits a dot-less token, which the charset check alone accepts
 #   role_read_dies_after  file: N — reads succeed N times, then fail silently forever
 #   take_ignored      flag: the TAKE is silently refused; the reader stays healthy
+#   take_visible_after file: N — the take lands but reads report the OLD holder N more times
 #   slow_build        flag: the stub gradlew sleeps, so signals can land mid-build
 #   tests             file: the test count the instrumentation reports
 # Written BY the stub, asserted by scenarios:
@@ -146,6 +153,16 @@ case "${a[0]:-} ${a[1]:-}" in
           n=$(cat "$S/role_read_calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$S/role_read_calls"
           [ "$n" -gt "$(cat "$S/role_read_dies_after")" ] && exit 0
         fi
+        # The write landed but is not yet VISIBLE — an async role commit. Models the platform
+        # timing question this script must not assume: report the PREVIOUS holder for the first N
+        # reads after a take, then the truth.
+        if [ -f "$S/take_visible_after" ] && [ -f "$S/take_happened" ]; then
+          n=$(cat "$S/stale_reads" 2>/dev/null || echo 0)
+          if [ "$n" -lt "$(cat "$S/take_visible_after")" ]; then
+            echo $((n + 1)) > "$S/stale_reads"
+            printf '%s\r\n' "$(cat "$S/prev_holder" 2>/dev/null)"; exit 0
+          fi
+        fi
         h="$(cat "$S/holder" 2>/dev/null || true)"; [ -n "$h" ] && printf '%s\r\n' "$h"; exit 0 ;;
       add-role-holder)
         t="${a[*]: -1}"
@@ -157,6 +174,9 @@ case "${a[0]:-} ${a[1]:-}" in
         # Only reading the role back after taking it can notice — every later guard sees a
         # consistent, working device that simply never gave us the role.
         if [ -f "$S/take_ignored" ] && [ "$t" = "com.ventouxlabs.portage.recv" ]; then exit 0; fi
+        if [ "$t" = "com.ventouxlabs.portage.recv" ]; then
+          cat "$S/holder" > "$S/prev_holder" 2>/dev/null; : > "$S/take_happened"
+        fi
         echo "$t" > "$S/holder"; exit 0 ;;
       remove-role-holder)
         printf 'remove\n' >> "$S/role_ops"
@@ -219,6 +239,7 @@ scenario() {
       tests=*)  echo "${s#tests=}" > "$WORK/run/state/tests" ;;
       env=*)    extra_env="${s#env=}" ;;
       role_read_dies_after=*) echo "${s#role_read_dies_after=}" > "$WORK/run/state/role_read_dies_after" ;;
+      take_visible_after=*) echo "${s#take_visible_after=}" > "$WORK/run/state/take_visible_after" ;;
       *)        touch "$WORK/run/state/$s" ;;
     esac
   done
@@ -323,6 +344,10 @@ scenario ROLE_READ_SILENT        nonzero "$PKG"          -- role_read_silent
 # looks consistent and simply never handed over the role. Only the post-take read-back sees it, and
 # because the reader demonstrably works, the script can say "nothing was changed" instead of
 # warning about a role it never took.
+# The take commits but is not visible to the next read — an async role commit. A single immediate
+# read would lose that race, conclude "nothing changed", skip the restore, and leave portage holding
+# the SMS role. The run must ride it out and finish normally.
+scenario TAKE_VISIBLE_LATE       0       com.example.sms -- take_visible_after=2
 scenario TAKE_SILENTLY_IGNORED   nonzero com.example.sms -- take_ignored
 scenario ROLE_READ_TRANSIENT     nonzero com.example.sms -- role_read_silent_once
 # A bare token passes the charset test; only the "must contain a dot" rule rejects it.

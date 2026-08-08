@@ -448,7 +448,20 @@ if test "$needs_sms" = "1"; then
   # verified nothing. This is the one moment the expected answer is known independently (we just
   # took the role), so it is the only place the read itself can be tested. If it cannot observe a
   # write we just made, abort before running a single test rather than proceed with a blind restore.
-  took="$(read_role_holder)" || took="<unreadable>"
+  # RETRIED, briefly. `cmd role add-role-holder` completes through a RoleManager callback, and
+  # whether the new holder is visible to the very next `get-role-holders` is a timing property of
+  # the platform — not something this script gets to assume. A single immediate read that lost that
+  # race would land in the "took had no effect" branch below, set role_taken=0, and skip the restore
+  # entirely, leaving portage holding the SMS role while the run reported that nothing changed. That
+  # is the worst outcome in this file, produced by a race rather than a bug, so it is not worth
+  # being clever about: read until it agrees or the budget runs out. Costs nothing on a device where
+  # the write is already visible (the first read breaks the loop), and still fails closed after ~3s.
+  took=""
+  for _ in 1 2 3 4 5 6; do
+    took="$(read_role_holder)" || took="<unreadable>"
+    test "$took" = "$pkg" && break
+    sleep 0.5
+  done
   if test "$took" = "$pkg"; then
     role_read_trusted=1
   elif test -n "$prior" && test "$took" = "$prior"; then

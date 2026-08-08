@@ -163,7 +163,11 @@ needs it — prefer the smallest scoped command):
   restoring "to portage" would bless the leak permanently; get past it with
   `PORTAGE_CONTRACT_PRIOR_SMS=<package>`, which takes the *real* prior holder rather than a boolean,
   so the only way forward is the one that actually gives the device its texting app back); the role
-  read can't observe the take it just performed; or **SIGINT could not be trapped** on an SMS run —
+  read still can't observe the take it just performed after ~3s of retries (retried because whether
+  `add-role-holder`'s commit is visible to the next `get-role-holders` is a platform timing property
+  this script must not assume — a single immediate read losing that race would conclude "nothing
+  changed", skip the restore, and leave portage holding the role); or **SIGINT could not be trapped**
+  on an SMS run —
   POSIX forbids trapping a signal that was `SIG_IGN` on entry and bash obeys silently, so launching
   async from a non-job-control shell (`&`, a make recipe, some CI runners) makes Ctrl-C a no-op, and
   an uninterruptible run must not take the role.
