@@ -14,6 +14,10 @@ set -euo pipefail
 #   - app-recv ITSELF is installed and NOT uninstalled on exit (only the .test APK is).
 #     Now that detection runs post-install this script works on a phone that never had it,
 #     so it can leave an app behind: `adb uninstall com.ventouxlabs.portage.recv` after.
+#
+# REDACT BEFORE PASTING. The failure output names your default-SMS app and embeds the device serial
+# in a copy-pasteable command. Neither is a secret, but both identify you, and this output is the
+# kind that ends up in GitHub issues and agent transcripts.
 # Prefer a scratch device. On a daily driver, use a `#method` filter and read the list below.
 #
 # Usage:
@@ -307,7 +311,9 @@ export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
 
 ./gradlew :app-recv:assembleDegoogleDebug :app-recv:assembleDegoogleDebugAndroidTest --no-daemon
 adb -s "$serial" install -r app-recv/build/outputs/apk/degoogle/debug/app-recv-degoogle-debug.apk >/dev/null
-test_apk="$(find app-recv/build/outputs/apk/androidTest/degoogle/debug -name '*.apk' -type f | head -1)"
+# `sed -n 1p`, not `head -1`: head exits after the first line, which can SIGPIPE `find` and make the
+# pipeline report 141 under `set -o pipefail`. sed reads to EOF. Same reason as the role reads above.
+test_apk="$(find app-recv/build/outputs/apk/androidTest/degoogle/debug -name '*.apk' -type f | sed -n 1p)"
 test -f "$test_apk" || { echo "Instrumentation APK not found" >&2; exit 1; }
 adb -s "$serial" install -r "$test_apk" >/dev/null
 
