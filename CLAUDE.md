@@ -155,7 +155,12 @@ needs it — prefer the smallest scoped command):
   a trap on EXIT/INT/TERM. Restore is **verified by re-reading device state, and a failed restore
   fails the run** — for the role (loud `RESTORE FAILED` naming the holder) and for the calendar
   permissions alike. `cmd role add-role-holder` and `pm revoke` can both report success without
-  acting, so their exit status is not consulted; only the post-state is. It **refuses to start** in
+  acting, so their exit status is not consulted; only the post-state is. When the post-state cannot
+  be established at all, it does **not** abstain: it hands back to the prior holder if it has one
+  and then drops portage's own claim regardless, because `remove-role-holder <role> <pkg>` NAMES
+  portage — it can only ever remove *our* claim, never a third party's, and the role is exclusive so
+  the take already evicted whoever held it. Ending with nobody holding SMS beats ending with a test
+  app holding it; both are reported loudly, only one leaves a live privilege behind. It **refuses to start** in
   five cases, all of which used to proceed silently: the current holder can't be read; the holder
   reads *empty* and a corroborating second read disagrees (empty is the value that selects the
   branch **removing** the role, so it earns a second opinion a non-empty answer does not need);

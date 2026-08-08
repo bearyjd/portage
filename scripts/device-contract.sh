@@ -266,15 +266,27 @@ restore_device() {
   local restore_failed=0 perm_status=0
   local now=""
   if test "$needs_sms" = "1" && test "$role_taken" = "1" && test "$role_read_trusted" != "1"; then
-    # We hold the role and cannot trust the read that told us who held it before. Both recoveries
-    # are guesses: handing back to a `prior` that may be fiction, or removing the role and possibly
-    # deleting the real texting app's claim. Refusing to guess and saying so loudly beats performing
-    # a destructive action on data we already know is unreliable.
+    # We may hold the role and cannot trust the reads. An earlier version abstained here on the
+    # grounds that removing might delete the real texting app's claim. That reasoning was wrong on
+    # two counts, and abstaining left a test app holding the SMS role indefinitely:
+    #   1. `android.app.role.SMS` is EXCLUSIVE. If our take landed, the prior holder's claim was
+    #      already evicted at that moment — there is nothing left to protect by not removing.
+    #   2. `remove-role-holder ... "$pkg"` NAMES portage. It can only ever drop OUR OWN claim; it is
+    #      incapable of touching a third party's. If the take never landed, it is a no-op.
+    # So both outcomes of the ambiguity are improved by trying, and neither is harmed. Hand back to
+    # `prior` first if we have one (that alone evicts portage), then drop our claim regardless, then
+    # report honestly that none of it could be verified.
     echo "" >&2
-    echo "!!! SMS ROLE STATE UNVERIFIABLE — NOT GUESSING !!!" >&2
-    echo "  $pkg holds $role and this device's role read could not be trusted," >&2
-    echo "  so the prior holder is unknown. Set your texting app by hand:" >&2
-    echo "    Settings > Apps > Default apps > SMS app" >&2
+    echo "!!! SMS ROLE STATE UNVERIFIABLE !!!" >&2
+    if test -n "$prior"; then
+      echo "  Attempting to hand $role back to '$prior' (unverified)." >&2
+      adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$prior" >/dev/null 2>&1 ||
+        true
+    fi
+    adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null 2>&1 ||
+      true
+    echo "  Dropped $pkg's claim on $role; this device's role read cannot confirm the result." >&2
+    echo "  Set your texting app by hand: Settings > Apps > Default apps > SMS app" >&2
     restore_failed=1
   elif test "$needs_sms" = "1" && test "$role_taken" = "1"; then
     if test -n "$prior"; then
@@ -296,10 +308,16 @@ restore_device() {
         adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null ||
           true
       else
+        # Same reasoning as the unverifiable branch above: the removal NAMES portage, so it can only
+        # drop our own claim, and the take already evicted whoever held it before. Abstaining here
+        # protected nothing and left a test app holding the role. Do it, and report that it could
+        # not be confirmed.
         echo "" >&2
-        echo "!!! ROLE READER WENT BAD MID-RUN — NOT REMOVING !!!" >&2
+        echo "!!! ROLE READER WENT BAD MID-RUN !!!" >&2
         echo "  $pkg should hold $role at this point, but the device says '$live'." >&2
-        echo "  Refusing to remove a role claim on the word of a reader that is already wrong." >&2
+        adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null 2>&1 ||
+          true
+        echo "  Dropped $pkg's claim anyway (it can only ever remove OUR claim); unconfirmed." >&2
         echo "  Check by hand: Settings > Apps > Default apps > SMS app" >&2
         restore_failed=1
         role_read_trusted=0
@@ -464,21 +482,17 @@ if test "$needs_sms" = "1"; then
   done
   if test "$took" = "$pkg"; then
     role_read_trusted=1
-  elif test -n "$prior" && test "$took" = "$prior"; then
-    # The role did not move, and we KNOW that rather than guessing: the reader just named a real
-    # package, so it is demonstrably alive, and what it named is what was there before. The device
-    # is exactly as we found it. Say that — the previous version reported "portage MAY STILL BE THIS
-    # DEVICE'S TEXTING APP" here, which was false, and a banner that cries wolf is how the one that
-    # matters gets ignored. (This branch requires `prior` non-empty on purpose: if both reads were
-    # empty we cannot tell "nothing moved" from "the reader is blind", so that falls through below
-    # and keeps role_taken=1 so the restore refuses to guess.)
-    role_taken=0
-    echo "Taking $role had no effect — the holder is still '$prior'." >&2
-    echo "Nothing on the device was changed. Aborting." >&2
-    exit 1
   else
-    echo "Cannot verify the SMS role on this device: after taking it, the holder reads" >&2
-    echo "  '$took' rather than $pkg." >&2
+    # NOT "the take had no effect". An earlier version concluded exactly that whenever the read-back
+    # returned `prior`, set role_taken=0, and therefore SKIPPED the restore — which is right if the
+    # take was refused and catastrophic if it merely had not become visible yet: portage keeps the
+    # SMS role while the run reports it changed nothing. The retry above narrows that window but
+    # cannot close it, and the two cases are genuinely indistinguishable from here.
+    #
+    # So do not disambiguate — say what is and is not known, leave role_taken=1 so the restore still
+    # runs, and let it drop portage's claim (which is safe either way; see there).
+    echo "Could not confirm the $role take: the holder reads '$took', not $pkg." >&2
+    echo "Either the take was refused, or it has not become visible within the retry budget." >&2
     echo "Aborting rather than running with a restore check that cannot detect its own failure." >&2
     exit 1
   fi

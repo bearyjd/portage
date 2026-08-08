@@ -40,6 +40,8 @@ set -uo pipefail
 #   signal handlers -> `trap restore_device INT TERM` (resume, no exit) SIGTERM_MID_RUN
 #   the `trap -p INT` install check removed                            SIGINT_UNTRAPPABLE_REFUSES
 #   the take-time read-back retry loop -> a single immediate read                TAKE_VISIBLE_LATE
+#   the unverifiable branch abstains instead of dropping portage's claim        ROLE_READ_SILENT
+#   the liveness branch abstains instead of dropping portage's claim            ROLE_READER_DIES_MID_RUN
 #   whole-string `case` filter guard -> the line-oriented grep          FILTER_NEWLINE
 #
 # Recorded so nobody re-derives them:
@@ -61,6 +63,9 @@ set -uo pipefail
 #     any `tr -d` left the suite green while every real run aborted after taking the SMS role.
 #   - ANDROID_SERIAL=STUBSERIAL is exported on every invocation deliberately: if the stub `adb` ever
 #     failed to land on PATH, a real `adb` would fail on that serial rather than touching a phone.
+#   - THE INVARIANT the scenario harness enforces globally: a run that exits 0 must never leave
+#     portage holding the default-SMS role. Every bug in this file's history reduces to a violation
+#     of that one line.
 #   - RUNTIME is ~13s, nearly all of it the script's take-time read-back retry burning its ~3s budget
 #     in the scenarios that never converge. Do NOT add a test-only env knob to shorten it in the
 #     production script: a timing override that exists for the tests is the kind of thing that later
@@ -179,9 +184,14 @@ case "${a[0]:-} ${a[1]:-}" in
         fi
         echo "$t" > "$S/holder"; exit 0 ;;
       remove-role-holder)
-        printf 'remove\n' >> "$S/role_ops"
+        t="${a[*]: -1}"
+        printf 'remove %s\n' "$t" >> "$S/role_ops"
         [ -f "$S/handback_ignored" ] && exit 0
-        : > "$S/holder"; exit 0 ;;
+        # Removes only the NAMED package's claim; a no-op if it is not the holder. The stub used to
+        # clear the holder unconditionally, which made a targeted removal look like a wipe and hid
+        # the fact that calling it under uncertainty is safe.
+        [ "$(cat "$S/holder" 2>/dev/null)" = "$t" ] && : > "$S/holder"
+        exit 0 ;;
     esac ;;
   "dumpsys package")
     if [ -f "$S/perm_read_broken" ]; then
@@ -264,6 +274,13 @@ scenario() {
   if test "$rc" -eq 0 && test "$granted" = "true"; then
     ok=0; why="$why exited 0 with calendar permission still granted;"
   fi
+  # THE invariant. Whatever went wrong, a run that reports SUCCESS must never leave portage holding
+  # the device's default-SMS role. Every bug in this file's history reduces to a violation of this
+  # line. (Scenarios that exit non-zero are exempt only because they are shouting about it; the
+  # per-scenario want_holder pins those.)
+  if test "$rc" -eq 0 && test "$holder" = "com.ventouxlabs.portage.recv"; then
+    ok=0; why="$why exited 0 leaving portage as the default SMS app;"
+  fi
   # And any run that reached instrumentation must have carried the grants-prepared flag. Without it
   # every precondition in the suite reverts to an assumption-skip that JUnit still counts toward
   # `OK (N tests)` — the run would report success having verified nothing, and no outcome-based
@@ -336,7 +353,12 @@ scenario ROLE_ALREADY_PORTAGE    nonzero "$PKG"          -- "holder=$PKG"
 # output validation can catch, because it is byte-identical to "the role is unheld". Only reading
 # back a write we just made can. And once the read is known bad, `prior` is fiction, so the restore
 # must refuse to act on it rather than remove a role claim that may belong to the user's real app.
-scenario ROLE_READ_SILENT        nonzero "$PKG"          -- role_read_silent
+# Reader blind for the whole run. The take lands but can never be confirmed, so the restore drops
+# portage's claim rather than abstaining: `remove-role-holder <role> <pkg>` NAMES portage, so it can
+# only ever remove OUR claim, and the exclusive role means the prior holder was already evicted by
+# the take. Ending with nobody holding SMS beats ending with a test app holding it — both are
+# reported loudly, but only one leaves a live privilege behind.
+scenario ROLE_READ_SILENT        nonzero ""              -- role_read_silent
 # A reader that glitches ONCE, on the very first call, yields "" — the value that selects the
 # destructive branch. The take-time read-back cannot rescue it (the reader works again by then), so
 # an empty answer is corroborated by a second read before it is believed.
@@ -354,7 +376,7 @@ scenario ROLE_READ_TRANSIENT     nonzero com.example.sms -- role_read_silent_onc
 scenario ROLE_READ_BARE_TOKEN    nonzero com.example.sms -- role_read_bare_token
 # Reader alive at take-time, dead by restore: the liveness re-check must refuse to remove the role
 # on the word of a reader that is already wrong.
-scenario ROLE_READER_DIES_MID_RUN nonzero "$PKG"         -- holder= role_read_dies_after=3
+scenario ROLE_READER_DIES_MID_RUN nonzero ""            -- holder= role_read_dies_after=3
 # The escape hatch takes the REAL prior holder, so the only way past the leak refusal is the one
 # that actually gives the device its texting app back.
 scenario PRIOR_SMS_OVERRIDE      0       com.example.sms -- "holder=$PKG" "env=PORTAGE_CONTRACT_PRIOR_SMS=com.example.sms"
