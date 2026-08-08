@@ -25,7 +25,7 @@ set -uo pipefail
 # named scenario goes RED; a self-test that still passes against the bug it was written for is worse
 # than none. Runner: scripts/mutate.py (Python, not bash — the transforms embed shell quotes, and
 # four levels of nesting silently truncated the bash runner, which executed 14 of 16 mutations and
-# reported success). All EIGHTEEN below were run and confirmed red:
+# reported success). All TWENTY-THREE below were run and confirmed red:
 #
 #   mutation (revert this)                                            scenario that must fail
 #   -----------------------------------------------------------------------------------------
@@ -47,6 +47,8 @@ set -uo pipefail
 #   whole-string `case` filter guard -> line-oriented grep             FILTER_NEWLINE
 #   the unverifiable branch abstains instead of dropping the claim     ROLE_READ_SILENT
 #   the liveness branch abstains instead of dropping the claim         ROLE_READER_DIES_MID_RUN
+#   role_taken=1 moved back AFTER the add-role-holder write             TAKE_LANDS_THEN_ERRORS
+#   restore_sms_role returns early on any filtered run                  FILTER_PLAIN_CLASS
 #   report_restore_result's inventory printf deleted                   ROLE_AND_PERM_BOTH_FAIL
 #   restore_problems+=( -> restore_problems=(  (keep only the last)    ROLE_AND_PERM_BOTH_FAIL
 #   report_restore_result never called from restore_device             ROLE_AND_PERM_BOTH_FAIL
@@ -55,7 +57,7 @@ set -uo pipefail
 #   - mutate.py degrades a stale anchor to ONE reported BROKEN rather than aborting: a reindent of
 #     restore_sms_role silently killed the run after 5 of 21 mutations, and the shell wrapper piping
 #     it to `tail` reported exit 0. Do not pipe mutate.py anywhere that swallows its exit status.
-#   - THE INVARIANT, enforced globally by scenario(): a run that exits 0 must never leave portage
+#   - THE INVARIANT, enforced by global_invariant_problems() from EVERY case function: a run that exits 0 must never leave portage
 #     holding the default-SMS role. Every bug in this file's history reduces to a violation of it.
 #   - GUARDS THAT OVERLAP SURVIVE EACH OTHER'S MUTATION. The post-take read-back and the restore-side
 #     liveness check both catch ROLE_READ_SILENT, so deleting either alone leaves the suite green.
@@ -71,6 +73,16 @@ set -uo pipefail
 # NOT COVERED, stated rather than implied:
 #   - perm_granted_for_user's `grep` status >= 2 branch. A here-string grep does not error, so the
 #     stub cannot provoke it; reachable only from a genuinely broken grep.
+#   - PER-USER SCOPING. The stub keys role and permission WRITES globally and only the dumpsys READ
+#     is per-user, so `sed 's/--user "$user" //g'` over the script still passes. SECONDARY_PROFILE
+#     therefore passes for a weaker reason than its comment claims. Fixing this means per-user stub
+#     state; until then, treat `--user` correctness as review-enforced, not test-enforced.
+#   - WHY a refusal happened. Refusal cases assert only "non-zero rc + device untouched", so any
+#     unrelated early abort satisfies them: a script that does nothing at all keeps ~17 of these
+#     green. Adding a stable `refuse=<token>` line per refusal and an `expect_refusal=` key would
+#     close it.
+#   - restore_permissions' status-2 arm, and the `adb uninstall "$pkg.test"` call: the stub aborts at
+#     detection before the revoke-verify can see a broken read, and never logs uninstalls.
 #   - The liveness check's await RETRY specifically (as opposed to the check existing at all).
 #     ROLE_READER_DIES_MID_RUN uses a permanently dead reader, which retrying cannot rescue, so
 #     reverting that one await to a single read turns nothing red. It is defence-in-depth over an
@@ -85,7 +97,8 @@ set -uo pipefail
 #     sharing one exit contract and one problems accumulator. Two separate rounds of bugs in this
 #     file were about state lost ACROSS boundaries, so adding boundaries here is the wrong trade.
 #     Split at the phase seam if it grows again.
-#   - RUNTIME is ~15s, nearly all of it await budgets burning down in scenarios that never converge.
+#   - RUNTIME is ~15-30s depending on machine, nearly all of it await budgets burning down in
+#     scenarios that never converge.
 #     Do NOT add a test-only env knob to shorten it in the production script: a timing override that
 #     exists for the tests is the kind of thing that later gets set in anger on a real device.
 
@@ -124,6 +137,7 @@ setup_tree() {
 #   role_read_silent  flag: get-role-holders emits NOTHING at all and exits 0
 #   handback_ignored  flag: add/remove-role-holder reports success WITHOUT moving the role
 #   take_ignored      flag: the TAKE is silently refused; the reader stays healthy
+#   take_lands_then_errors flag: the TAKE commits, then reports non-zero
 #   take_visible_after file: N — the take lands but reads report the OLD holder N more times
 #   handback_visible_late flag: the HANDBACK lands but the next read still reports portage
 #   current_user      file: which user `am get-current-user` reports (default 0)
@@ -133,10 +147,6 @@ setup_tree() {
 #   role_read_silent_once flag: fails silently on the FIRST call only (transient glitch)
 #   role_read_bare_token  flag: emits a dot-less token, which the charset check alone accepts
 #   role_read_dies_after  file: N — reads succeed N times, then fail silently forever
-#   take_ignored      flag: the TAKE is silently refused; the reader stays healthy
-#   take_visible_after file: N — the take lands but reads report the OLD holder N more times
-#   handback_visible_late flag: the HANDBACK lands but the next read still reports portage
-#   current_user      file: which user `am get-current-user` reports (default 0)
 #   slow_build        flag: the stub gradlew sleeps, so signals can land mid-build
 #   tests             file: the test count the instrumentation reports
 # Written BY the stub, asserted by scenarios:
@@ -206,6 +216,11 @@ case "${a[0]:-} ${a[1]:-}" in
         # Only reading the role back after taking it can notice — every later guard sees a
         # consistent, working device that simply never gave us the role.
         if [ -f "$S/take_ignored" ] && [ "$t" = "com.ventouxlabs.portage.recv" ]; then exit 0; fi
+        # Commits, THEN reports failure. Models a transport drop between the role commit and the
+        # status returning. Every other stub failure is "did not act"; this one is "acted, said no".
+        if [ -f "$S/take_lands_then_errors" ] && [ "$t" = "com.ventouxlabs.portage.recv" ]; then
+          echo "$t" > "$S/holder"; printf 'add %s\n' "$t" >> "$S/role_ops"; exit 1
+        fi
         if [ "$t" = "com.ventouxlabs.portage.recv" ]; then
           cat "$S/holder" > "$S/prev_holder" 2>/dev/null; : > "$S/take_happened"
         else
@@ -270,6 +285,32 @@ STUB
 chmod +x "$WORK/adb"
 
 # scenario <name> <expected-rc: 0|nonzero> <expected-final-holder> -- <state settings...>
+# The invariants that must hold for EVERY case, not just scenario(). They used to live INSIDE
+# scenario(), so filter_case / signal_case / sigint_untrappable_case bypassed them — 9 of 32 cases,
+# including FILTER_PLAIN_CLASS, the ONLY case that takes the SMS role via a FILTERED run. A script
+# with `test -z "$filter" || return 0` at the top of restore_sms_role, i.e. one that never hands the
+# role back on any filtered run, passed the entire suite green.
+#
+# Echoes one clause per violation; empty output means clean.
+global_invariant_problems() {
+  local rc="$1" holder="$2" granted="$3" out="$4"
+  # THE invariant. Whatever went wrong, a run that reports SUCCESS must never leave portage holding
+  # the device's default-SMS role. Every bug in this file's history reduces to a violation of it.
+  # (Non-zero runs are exempt only because they are shouting about it; want_holder pins those.)
+  if test "$rc" -eq 0 && test "$holder" = "com.ventouxlabs.portage.recv"; then
+    printf ' exited 0 leaving portage as the default SMS app;'
+  fi
+  # A run that reports success must not leave the calendar permission behind either.
+  if test "$rc" -eq 0 && test "$granted" = "true"; then
+    printf ' exited 0 with calendar permission still granted;'
+  fi
+  # Every banner-level failure must ALSO appear in the end-of-run inventory. Asserts SHAPE, not
+  # wording, so rewording a banner does not turn cases red — but deleting the inventory does.
+  if grep -q '!!!' <<<"$out" && ! grep -q 'NOT FULLY RESTORED' <<<"$out"; then
+    printf ' printed a !!! failure banner but no end-of-run inventory;'
+  fi
+}
+
 scenario() {
   test "$#" -ge 4 || { echo "scenario: needs >=4 args, got $#" >&2; fail=$((fail + 1)); return; }
   local name="$1" want_rc="$2" want_holder="$3"; shift 4
@@ -306,25 +347,10 @@ scenario() {
   esac
   test "$holder" = "$want_holder" ||
     { ok=0; why="$why expected holder '$want_holder', got '$holder';"; }
-  # Whatever else happened, a run that reports success must not leave the permission behind.
-  if test "$rc" -eq 0 && test "$granted" = "true"; then
-    ok=0; why="$why exited 0 with calendar permission still granted;"
-  fi
-  # THE invariant. Whatever went wrong, a run that reports SUCCESS must never leave portage holding
-  # the device's default-SMS role. Every bug in this file's history reduces to a violation of this
-  # line. (Scenarios that exit non-zero are exempt only because they are shouting about it; the
-  # per-scenario want_holder pins those.)
-  if test "$rc" -eq 0 && test "$holder" = "com.ventouxlabs.portage.recv"; then
-    ok=0; why="$why exited 0 leaving portage as the default SMS app;"
-  fi
-  # Every banner-level failure must ALSO be listed in the end-of-run inventory. Asserts SHAPE, not
-  # wording, so rewording a banner does not turn scenarios red — but deleting the inventory does.
-  # Without this the whole restore_problems[] feature was unverified: removing its printf left the
-  # suite fully green.
-  if grep -q '!!!' <<<"$out" && ! grep -q 'NOT FULLY RESTORED' <<<"$out"; then
-    ok=0; why="$why printed a !!! failure banner but no end-of-run inventory;"
-  fi
-  # (3) Some scenarios pin HOW MANY problems are listed — the accumulator exists so that multiple
+  local shared
+  shared="$(global_invariant_problems "$rc" "$holder" "$granted" "$out")"
+  test -z "$shared" || { ok=0; why="$why$shared"; }
+  # Some scenarios pin HOW MANY problems are listed — the accumulator exists so that multiple
   # independent failures surface together, and a version that only ever kept the last one would
   # otherwise pass.
   if test -n "$want_problems"; then
@@ -363,12 +389,12 @@ signal_case() {
   echo "com.example.sms" > "$WORK/run/state/holder"
   echo false > "$WORK/run/state/cal_granted"
   : > "$WORK/run/state/slow_build"
-  local pid rc holder ops ok=1 why=""
+  local pid rc holder ops shared ok=1 why=""
   # `set -m` matters and is not incidental: without job control, bash sets SIGINT to SIG_IGN in
   # async children, the script's INT handler cannot install, and (correctly) it now refuses to take
   # the SMS role at all. Job control gives the child its own process group, so the signal below
-  # reaches the script ALONE — which is the case being tested. See NO_JOB_CONTROL_REFUSES for the
-  # other half (SIGINT_UNTRAPPABLE_REFUSES).
+  # reaches the script ALONE — which is the case being tested. See SIGINT_UNTRAPPABLE_REFUSES for the
+  # other half.
   set -m
   ( cd "$WORK/run" && STUB_STATE="$WORK/run/state" PATH="$WORK/run/bin:$PATH" \
     ANDROID_SERIAL=STUBSERIAL exec bash scripts/device-contract.sh ) >/dev/null 2>&1 &
@@ -384,6 +410,8 @@ signal_case() {
   # nothing; one that resumed went on to take the role.
   test -z "$ops" || { ok=0; why="$why kept going and mutated the role after $sig: $ops;"; }
   test "$holder" = "com.example.sms" || { ok=0; why="$why holder became '$holder';"; }
+  shared="$(global_invariant_problems "$rc" "$holder" "" "")"
+  test -z "$shared" || { ok=0; why="$why$shared"; }
   if test "$ok" = "1"; then printf 'ok   %s\n' "$name"; pass=$((pass + 1))
   else printf 'FAIL %s —%s\n' "$name" "$why"; fail=$((fail + 1)); fi
 }
@@ -404,7 +432,6 @@ scenario ROLE_ALREADY_PORTAGE    nonzero "$PKG"          -- "holder=$PKG"
 # A read that fails SILENTLY — empty stdout, empty stderr, exit 0 — is the one failure no amount of
 # output validation can catch, because it is byte-identical to "the role is unheld". Only reading
 # back a write we just made can. And once the read is known bad, `prior` is fiction, so the restore
-# must refuse to act on it rather than remove a role claim that may belong to the user's real app.
 # Reader blind for the whole run. The take lands but can never be confirmed, so the restore drops
 # portage's claim rather than abstaining: `remove-role-holder <role> <pkg>` NAMES portage, so it can
 # only ever remove OUR claim, and the exclusive role means the prior holder was already evicted by
@@ -432,6 +459,9 @@ scenario OVERRIDE_POINTS_AT_PORTAGE nonzero "$PKG"      -- "holder=$PKG" "env=PO
 # read block 0 would skip its grant and leave the test unable to write.
 scenario SECONDARY_PROFILE       0       com.example.sms -- current_user=10
 scenario TAKE_SILENTLY_IGNORED   nonzero com.example.sms -- take_ignored
+# The take COMMITS and then reports non-zero. `set -e` aborts; if role_taken were set after the
+# write the restore would skip and portage would silently keep the role.
+scenario TAKE_LANDS_THEN_ERRORS  nonzero com.example.sms -- take_lands_then_errors
 scenario ROLE_READ_TRANSIENT     nonzero com.example.sms -- role_read_silent_once
 # A bare token passes the charset test; only the "must contain a dot" rule rejects it.
 scenario ROLE_READ_BARE_TOKEN    nonzero com.example.sms -- role_read_bare_token
@@ -479,6 +509,9 @@ sigint_untrappable_case() {
   ops="$(cat "$WORK/run/state/role_ops" 2>/dev/null || true)"
   test "$rc" -ne 0 || { ok=0; why="$why expected a refusal, got rc=0;"; }
   test -z "$ops"   || { ok=0; why="$why took the role in an uninterruptible run: $ops;"; }
+  holder="$(cat "$WORK/run/state/holder" 2>/dev/null || true)"
+  shared="$(global_invariant_problems "$rc" "$holder" "" "")"
+  test -z "$shared" || { ok=0; why="$why$shared"; }
   if test "$ok" = "1"; then printf 'ok   SIGINT_UNTRAPPABLE_REFUSES\n'; pass=$((pass + 1))
   else printf 'FAIL SIGINT_UNTRAPPABLE_REFUSES —%s\n' "$why"; fail=$((fail + 1)); fi
 }
@@ -496,10 +529,14 @@ filter_case() {
   local name="$1" filter="$2" want="$3" role_want="${4:-}"
   setup_tree
   echo "com.example.sms" > "$WORK/run/state/holder"
-  local rc ops ok=1 why=""
-  (cd "$WORK/run" && STUB_STATE="$WORK/run/state" PATH="$WORK/run/bin:$PATH" \
-    ANDROID_SERIAL=STUBSERIAL bash scripts/device-contract.sh "$filter" >/dev/null 2>&1); rc=$?
+  local rc ops out holder granted shared ok=1 why=""
+  out="$(cd "$WORK/run" && STUB_STATE="$WORK/run/state" PATH="$WORK/run/bin:$PATH" \
+    ANDROID_SERIAL=STUBSERIAL bash scripts/device-contract.sh "$filter" 2>&1)"; rc=$?
   ops="$(cat "$WORK/run/state/role_ops" 2>/dev/null || true)"
+  holder="$(cat "$WORK/run/state/holder" 2>/dev/null || true)"
+  granted="$(cat "$WORK/run/state/cal_granted" 2>/dev/null || true)"
+  shared="$(global_invariant_problems "$rc" "$holder" "$granted" "$out")"
+  test -z "$shared" || { ok=0; why="$why$shared"; }
   case "$want" in
     reject) test "$rc" -ne 0 || { ok=0; why="$why wanted reject, rc=0;"; }
             test -z "$ops"   || { ok=0; why="$why rejected but MUTATED the role: $ops;"; } ;;

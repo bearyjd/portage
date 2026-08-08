@@ -5,13 +5,15 @@ Reverts one guard at a time in the REAL device-contract.sh and asserts the named
 Python, not bash: the transforms embed shell quotes, and four levels of nesting silently truncated
 the previous bash runner (it executed 14 of 16 mutations and reported success).
 """
-import subprocess, sys
+import subprocess, sys, tempfile
 
 import os
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = f"{REPO}/scripts/device-contract.sh"
 HARNESS = f"{REPO}/scripts/test-device-contract-harness.sh"
-MUT = "/tmp/dc-mutant.sh"
+# tempfile, not a fixed /tmp name: two concurrent runs would clobber each other's mutant and
+# then execute whatever landed at that path.
+MUT = tempfile.mkstemp(prefix="dc-mutant-", suffix=".sh")[1]
 src = open(SRC).read()
 
 def cut(text, start, end, replacement=""):
@@ -28,7 +30,9 @@ def check(name, want, build):
         print(f"BROKEN {name:28s} transform changed nothing"); return False
     open(MUT, "w").write(mutant)
     r = subprocess.run(["bash", HARNESS], capture_output=True, text=True,
-                       env={"PATH": "/usr/bin:/bin", "HOME": "/home/user", "SCRIPT_UNDER_TEST": MUT})
+                       env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                            "HOME": os.environ.get("HOME", os.path.expanduser("~")),
+                            "SCRIPT_UNDER_TEST": MUT})
     red = any(l.startswith(f"FAIL {want}") for l in r.stdout.splitlines())
     print(f"{'ok  ' if red else 'FAIL'} {name:28s} -> {want}"
           f"{'' if red else '  DID NOT FAIL — guard is not load-bearing'}")
@@ -97,6 +101,13 @@ m("ONLY_LAST_PROBLEM_KEPT", "ROLE_AND_PERM_BOTH_FAIL",
   lambda s: s.replace("restore_problems+=(", "restore_problems=("))
 m("REPORT_NEVER_CALLED", "ROLE_AND_PERM_BOTH_FAIL",
   lambda s: s.replace("  report_restore_result\n}", "  return 0\n}"))
+
+# The two fixes from the testing lane's CRITICALs.
+m("ROLE_TAKEN_SET_AFTER_WRITE", "TAKE_LANDS_THEN_ERRORS", lambda s: s.replace(
+    '  role_taken=1\n  adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$pkg" >/dev/null',
+    '  adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$pkg" >/dev/null\n  role_taken=1'))
+m("RESTORE_SKIPPED_ON_FILTERED_RUN", "FILTER_PLAIN_CLASS", lambda s: s.replace(
+    "restore_sms_role() {\n", 'restore_sms_role() {\n  test -z "$filter" || return 0\n', 1))
 
 m("LIVENESS_ABSTAINS", "ROLE_READER_DIES_MID_RUN", lambda s: cut(
     s, 'role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null 2>&1 ||\n'

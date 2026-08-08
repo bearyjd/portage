@@ -742,9 +742,12 @@ class ProviderDeviceContractTest {
         const val USER_FILE_MIME = "application/octet-stream"
 
         /**
-         * Set by scripts/device-contract.sh to say "I granted the calendar permissions". Turns the
-         * calendar test's assumption-skip into a hard failure, because under the script a missing
-         * grant is a harness bug — and a JUnit skip reports as OK, which the script's gate accepts.
+         * Set by scripts/device-contract.sh to say "I prepared the device". Turns ANY unmet
+         * precondition expressed via [requireOrAssume] into a hard failure — not only the calendar
+         * test's — because under the script an unmet precondition is a harness bug, and a JUnit
+         * skip reports as OK, which the script's gate accepts. Suite-wide deliberately: the
+         * calendar test got this first and the SMS test was left on a bare `assumeTrue`, which is
+         * exactly the drift [requireOrAssume] centralises away.
          */
         const val GRANTS_PREPARED_ARG = "portage_grants_prepared"
         const val CALENDAR_EVENT_TITLE = "PORTAGE DEVICE CONTRACT EVENT"

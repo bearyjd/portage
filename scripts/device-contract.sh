@@ -305,6 +305,8 @@ restore_problems=()
 
 # Hand the default-SMS role back. Returns 1 if anything could not be done or verified.
 restore_sms_role() {
+  # role_taken is only ever set inside the needs_sms branch, so the first guard can never be the
+  # one that returns; role_taken carries the meaning. Kept because it states the precondition.
   test "$needs_sms" = "1" || return 0
   test "$role_taken" = "1" || return 0
 
@@ -528,8 +530,14 @@ for perm in $granted_calendar; do
   adb -s "$serial" shell pm grant --user "$user" "$pkg" "$perm" >/dev/null
 done
 if test "$needs_sms" = "1"; then
-  adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$pkg" >/dev/null
+  # BEFORE the write, not after. `add-role-holder` can COMMIT and then report non-zero — a
+  # transport drop or adbd restart between the role commit and the status returning is an ordinary
+  # adb failure mode. With the flag set afterwards, `set -e` aborted with role_taken=0, restore_sms_role
+  # returned at its role_taken gate, and portage kept the role with no banner, no inventory and no
+  # remediation. Setting it first is safe in the other direction: the restore's removal NAMES portage,
+  # so "restoring" a take that never landed is a no-op.
   role_taken=1
+  adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$pkg" >/dev/null
   # PROVE THE READ WORKS, here, while the answer is known.
   #
   # Everything protecting the user's texting app rests on `get-role-holders` telling the truth, and
@@ -588,7 +596,7 @@ printf '%s\n' "$result"
 # OK line, or zero tests — is a failure.
 printf '%s\n' "$result" | grep -q '^OK (' || {
   echo "device-contract: instrumentation did not report OK" >&2; exit 1; }
-ran="$(printf '%s\n' "$result" | sed -n 's/^OK (\([0-9]\{1,\}\) test.*/\1/p' | head -1)"
+ran="$(printf '%s\n' "$result" | sed -n '/^OK (/{s/^OK (\([0-9]\{1,\}\) test.*/\1/p;q;}')"
 test -n "$ran" || { echo "device-contract: could not parse the test count from the OK line" >&2; exit 1; }
 test "$ran" -gt 0 || {
   echo "device-contract: OK (0 tests) — nothing ran. Check the filter names a real class#method." >&2

@@ -169,8 +169,8 @@ needs it — prefer the smallest scoped command):
   `PORTAGE_CONTRACT_PRIOR_SMS=<package>`, which takes the *real* prior holder rather than a boolean,
   so the only way forward is the one that actually gives the device its texting app back — and which
   rejects portage itself, since naming it rebuilds the very leak the refusal exists to stop); the role
-  read still can't observe the take after ~3s (EVERY role write is verified through
-  `await_role_holder`, because whether `add`/`remove-role-holder`'s commit is visible to the next
+  read still can't observe the take after ~3s (every role write the script CAN verify goes through
+  `await_role_holder` (the unverifiable branches write, then report they could not confirm), because whether `add`/`remove-role-holder`'s commit is visible to the next
   `get-role-holders` is a platform timing property this script must not assume — verifying with one
   immediate read failed in opposite directions at the two sites: on the take it read as "nothing
   changed" and skipped the restore, on the handback as a spurious RESTORE FAILED); or **SIGINT could not be trapped**
@@ -181,7 +181,7 @@ needs it — prefer the smallest scoped command):
   **`scripts/test-device-contract-harness.sh` self-tests all of this in CI** by driving the real
   script against a stub `adb` — no phone needed; it asserts final device state and whether the role
   was touched at all, not just exit status. Mutation-test it if you change the restore logic; the
-  header records the eighteen mutations, which scenario each must turn red, and what is *not*
+  header records each mutation, which scenario it must turn red, and what is *not*
   covered; `scripts/mutate.py` is the runner.
   Never run outside this script (it's destructive-but-self-cleaning, not
   idempotent standalone). It accepts an optional `'<class>#<method>'` filter, which **narrows** the
