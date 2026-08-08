@@ -28,6 +28,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Device-contract harness self-test
+        # Runs first in the fast lane: pure bash, no SDK, no JVM, no phone — seconds.
+        #
+        # scripts/device-contract.sh is the only thing that gives a developer's device its
+        # default-SMS app back after a contract run, and that logic shipped fail-open bugs that
+        # survived review because observing them required attaching a phone and breaking adb in a
+        # specific way. This drives the REAL script against a stub adb and asserts on the resulting
+        # device state as well as the exit status, so "exited 0" and "actually restored" cannot
+        # drift apart unnoticed. Sibling in spirit to scripts/test-boundary-gate.sh below.
+        run: ./scripts/test-device-contract-harness.sh
       - uses: actions/setup-java@v5.6.0
         with:
           distribution: temurin

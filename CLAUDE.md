@@ -152,7 +152,38 @@ needs it — prefer the smallest scoped command):
 - Device-only instrumentation test (`app-recv`'s `ProviderDeviceContractTest`, real
   `ContentResolver` writes): `scripts/device-contract.sh` — requires an attached/authorized `adb`
   device, installs the debug APK + test APK, **may take** the SMS role (see below), and restores via
-  a trap on EXIT/INT/TERM. Never run outside this script (it's destructive-but-self-cleaning, not
+  a trap on EXIT/INT/TERM. Restore is **verified by re-reading device state, and a failed restore
+  fails the run** — for the role (loud `RESTORE FAILED` naming the holder) and for the calendar
+  permissions alike. `cmd role add-role-holder` and `pm revoke` can both report success without
+  acting, so their exit status is not consulted; only the post-state is. When the post-state cannot
+  be established at all, it does **not** abstain: it hands back to the prior holder if it has one
+  and then drops portage's own claim regardless, because `remove-role-holder <role> <pkg>` NAMES
+  portage — it can only ever remove *our* claim, never a third party's, and the role is exclusive so
+  the take already evicted whoever held it. Ending with nobody holding SMS beats ending with a test
+  app holding it; both are reported loudly, only one leaves a live privilege behind. It **refuses to start** in
+  five cases, all of which used to proceed silently: the current holder can't be read; the holder
+  reads *empty* and a corroborating second read disagrees (empty is the value that selects the
+  branch **removing** the role, so it earns a second opinion a non-empty answer does not need);
+  portage *already* holds the role (the fingerprint of an earlier run killed before its trap —
+  restoring "to portage" would bless the leak permanently; get past it with
+  `PORTAGE_CONTRACT_PRIOR_SMS=<package>`, which takes the *real* prior holder rather than a boolean,
+  so the only way forward is the one that actually gives the device its texting app back — and which
+  rejects portage itself, since naming it rebuilds the very leak the refusal exists to stop); the role
+  read still can't observe the take after ~3s (every role write the script CAN verify goes through
+  `await_role_holder` (the unverifiable branches write, then report they could not confirm), because whether `add`/`remove-role-holder`'s commit is visible to the next
+  `get-role-holders` is a platform timing property this script must not assume — verifying with one
+  immediate read failed in opposite directions at the two sites: on the take it read as "nothing
+  changed" and skipped the restore, on the handback as a spurious RESTORE FAILED); or **SIGINT could not be trapped**
+  on an SMS run —
+  POSIX forbids trapping a signal that was `SIG_IGN` on entry and bash obeys silently, so launching
+  async from a non-job-control shell (`&`, a make recipe, some CI runners) makes Ctrl-C a no-op, and
+  an uninterruptible run must not take the role.
+  **`scripts/test-device-contract-harness.sh` self-tests all of this in CI** by driving the real
+  script against a stub `adb` — no phone needed; it asserts final device state and whether the role
+  was touched at all, not just exit status. Mutation-test it if you change the restore logic; the
+  header records each mutation, which scenario it must turn red, and what is *not*
+  covered; `scripts/mutate.py` is the runner.
+  Never run outside this script (it's destructive-but-self-cleaning, not
   idempotent standalone). It accepts an optional `'<class>#<method>'` filter, which **narrows** the
   blast radius — it does not eliminate it:
   `scripts/device-contract.sh 'com.ventouxlabs.portage.recv.ProviderDeviceContractTest#calendarCreatesAccountLessLocalCalendarAndAcceptsEvents'`.
@@ -165,10 +196,14 @@ needs it — prefer the smallest scoped command):
   Tests needing a permission the app itself must hold (calendar, #163) are granted via `pm grant`
   scoped to the current user — deliberately NOT via `adoptShellPermissionIdentity`, which would
   prove the provider accepts the call from *shell* rather than from portage.
-  **Reading the result:** the script's gate is `grep -q '^OK ('`, and a JUnit *assumption skip*
-  also prints `OK`. The calendar test guards against that — the script passes
-  `-e portage_grants_prepared true`, which turns its skip into a hard failure — but for any other
-  test, confirm the output doesn't report an assumption failure before treating green as verified.
+  **Reading the result:** a JUnit *assumption skip* also prints `OK` and counts toward the test
+  total, so the gate is `grep -q '^OK ('` **plus a non-zero parsed test count** (`OK (0 tests)` is a
+  well-formed filter that named nothing). Against the skip itself, every precondition in the suite
+  goes through one `requireOrAssume` helper: the script passes `-e portage_grants_prepared true`,
+  and under that flag an unmet precondition is a hard failure rather than a skip, because the script
+  has already prepared the device. Hand-runs without the flag keep the skip — so if you invoke
+  `am instrument` yourself, confirm the output reports no assumption failure before treating green
+  as verified. Add new preconditions via `requireOrAssume`, never a bare `assumeTrue`.
   The script uses your normal `GRADLE_USER_HOME`: an isolated one breaks JDK-17 toolchain
   resolution on any machine where 17 exists only as Gradle's auto-provisioned JDK.
 - No Robolectric is configured anywhere in the repo — `ContentResolver`-touching code is either
