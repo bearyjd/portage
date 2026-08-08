@@ -21,55 +21,62 @@ set -uo pipefail
 # device state. Asserting on state as well as status is the point: "exited 0" and "gave the role
 # back" are exactly the two things the historical bugs let drift apart.
 #
-# IF YOU CHANGE THE RESTORE LOGIC, MUTATION-TEST THIS. Splice the old behaviour back over the new
-# one and confirm the named scenario goes RED; a self-test that still passes against the bug it was
-# written for is worse than none. All THIRTEEN below were run and confirmed to go red:
+# IF YOU CHANGE THE RESTORE LOGIC, MUTATION-TEST THIS. Revert one guard at a time and confirm the
+# named scenario goes RED; a self-test that still passes against the bug it was written for is worse
+# than none. Runner: scripts/mutate.py (Python, not bash — the transforms embed shell quotes, and
+# four levels of nesting silently truncated the bash runner, which executed 14 of 16 mutations and
+# reported success). All EIGHTEEN below were run and confirmed red:
 #
 #   mutation (revert this)                                            scenario that must fail
 #   -----------------------------------------------------------------------------------------
-#   restore_device's post-state re-read -> trust the command's rc      ROLE_HANDBACK_IGNORED
+#   restore post-state re-read -> trust the write's rc                 ROLE_HANDBACK_IGNORED
 #   `tr -d` CR strip dropped from read_role_holder                     FILTER_PLAIN_CLASS
 #   read_role_holder's `2>&1` -> `2>/dev/null`                         ROLE_READ_BLANK
 #   read_role_holder's "must contain a dot" rule dropped               ROLE_READ_BARE_TOKEN
 #   the empty-`prior` corroborating re-read removed                    ROLE_READ_TRANSIENT
 #   the restore-side liveness re-check removed                         ROLE_READER_DIES_MID_RUN
 #   post-take read-back dropped BUT role_read_trusted=1 asserted       TAKE_SILENTLY_IGNORED
+#   take verification: await_role_holder -> one immediate read         TAKE_VISIBLE_LATE
+#   handback verification: await_role_holder -> one immediate read     HANDBACK_VISIBLE_LATE
+#   PORTAGE_CONTRACT_PRIOR_SMS accepts $pkg                            OVERRIDE_POINTS_AT_PORTAGE
 #   the `prior == pkg` refusal removed                                 ROLE_ALREADY_PORTAGE
 #   the revoke re-read -> a bare warning                               REVOKE_FAILS
 #   perm_granted_for_user's `return 2` paths -> `return 1`             PERM_NO_RUNTIME_SECTION
-#   signal handlers -> `trap restore_device INT TERM` (resume, no exit) SIGTERM_MID_RUN
+#   signal handlers -> `trap restore_device INT TERM` (resume)         SIGTERM_MID_RUN
 #   the `trap -p INT` install check removed                            SIGINT_UNTRAPPABLE_REFUSES
-#   the take-time read-back retry loop -> a single immediate read                TAKE_VISIBLE_LATE
-#   the unverifiable branch abstains instead of dropping portage's claim        ROLE_READ_SILENT
-#   the liveness branch abstains instead of dropping portage's claim            ROLE_READER_DIES_MID_RUN
-#   whole-string `case` filter guard -> the line-oriented grep          FILTER_NEWLINE
+#   whole-string `case` filter guard -> line-oriented grep             FILTER_NEWLINE
+#   the unverifiable branch abstains instead of dropping the claim     ROLE_READ_SILENT
+#   the liveness branch abstains instead of dropping the claim         ROLE_READER_DIES_MID_RUN
 #
 # Recorded so nobody re-derives them:
-#   - GUARDS THAT OVERLAP EACH OTHER SURVIVE EACH OTHER'S MUTATION. The post-take read-back and the
-#     restore-side liveness check both catch ROLE_READ_SILENT, so deleting either leaves the suite
-#     green. That is defence in depth, not slack — but it means each needs a scenario only IT can
-#     catch. TAKE_SILENTLY_IGNORED is the read-back's (the reader is healthy; only the take failed);
+#   - THE INVARIANT, enforced globally by scenario(): a run that exits 0 must never leave portage
+#     holding the default-SMS role. Every bug in this file's history reduces to a violation of it.
+#   - GUARDS THAT OVERLAP SURVIVE EACH OTHER'S MUTATION. The post-take read-back and the restore-side
+#     liveness check both catch ROLE_READ_SILENT, so deleting either alone leaves the suite green.
+#     That is defence in depth, not slack — but each needs a scenario only IT can catch:
+#     TAKE_SILENTLY_IGNORED is the read-back's (reader healthy, only the take failed);
 #     ROLE_READER_DIES_MID_RUN is the liveness check's.
-#   - Deleting the post-take read-back OUTRIGHT also clears `role_read_trusted`, so the restore-side
-#     guard catches it. To isolate the read-back you must delete it AND assert trust anyway.
-#   - ROLE_READ_BLANK pins the `2>&1` STDERR FOLD, not the whole-output `case`. Reverting the case
-#     to the old `test -n "$prior" && ...` shape leaves the suite green, because the stderr text is
-#     non-empty and the old shape rejects it too. The `case`'s own added strictness — the dot
-#     requirement — is pinned by ROLE_READ_BARE_TOKEN instead. (An earlier version of this table
-#     claimed otherwise; review caught it. Verify each row rather than trusting the list.)
-#   - perm_granted_for_user's `grep` status >= 2 branch is NOT covered. A here-string grep does not
-#     error, so the stub cannot provoke it; it is reachable only from a genuinely broken grep.
+#   - ROLE_READ_BLANK pins the `2>&1` STDERR FOLD, not the whole-output `case`. Reverting the case to
+#     the old `test -n "$prior" && ...` shape leaves the suite green, because the stderr text is
+#     non-empty and the old shape rejects it too. The case's own added strictness — the dot
+#     requirement — is pinned by ROLE_READ_BARE_TOKEN. (An earlier table claimed otherwise; review
+#     caught it. Verify each row rather than trusting the list.)
+#
+# NOT COVERED, stated rather than implied:
+#   - perm_granted_for_user's `grep` status >= 2 branch. A here-string grep does not error, so the
+#     stub cannot provoke it; reachable only from a genuinely broken grep.
+#   - The liveness check's await RETRY specifically (as opposed to the check existing at all).
+#     ROLE_READER_DIES_MID_RUN uses a permanently dead reader, which retrying cannot rescue, so
+#     reverting that one await to a single read turns nothing red. It is defence-in-depth over an
+#     already-covered path; modelling a reader that lags only during the liveness window would need
+#     phase-aware stub machinery that is not worth its own weight.
 #   - The stub is CRLF-faithful because real `adb shell` emits CRLF. With an LF-only stub, deleting
 #     any `tr -d` left the suite green while every real run aborted after taking the SMS role.
 #   - ANDROID_SERIAL=STUBSERIAL is exported on every invocation deliberately: if the stub `adb` ever
 #     failed to land on PATH, a real `adb` would fail on that serial rather than touching a phone.
-#   - THE INVARIANT the scenario harness enforces globally: a run that exits 0 must never leave
-#     portage holding the default-SMS role. Every bug in this file's history reduces to a violation
-#     of that one line.
-#   - RUNTIME is ~13s, nearly all of it the script's take-time read-back retry burning its ~3s budget
-#     in the scenarios that never converge. Do NOT add a test-only env knob to shorten it in the
-#     production script: a timing override that exists for the tests is the kind of thing that later
-#     gets set in anger on a real device, and 13s in a 10-minute job buys nothing worth that.
+#   - RUNTIME is ~15s, nearly all of it await budgets burning down in scenarios that never converge.
+#     Do NOT add a test-only env knob to shorten it in the production script: a timing override that
+#     exists for the tests is the kind of thing that later gets set in anger on a real device.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT_UNDER_TEST="${SCRIPT_UNDER_TEST:-$REPO_ROOT/scripts/device-contract.sh}"
@@ -107,6 +114,8 @@ setup_tree() {
 #   handback_ignored  flag: add/remove-role-holder reports success WITHOUT moving the role
 #   take_ignored      flag: the TAKE is silently refused; the reader stays healthy
 #   take_visible_after file: N — the take lands but reads report the OLD holder N more times
+#   handback_visible_late flag: the HANDBACK lands but the next read still reports portage
+#   current_user      file: which user `am get-current-user` reports (default 0)
 #   revoke_ignored    flag: pm revoke reports success without revoking
 #   perm_read_broken  flag: dumpsys emits no User block for the package at all
 #   perm_no_runtime_section flag: dumpsys emits a User block with no "runtime permissions:" section
@@ -115,6 +124,8 @@ setup_tree() {
 #   role_read_dies_after  file: N — reads succeed N times, then fail silently forever
 #   take_ignored      flag: the TAKE is silently refused; the reader stays healthy
 #   take_visible_after file: N — the take lands but reads report the OLD holder N more times
+#   handback_visible_late flag: the HANDBACK lands but the next read still reports portage
+#   current_user      file: which user `am get-current-user` reports (default 0)
 #   slow_build        flag: the stub gradlew sleeps, so signals can land mid-build
 #   tests             file: the test count the instrumentation reports
 # Written BY the stub, asserted by scenarios:
@@ -134,7 +145,7 @@ case "${a[0]:-}" in
   *) exit 0 ;;
 esac
 case "${a[0]:-} ${a[1]:-}" in
-  "am get-current-user") printf '0\r\n'; exit 0 ;;
+  "am get-current-user") printf '%s\r\n' "$(cat "$S/current_user" 2>/dev/null || echo 0)"; exit 0 ;;
   "cmd role")
     case "${a[2]}" in
       get-role-holders)
@@ -168,6 +179,11 @@ case "${a[0]:-} ${a[1]:-}" in
             printf '%s\r\n' "$(cat "$S/prev_holder" 2>/dev/null)"; exit 0
           fi
         fi
+        # The HANDBACK landed but is not yet visible. Same async commit as the take, other
+        # direction: a single read here reports RESTORE FAILED for a restore that worked.
+        if [ -f "$S/handback_visible_late" ] && [ -f "$S/handback_happened" ]; then
+          rm -f "$S/handback_happened"; printf 'com.ventouxlabs.portage.recv\r\n'; exit 0
+        fi
         h="$(cat "$S/holder" 2>/dev/null || true)"; [ -n "$h" ] && printf '%s\r\n' "$h"; exit 0 ;;
       add-role-holder)
         t="${a[*]: -1}"
@@ -181,6 +197,8 @@ case "${a[0]:-} ${a[1]:-}" in
         if [ -f "$S/take_ignored" ] && [ "$t" = "com.ventouxlabs.portage.recv" ]; then exit 0; fi
         if [ "$t" = "com.ventouxlabs.portage.recv" ]; then
           cat "$S/holder" > "$S/prev_holder" 2>/dev/null; : > "$S/take_happened"
+        else
+          : > "$S/handback_happened"
         fi
         echo "$t" > "$S/holder"; exit 0 ;;
       remove-role-holder)
@@ -204,17 +222,22 @@ case "${a[0]:-} ${a[1]:-}" in
       exit 0
     fi
     g="$(cat "$S/cal_granted" 2>/dev/null || echo false)"
+    # User 0 is ALWAYS granted=true when running as a secondary profile, so a run scoped to user 10
+    # that reads block 0 would wrongly conclude "already granted", skip its own grant, and leave the
+    # test unable to write. GOS actively promotes secondary profiles; this is a live path.
+    g0="$g"; g10="$g"
+    if [ "$(cat "$S/current_user" 2>/dev/null || echo 0)" = "10" ]; then g0="true"; fi
     cat <<EOF | sed 's/$/\r/'
 Packages:
   Package [com.ventouxlabs.portage.recv] (abc):
     User 0: ceDataInode=1 installed=true hidden=false
       runtime permissions:
-        android.permission.READ_CALENDAR: granted=$g
-        android.permission.WRITE_CALENDAR: granted=$g
+        android.permission.READ_CALENDAR: granted=$g0
+        android.permission.WRITE_CALENDAR: granted=$g0
     User 10: ceDataInode=2 installed=true
       runtime permissions:
-        android.permission.READ_CALENDAR: granted=true
-        android.permission.WRITE_CALENDAR: granted=true
+        android.permission.READ_CALENDAR: granted=$g10
+        android.permission.WRITE_CALENDAR: granted=$g10
 EOF
     exit 0 ;;
   "pm grant") echo true > "$S/cal_granted"; exit 0 ;;
@@ -250,6 +273,7 @@ scenario() {
       env=*)    extra_env="${s#env=}" ;;
       role_read_dies_after=*) echo "${s#role_read_dies_after=}" > "$WORK/run/state/role_read_dies_after" ;;
       take_visible_after=*) echo "${s#take_visible_after=}" > "$WORK/run/state/take_visible_after" ;;
+      current_user=*) echo "${s#current_user=}" > "$WORK/run/state/current_user" ;;
       *)        touch "$WORK/run/state/$s" ;;
     esac
   done
@@ -370,6 +394,15 @@ scenario ROLE_READ_SILENT        nonzero ""              -- role_read_silent
 # read would lose that race, conclude "nothing changed", skip the restore, and leave portage holding
 # the SMS role. The run must ride it out and finish normally.
 scenario TAKE_VISIBLE_LATE       0       com.example.sms -- take_visible_after=2
+# The HANDBACK is the same async-capable command as the take. Verifying it with one immediate read
+# reported RESTORE FAILED on devices whose restore had actually worked.
+scenario HANDBACK_VISIBLE_LATE   0       com.example.sms -- handback_visible_late
+# The escape hatch must not accept the one package it exists to evict: naming portage rebuilt the
+# exact leak the refusal prevents, and exited 0 with a test app as the device's texting app.
+scenario OVERRIDE_POINTS_AT_PORTAGE nonzero "$PKG"      -- "holder=$PKG" "env=PORTAGE_CONTRACT_PRIOR_SMS=com.ventouxlabs.portage.recv"
+# Running as a secondary profile: user 0 holds the grants, user 10 does not. A run scoped to 10 that
+# read block 0 would skip its grant and leave the test unable to write.
+scenario SECONDARY_PROFILE       0       com.example.sms -- current_user=10
 scenario TAKE_SILENTLY_IGNORED   nonzero com.example.sms -- take_ignored
 scenario ROLE_READ_TRANSIENT     nonzero com.example.sms -- role_read_silent_once
 # A bare token passes the charset test; only the "must contain a dot" rule rejects it.

@@ -167,11 +167,13 @@ needs it — prefer the smallest scoped command):
   portage *already* holds the role (the fingerprint of an earlier run killed before its trap —
   restoring "to portage" would bless the leak permanently; get past it with
   `PORTAGE_CONTRACT_PRIOR_SMS=<package>`, which takes the *real* prior holder rather than a boolean,
-  so the only way forward is the one that actually gives the device its texting app back); the role
-  read still can't observe the take it just performed after ~3s of retries (retried because whether
-  `add-role-holder`'s commit is visible to the next `get-role-holders` is a platform timing property
-  this script must not assume — a single immediate read losing that race would conclude "nothing
-  changed", skip the restore, and leave portage holding the role); or **SIGINT could not be trapped**
+  so the only way forward is the one that actually gives the device its texting app back — and which
+  rejects portage itself, since naming it rebuilds the very leak the refusal exists to stop); the role
+  read still can't observe the take after ~3s (EVERY role write is verified through
+  `await_role_holder`, because whether `add`/`remove-role-holder`'s commit is visible to the next
+  `get-role-holders` is a platform timing property this script must not assume — verifying with one
+  immediate read failed in opposite directions at the two sites: on the take it read as "nothing
+  changed" and skipped the restore, on the handback as a spurious RESTORE FAILED); or **SIGINT could not be trapped**
   on an SMS run —
   POSIX forbids trapping a signal that was `SIG_IGN` on entry and bash obeys silently, so launching
   async from a non-job-control shell (`&`, a make recipe, some CI runners) makes Ctrl-C a no-op, and
@@ -179,8 +181,8 @@ needs it — prefer the smallest scoped command):
   **`scripts/test-device-contract-harness.sh` self-tests all of this in CI** by driving the real
   script against a stub `adb` — no phone needed; it asserts final device state and whether the role
   was touched at all, not just exit status. Mutation-test it if you change the restore logic; the
-  header records the thirteen mutations, which scenario each must turn red, and what is *not*
-  covered.
+  header records the eighteen mutations, which scenario each must turn red, and what is *not*
+  covered; `scripts/mutate.py` is the runner.
   Never run outside this script (it's destructive-but-self-cleaning, not
   idempotent standalone). It accepts an optional `'<class>#<method>'` filter, which **narrows** the
   blast radius — it does not eliminate it:

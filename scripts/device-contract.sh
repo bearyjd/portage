@@ -211,7 +211,16 @@ if test "$needs_sms" = "1"; then
   # so there is nothing to offer a boolean for.
   if test "$prior" = "$pkg"; then
     if test -n "${PORTAGE_CONTRACT_PRIOR_SMS:-}"; then
+      # $pkg FIRST. Naming portage here re-creates precisely the leak this refusal exists to stop:
+      # the run hands the role back to portage, the post-state read agrees, and it exits 0 with a
+      # test app as the device's texting app. It is also the single most obvious value to paste,
+      # because the refusal message above prints it — the same trap that killed the boolean form of
+      # this override, which I removed for exactly that reason and then rebuilt by omission.
       case "$PORTAGE_CONTRACT_PRIOR_SMS" in
+        "$pkg")
+          echo "PORTAGE_CONTRACT_PRIOR_SMS is $pkg — that is the leak, not the fix." >&2
+          echo "Name the texting app that should hold $role instead." >&2
+          exit 1 ;;
         *[!A-Za-z0-9._]*|.*|*.) echo "PORTAGE_CONTRACT_PRIOR_SMS is not a package name" >&2; exit 1 ;;
         *.*) ;;
         *) echo "PORTAGE_CONTRACT_PRIOR_SMS is not a package name" >&2; exit 1 ;;
@@ -250,22 +259,54 @@ granted_calendar=""
 # Every step is individually guarded rather than allowed to abort the handler: this runs as a trap
 # under `set -e`, so a bare failure partway through would skip the revokes and the uninstall below.
 # Failures are accumulated and reported at the end, and a failed ROLE restore exits non-zero.
+# Wait until the $role holder reads as "$1" ("" meaning nobody), or a ~3s budget runs out. Echoes
+# the last value read; returns 0 on agreement, 1 otherwise.
+#
+# EVERY role write in this script goes through `cmd role add/remove-role-holder`, which completes via
+# a RoleManager callback — whether the result is visible to the very next `get-role-holders` is a
+# platform timing property, not something this script gets to assume. Verifying a write with a single
+# immediate read therefore returns a false verdict on a device that is merely slow, and the two sites
+# fail in opposite, equally bad directions: on the TAKE it read as "the take had no effect" (skip the
+# restore, leak the role), on the HANDBACK as a spurious RESTORE FAILED for a restore that worked.
+# This existed at the take only for a while. Same command, same timing property — one rule, every
+# call site. Costs one read where the write is already visible.
+await_role_holder() {
+  local want="$1" got="" _attempt
+  for _attempt in 1 2 3 4 5 6; do
+    got="$(read_role_holder)" || got="<unreadable>"
+    if test "$got" = "$want"; then printf '%s' "$got"; return 0; fi
+    sleep 0.5
+  done
+  printf '%s' "$got"
+  return 1
+}
+
 restore_done=0
 # Did we take the role, and did we ever PROVE the role read works on this device? Both start false
 # and are set at the point of the act, so the trap can tell "never touched it" from "took it and
 # cannot verify" — which need opposite handling and used to be indistinguishable.
 role_taken=0
 role_read_trusted=0
-restore_device() {
-  # Runs from EXIT and, via the signal handlers below, from INT/TERM. Guard against a second pass:
-  # it would be harmless but would reprint the banner, and a banner still on screen after a restore
-  # that actually succeeded is its own kind of misinformation.
-  test "$restore_done" = "0" || return 0
-  restore_done=1
+# One short line per thing that could not be restored or verified, printed together at the end. A
+# lone "see above" made the operator scroll back past a gradle build and a full instrumentation dump
+# to work out WHICH restore failed — on the one output that most needs to be actionable.
+restore_problems=()
 
-  local restore_failed=0 perm_status=0
+# ----------------------------------------------------------------------------------------------
+# The three helpers below all run from inside the EXIT/INT/TERM trap, under `set -e`. That
+# constrains every line in them: a bare command failure aborts the whole handler and silently skips
+# everything after it — which is exactly how an earlier version lost its revokes AND its uninstall
+# whenever the role handback failed. GUARD EVERY COMMAND (`|| true`, `if x="$(...)"`, `|| rc=$?`),
+# and let the caller decide what a non-zero return means. Do not "tidy" those guards away.
+# ----------------------------------------------------------------------------------------------
+
+# Hand the default-SMS role back. Returns 1 if anything could not be done or verified.
+restore_sms_role() {
+  test "$needs_sms" = "1" || return 0
+  test "$role_taken" = "1" || return 0
+
   local now=""
-  if test "$needs_sms" = "1" && test "$role_taken" = "1" && test "$role_read_trusted" != "1"; then
+  if test "$role_read_trusted" != "1"; then
     # We may hold the role and cannot trust the reads. An earlier version abstained here on the
     # grounds that removing might delete the real texting app's claim. That reasoning was wrong on
     # two counts, and abstaining left a test app holding the SMS role indefinitely:
@@ -287,14 +328,16 @@ restore_device() {
       true
     echo "  Dropped $pkg's claim on $role; this device's role read cannot confirm the result." >&2
     echo "  Set your texting app by hand: Settings > Apps > Default apps > SMS app" >&2
-    restore_failed=1
-  elif test "$needs_sms" = "1" && test "$role_taken" = "1"; then
-    if test -n "$prior"; then
+    restore_problems+=("SMS role: state unverifiable — dropped $pkg's claim, result unconfirmed")
+    return 1
+  fi
+
+  if test -n "$prior"; then
       # Handing back to a NAMED app: the verification below expects a non-empty answer, which a
       # broken reader cannot counterfeit. Nothing extra needed.
       adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$prior" >/dev/null ||
         true
-    else
+  else
       # The blank-read trap, one level deeper than the pre-read. An empty `prior` makes this a
       # REMOVAL, whose verification expects a blank answer — indistinguishable from what a broken
       # reader returns. The take-time read-back proved the reader worked THEN; a reader that dies
@@ -303,7 +346,9 @@ restore_device() {
       # blank answer after a removal would mean nothing — and removing on that basis risks stripping
       # a holder we never actually saw.
       local live
-      live="$(read_role_holder)" || live="<unreadable>"
+      # await_, not read_: a reader that is merely LAGGING must not be branded "gone bad" and
+      # trigger the alarm below on a device that is fine.
+      live="$(await_role_holder "$pkg")" || true
       if test "$live" = "$pkg"; then
         adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null ||
           true
@@ -319,28 +364,44 @@ restore_device() {
           true
         echo "  Dropped $pkg's claim anyway (it can only ever remove OUR claim); unconfirmed." >&2
         echo "  Check by hand: Settings > Apps > Default apps > SMS app" >&2
-        restore_failed=1
+        restore_problems+=("SMS role: reader failed mid-run — dropped $pkg's claim, unconfirmed")
         role_read_trusted=0
+        return 1
       fi
-    fi
-    # The POST-STATE is authoritative; the exit status above is not even consulted. That command can
-    # report success without the role moving, AND report failure for a no-op that left the device
-    # correct (removing a role portage never took) — judging by its status produced both a missed
-    # real failure and a false alarm. What the device says afterwards produces neither. A read we
-    # cannot perform, or whose answer is not a package name, is itself a failure: "I cannot tell you
-    # who holds your SMS role" is not an acceptable way to finish.
-    if now="$(read_role_holder)"; then
-      test "$now" = "$prior" || restore_failed=1
-    else
-      now="<query failed>"
-      restore_failed=1
-    fi
   fi
 
-  # Verified by re-reading, the same way and for the same reason as the role. A failed `pm revoke`
-  # leaves portage holding a calendar permission the user never granted; warning about that while
-  # exiting 0 is the same fail-open shape, just with a smaller blast radius. perm_granted_for_user
-  # returns 2 for "could not tell", which must not be read as "successfully revoked".
+  # The POST-STATE is authoritative; the write's exit status is not even consulted. That command can
+  # report success without the role moving, AND report failure for a no-op that left the device
+  # correct (removing a role portage never took) — judging by its status produced both a missed real
+  # failure and a false alarm. What the device says afterwards produces neither. Retried, because the
+  # handback is the same async-capable command as the take: a single read here reported RESTORE
+  # FAILED on devices whose restore had in fact worked.
+  if now="$(await_role_holder "$prior")"; then
+    return 0
+  fi
+  echo "" >&2
+  echo "!!! DEFAULT-SMS ROLE RESTORE FAILED !!!" >&2
+  echo "  expected holder: ${prior:-<none>}" >&2
+  echo "  actual holder:   ${now:-<none>}" >&2
+  # Printed when the holder is portage OR unknown. Withholding it on "unknown" was backwards: that
+  # is exactly the case where the worst outcome cannot be ruled out.
+  if test "$now" = "$pkg" || test "$now" = "<unreadable>"; then
+    echo "  portage MAY STILL BE THIS DEVICE'S TEXTING APP. Fix it now:" >&2
+    echo "    adb -s $serial shell cmd role add-role-holder --user $user $role <your-sms-app>" >&2
+    echo "  or in Settings > Apps > Default apps > SMS app." >&2
+  fi
+  restore_problems+=("SMS role: expected holder '${prior:-<none>}', device says '${now:-<none>}'")
+  return 1
+}
+
+# Revoke the calendar permissions this run granted. Returns 1 if any could not be revoked/verified.
+#
+# Verified by re-reading, the same way and for the same reason as the role. A failed `pm revoke`
+# leaves portage holding a calendar permission the user never granted; warning about that while
+# exiting 0 is the same fail-open shape, just with a smaller blast radius. perm_granted_for_user
+# returns 2 for "could not tell", which must not be read as "successfully revoked".
+restore_permissions() {
+  local perm perm_status rc=0
   for perm in $granted_calendar; do
     adb -s "$serial" shell pm revoke --user "$user" "$pkg" "$perm" >/dev/null 2>&1 || true
     perm_status=0
@@ -349,31 +410,39 @@ restore_device() {
       1) ;;
       0) echo "!!! PERMISSION RESTORE FAILED: $pkg still holds $perm !!!" >&2
          echo "    adb -s $serial shell pm revoke --user $user $pkg $perm" >&2
-         restore_failed=1 ;;
+         restore_problems+=("$perm: still granted to $pkg")
+         rc=1 ;;
       *) echo "!!! PERMISSION RESTORE UNVERIFIED: could not read $perm back !!!" >&2
          echo "    adb -s $serial shell pm revoke --user $user $pkg $perm" >&2
-         restore_failed=1 ;;
+         restore_problems+=("$perm: revoke could not be verified")
+         rc=1 ;;
     esac
   done
-  adb -s "$serial" uninstall "$pkg.test" >/dev/null 2>&1 || true
+  return "$rc"
+}
 
-  if test "$restore_failed" = "1"; then
-    if test "$needs_sms" = "1" && test "$role_read_trusted" = "1" && test "$now" != "$prior"; then
-      echo "" >&2
-      echo "!!! DEFAULT-SMS ROLE RESTORE FAILED !!!" >&2
-      echo "  expected holder: ${prior:-<none>}" >&2
-      echo "  actual holder:   ${now:-<none>}" >&2
-      # Printed when the holder is portage OR unknown. Withholding it on "unknown" was backwards:
-      # that is exactly the case where the worst outcome cannot be ruled out.
-      if test "$now" = "$pkg" || test "$now" = "<query failed>"; then
-        echo "  portage MAY STILL BE THIS DEVICE'S TEXTING APP. Fix it now:" >&2
-        echo "    adb -s $serial shell cmd role add-role-holder --user $user $role <your-sms-app>" >&2
-        echo "  or in Settings > Apps > Default apps > SMS app." >&2
-      fi
-    fi
-    echo "device-contract: THE DEVICE WAS NOT FULLY RESTORED — see above." >&2
-    exit 1
-  fi
+# Print every problem together, then fail the run. Exits; never returns on failure.
+report_restore_result() {
+  test "${#restore_problems[@]}" -gt 0 || return 0
+  echo "" >&2
+  echo "device-contract: THE DEVICE WAS NOT FULLY RESTORED:" >&2
+  printf '  - %s\n' "${restore_problems[@]}" >&2
+  exit 1
+}
+
+restore_device() {
+  # Runs from EXIT and, via the signal handlers below, from INT/TERM. Guard against a second pass:
+  # it would be harmless but would reprint the banner, and a banner still on screen after a restore
+  # that actually succeeded is its own kind of misinformation.
+  test "$restore_done" = "0" || return 0
+  restore_done=1
+
+  # `|| true` on each: the helpers return non-zero to mean "recorded a problem", which under `set -e`
+  # would otherwise abort the trap and skip everything after it.
+  restore_sms_role || true
+  restore_permissions || true
+  adb -s "$serial" uninstall "$pkg.test" >/dev/null 2>&1 || true
+  report_restore_result
 }
 # INT/TERM as well as EXIT: a Ctrl-C mid-run would otherwise leave the calendar permission granted
 # and, on a needs_sms run, portage still holding the default-SMS role.
@@ -466,20 +535,8 @@ if test "$needs_sms" = "1"; then
   # verified nothing. This is the one moment the expected answer is known independently (we just
   # took the role), so it is the only place the read itself can be tested. If it cannot observe a
   # write we just made, abort before running a single test rather than proceed with a blind restore.
-  # RETRIED, briefly. `cmd role add-role-holder` completes through a RoleManager callback, and
-  # whether the new holder is visible to the very next `get-role-holders` is a timing property of
-  # the platform — not something this script gets to assume. A single immediate read that lost that
-  # race would land in the "took had no effect" branch below, set role_taken=0, and skip the restore
-  # entirely, leaving portage holding the SMS role while the run reported that nothing changed. That
-  # is the worst outcome in this file, produced by a race rather than a bug, so it is not worth
-  # being clever about: read until it agrees or the budget runs out. Costs nothing on a device where
-  # the write is already visible (the first read breaks the loop), and still fails closed after ~3s.
-  took=""
-  for _ in 1 2 3 4 5 6; do
-    took="$(read_role_holder)" || took="<unreadable>"
-    test "$took" = "$pkg" && break
-    sleep 0.5
-  done
+  # Retried via await_role_holder — see there for why a single read is not evidence.
+  took="$(await_role_holder "$pkg")" || true
   if test "$took" = "$pkg"; then
     role_read_trusted=1
   else
