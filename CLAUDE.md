@@ -155,16 +155,23 @@ needs it — prefer the smallest scoped command):
   a trap on EXIT/INT/TERM. Restore is **verified by re-reading device state, and a failed restore
   fails the run** — for the role (loud `RESTORE FAILED` naming the holder) and for the calendar
   permissions alike. `cmd role add-role-holder` and `pm revoke` can both report success without
-  acting, so their exit status is not consulted; only the post-state is. It **refuses to start**
-  in three cases, all of which used to proceed silently: the current holder can't be read (it could
-  not then give the role back), portage *already* holds the role (the fingerprint of an earlier run
-  killed before its trap — restoring "to portage" would bless the leak permanently; override with
-  `PORTAGE_CONTRACT_ALLOW_PRIOR_SELF=1`), or the role read can't observe a write the script just
-  made (a read that fails *silently* is byte-identical to "nobody holds it", which is the value that
-  selects the destructive branch). **`scripts/test-device-contract-harness.sh` self-tests all of
-  this in CI** by driving the real script against a stub `adb` — no phone needed; it asserts final
-  device state, not just exit status. Mutation-test it if you change the restore logic; the header
-  records the eight mutations and which scenario each must turn red.
+  acting, so their exit status is not consulted; only the post-state is. It **refuses to start** in
+  five cases, all of which used to proceed silently: the current holder can't be read; the holder
+  reads *empty* and a corroborating second read disagrees (empty is the value that selects the
+  branch **removing** the role, so it earns a second opinion a non-empty answer does not need);
+  portage *already* holds the role (the fingerprint of an earlier run killed before its trap —
+  restoring "to portage" would bless the leak permanently; get past it with
+  `PORTAGE_CONTRACT_PRIOR_SMS=<package>`, which takes the *real* prior holder rather than a boolean,
+  so the only way forward is the one that actually gives the device its texting app back); the role
+  read can't observe the take it just performed; or **SIGINT could not be trapped** on an SMS run —
+  POSIX forbids trapping a signal that was `SIG_IGN` on entry and bash obeys silently, so launching
+  async from a non-job-control shell (`&`, a make recipe, some CI runners) makes Ctrl-C a no-op, and
+  an uninterruptible run must not take the role.
+  **`scripts/test-device-contract-harness.sh` self-tests all of this in CI** by driving the real
+  script against a stub `adb` — no phone needed; it asserts final device state and whether the role
+  was touched at all, not just exit status. Mutation-test it if you change the restore logic; the
+  header records the thirteen mutations, which scenario each must turn red, and what is *not*
+  covered.
   Never run outside this script (it's destructive-but-self-cleaning, not
   idempotent standalone). It accepts an optional `'<class>#<method>'` filter, which **narrows** the
   blast radius — it does not eliminate it:

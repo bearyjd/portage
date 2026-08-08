@@ -28,11 +28,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-java@v5.6.0
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: gradle/actions/setup-gradle@v6
       - name: Device-contract harness self-test
         # Runs first in the fast lane: pure bash, no SDK, no JVM, no phone — seconds.
         #
@@ -43,6 +38,11 @@ jobs:
         # device state as well as the exit status, so "exited 0" and "actually restored" cannot
         # drift apart unnoticed. Sibling in spirit to scripts/test-boundary-gate.sh below.
         run: ./scripts/test-device-contract-harness.sh
+      - uses: actions/setup-java@v5.6.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v6
       - name: Settings-allowlist guardrails
         run: ./gradlew :settings-catalog:test --no-daemon --stacktrace
 

@@ -118,6 +118,30 @@ perm_granted_for_user() {
   esac
 }
 
+# Echo the current holder of $role (possibly empty) and return 0; return 1 if the device's answer
+# was not WELL-FORMED. The distinction is the whole point: "" from this function means the device
+# said, in a well-formed way, that nobody holds the role — never "the read failed".
+#
+# ONE reader for every caller. There used to be three ad-hoc copies and only the first was
+# validated, so the restore comparison happily accepted a stack trace or a blank line as a holder
+# name. `2>&1` folds stderr in so error text fails the charset test rather than vanishing and
+# leaving a blank that reads as "unheld"; `sed -n 1p` reads to EOF so it cannot SIGPIPE the writer
+# and manufacture a pipeline failure under `set -o pipefail`.
+read_role_holder() {
+  local out
+  out="$(adb -s "$serial" shell cmd role get-role-holders --user "$user" "$role" 2>&1 |
+    tr -d '\r' | sed -n 1p)" || return 1
+  # Accept: nothing at all, or exactly one dotted package token. Android package names require at
+  # least two segments, so "contains a dot, does not lead or trail with one" is a real constraint.
+  case "$out" in
+    "") printf '' ; return 0 ;;
+    *[!A-Za-z0-9._]*) return 1 ;;
+    .*|*.) return 1 ;;
+    *.*) printf '%s' "$out" ; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Only take the SMS role when a test actually needs it — a filtered run that never touches SMS must
 # not make portage the user's texting app just to check a calendar insert. FAIL CLOSED: only a
 # filter naming a specific #method may skip it. A class-only filter (the obvious thing to type to
@@ -147,34 +171,61 @@ fi
 # Empty then means "the device told us, in a well-formed way, that nobody holds it".
 prior=""
 if test "$needs_sms" = "1"; then
-  role_read="$(adb -s "$serial" shell cmd role get-role-holders --user "$user" "$role" 2>&1 |
-    tr -d '\r' | sed -n 1p)"
-  # Accept: empty, or one dotted package token. Android requires at least two segments in a package
-  # name, so "must contain a dot, but not lead or trail with one" is a real constraint, not a guess.
-  role_ok=0
-  case "$role_read" in
-    "") role_ok=1 ;;
-    *[!A-Za-z0-9._]*) role_ok=0 ;;
-    .*|*.) role_ok=0 ;;
-    *.*) role_ok=1; prior="$role_read" ;;
-  esac
-  if test "$role_ok" != "1"; then
-    echo "Could not read the current $role holder (got: '$role_read')" >&2
+  prior="$(read_role_holder)" || {
+    echo "Could not read the current $role holder — the device's answer was not a package name." >&2
     echo "Refusing to take the SMS role, because this run could not then give it back." >&2
-    exit 1
+    exit 1; }
+
+  # An EMPTY answer earns a second opinion; a non-empty one does not need it. Empty is the value
+  # that selects the branch REMOVING the role, so it is the answer that must be right — and a reader
+  # that glitches exactly once, on this very first call, returns it. The take-time read-back cannot
+  # rescue that case: by then the reader is working again and happily confirms the take, so a
+  # `prior` captured during the glitch gets trusted and the restore strips a role the user's real
+  # texting app was holding. Reading twice costs nothing: a genuinely unheld role answers "" both
+  # times, a transient glitch does not. (A reader that is broken for the WHOLE run agrees with
+  # itself here and is caught instead by the take-time read-back below — the two cover each other.)
+  if test -z "$prior"; then
+    confirm="$(read_role_holder)" || {
+      echo "The $role holder read as empty, and the confirming read was not a package name." >&2
+      echo "Refusing to take the SMS role on an unreliable reader." >&2
+      exit 1; }
+    if test -n "$confirm"; then
+      echo "The $role holder read as empty, then as '$confirm' — the answer changed under us." >&2
+      echo "Refusing to take the SMS role: acting on the first answer would have removed" >&2
+      echo "'$confirm' from the role and never put it back." >&2
+      exit 1
+    fi
   fi
 
-  # portage ALREADY holding the role is not a state to restore to — it is the fingerprint of a
-  # previous run that died before its trap (the header documents the SIGKILL/yanked-cable case).
+  # portage ALREADY holding the role is not a state to restore TO — it is the fingerprint of an
+  # earlier run that died before its trap (the header documents the SIGKILL/yanked-cable case).
   # Proceeding would take the role, hand it back to portage, verify "restored", and exit 0, blessing
-  # the leak permanently. This script cannot know what the real texting app was, so it stops and
-  # says so. Genuinely-portage-by-choice devices set the override.
-  if test "$prior" = "$pkg" && test "${PORTAGE_CONTRACT_ALLOW_PRIOR_SELF:-0}" != "1"; then
-    echo "$pkg ALREADY holds $role." >&2
-    echo "That usually means an earlier run was killed before it could hand the role back." >&2
-    echo "Restore your real texting app first (Settings > Apps > Default apps > SMS app)," >&2
-    echo "or set PORTAGE_CONTRACT_ALLOW_PRIOR_SELF=1 if portage is deliberately the default." >&2
-    exit 1
+  # the leak permanently.
+  #
+  # The escape hatch takes the REAL prior holder rather than a boolean, deliberately. A boolean
+  # ("yes, portage holding it is fine") would be advertised, in the error message, to the one person
+  # guaranteed to be looking at a leak — and taking it would make the leak permanent while the run
+  # printed success. Naming a package instead makes the only available escape the one that actually
+  # gives the device its texting app back. portage-recv is an importer that holds the SMS role
+  # TRANSIENTLY (see CLAUDE.md); there is no device where it is legitimately the permanent default,
+  # so there is nothing to offer a boolean for.
+  if test "$prior" = "$pkg"; then
+    if test -n "${PORTAGE_CONTRACT_PRIOR_SMS:-}"; then
+      case "$PORTAGE_CONTRACT_PRIOR_SMS" in
+        *[!A-Za-z0-9._]*|.*|*.) echo "PORTAGE_CONTRACT_PRIOR_SMS is not a package name" >&2; exit 1 ;;
+        *.*) ;;
+        *) echo "PORTAGE_CONTRACT_PRIOR_SMS is not a package name" >&2; exit 1 ;;
+      esac
+      echo "NOTE: $pkg already held $role; restoring to $PORTAGE_CONTRACT_PRIOR_SMS as instructed." >&2
+      prior="$PORTAGE_CONTRACT_PRIOR_SMS"
+    else
+      echo "$pkg ALREADY holds $role." >&2
+      echo "That usually means an earlier run was killed before it could hand the role back," >&2
+      echo "and this script cannot know which app should have it." >&2
+      echo "Fix it in Settings > Apps > Default apps > SMS app and re-run, or tell this run" >&2
+      echo "which app to hand it back to:  PORTAGE_CONTRACT_PRIOR_SMS=<package>" >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -227,20 +278,40 @@ restore_device() {
     restore_failed=1
   elif test "$needs_sms" = "1" && test "$role_taken" = "1"; then
     if test -n "$prior"; then
+      # Handing back to a NAMED app: the verification below expects a non-empty answer, which a
+      # broken reader cannot counterfeit. Nothing extra needed.
       adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$prior" >/dev/null ||
         true
     else
-      adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null ||
-        true
+      # The blank-read trap, one level deeper than the pre-read. An empty `prior` makes this a
+      # REMOVAL, whose verification expects a blank answer — indistinguishable from what a broken
+      # reader returns. The take-time read-back proved the reader worked THEN; a reader that dies
+      # mid-run (adbd restart, USB flap, reboot) lands right here. So re-prove it against an answer
+      # already known: portage holds the role at this instant. If the device will not say so, its
+      # blank answer after a removal would mean nothing — and removing on that basis risks stripping
+      # a holder we never actually saw.
+      local live
+      live="$(read_role_holder)" || live="<unreadable>"
+      if test "$live" = "$pkg"; then
+        adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null ||
+          true
+      else
+        echo "" >&2
+        echo "!!! ROLE READER WENT BAD MID-RUN — NOT REMOVING !!!" >&2
+        echo "  $pkg should hold $role at this point, but the device says '$live'." >&2
+        echo "  Refusing to remove a role claim on the word of a reader that is already wrong." >&2
+        echo "  Check by hand: Settings > Apps > Default apps > SMS app" >&2
+        restore_failed=1
+        role_read_trusted=0
+      fi
     fi
     # The POST-STATE is authoritative; the exit status above is not even consulted. That command can
     # report success without the role moving, AND report failure for a no-op that left the device
     # correct (removing a role portage never took) — judging by its status produced both a missed
     # real failure and a false alarm. What the device says afterwards produces neither. A read we
-    # cannot perform is itself a failure: "I cannot tell you who holds your SMS role" is not an
-    # acceptable way to finish.
-    if now="$(adb -s "$serial" shell cmd role get-role-holders --user "$user" "$role" 2>&1 |
-      tr -d '\r' | sed -n 1p)"; then
+    # cannot perform, or whose answer is not a package name, is itself a failure: "I cannot tell you
+    # who holds your SMS role" is not an acceptable way to finish.
+    if now="$(read_role_holder)"; then
       test "$now" = "$prior" || restore_failed=1
     else
       now="<query failed>"
@@ -299,6 +370,30 @@ trap restore_device EXIT
 trap 'restore_device; trap - INT; kill -INT $$' INT
 trap 'restore_device; trap - TERM; kill -TERM $$' TERM
 
+# ...and CHECK that the INT handler actually installed. POSIX says a signal that was SIG_IGN when
+# the shell started cannot be trapped, and bash obeys silently — `trap ... INT` appears to succeed
+# and `trap -p INT` then reports `trap -- '' SIGINT`. A shell without job control sets SIGINT to
+# SIG_IGN in every async child, so `device-contract.sh &`, a `make` recipe, many CI step runners,
+# `nohup`, and some IDE run configurations all land here. That is precisely the launch style this
+# handler was written for, and there Ctrl-C/cancel becomes a NO-OP: the run continues past the stop
+# request to grant permissions and take the SMS role. The usual next move — escalating to SIGKILL —
+# then skips the trap entirely and leaves portage as the device's texting app.
+#
+# TERM is unaffected, so the run is still stoppable; we refuse only when the SMS role is at stake,
+# because an unstoppable run that takes it is the one case where not starting beats continuing.
+case "$(trap -p INT)" in
+  *"-- '' SIGINT"*)
+    echo "SIGINT is ignored in this environment, so Ctrl-C/cancel will NOT restore the device." >&2
+    echo "(A shell without job control sets SIGINT to SIG_IGN in async children — e.g. running" >&2
+    echo " this script with '&', from a make recipe, or under a CI step runner.)" >&2
+    if test "$needs_sms" = "1"; then
+      echo "Refusing to take the default-SMS role in a run that cannot be interrupted." >&2
+      echo "Run it in the foreground, or pass a non-SMS '<class>#<method>' filter." >&2
+      exit 1
+    fi
+    echo "Continuing: this run does not touch the SMS role. SIGTERM still restores." >&2 ;;
+esac
+
 export ANDROID_SERIAL="$serial"
 # Do NOT force an isolated GRADLE_USER_HOME. minSdk/compileSdk need a JDK 17 toolchain, and on a
 # machine where 17 exists only as Gradle's own auto-provisioned JDK (~/.gradle/jdks — common when
@@ -353,14 +448,27 @@ if test "$needs_sms" = "1"; then
   # verified nothing. This is the one moment the expected answer is known independently (we just
   # took the role), so it is the only place the read itself can be tested. If it cannot observe a
   # write we just made, abort before running a single test rather than proceed with a blind restore.
-  took="$(adb -s "$serial" shell cmd role get-role-holders --user "$user" "$role" 2>&1 |
-    tr -d '\r' | sed -n 1p)"
-  test "$took" = "$pkg" || {
+  took="$(read_role_holder)" || took="<unreadable>"
+  if test "$took" = "$pkg"; then
+    role_read_trusted=1
+  elif test -n "$prior" && test "$took" = "$prior"; then
+    # The role did not move, and we KNOW that rather than guessing: the reader just named a real
+    # package, so it is demonstrably alive, and what it named is what was there before. The device
+    # is exactly as we found it. Say that — the previous version reported "portage MAY STILL BE THIS
+    # DEVICE'S TEXTING APP" here, which was false, and a banner that cries wolf is how the one that
+    # matters gets ignored. (This branch requires `prior` non-empty on purpose: if both reads were
+    # empty we cannot tell "nothing moved" from "the reader is blind", so that falls through below
+    # and keeps role_taken=1 so the restore refuses to guess.)
+    role_taken=0
+    echo "Taking $role had no effect — the holder is still '$prior'." >&2
+    echo "Nothing on the device was changed. Aborting." >&2
+    exit 1
+  else
     echo "Cannot verify the SMS role on this device: after taking it, the holder reads" >&2
     echo "  '$took' rather than $pkg." >&2
     echo "Aborting rather than running with a restore check that cannot detect its own failure." >&2
-    exit 1; }
-  role_read_trusted=1
+    exit 1
+  fi
 fi
 
 # Built ONCE, with the filter as the only difference. This used to be two near-identical
