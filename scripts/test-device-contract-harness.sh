@@ -47,8 +47,14 @@ set -uo pipefail
 #   whole-string `case` filter guard -> line-oriented grep             FILTER_NEWLINE
 #   the unverifiable branch abstains instead of dropping the claim     ROLE_READ_SILENT
 #   the liveness branch abstains instead of dropping the claim         ROLE_READER_DIES_MID_RUN
+#   report_restore_result's inventory printf deleted                   ROLE_AND_PERM_BOTH_FAIL
+#   restore_problems+=( -> restore_problems=(  (keep only the last)    ROLE_AND_PERM_BOTH_FAIL
+#   report_restore_result never called from restore_device             ROLE_AND_PERM_BOTH_FAIL
 #
 # Recorded so nobody re-derives them:
+#   - mutate.py degrades a stale anchor to ONE reported BROKEN rather than aborting: a reindent of
+#     restore_sms_role silently killed the run after 5 of 21 mutations, and the shell wrapper piping
+#     it to `tail` reported exit 0. Do not pipe mutate.py anywhere that swallows its exit status.
 #   - THE INVARIANT, enforced globally by scenario(): a run that exits 0 must never leave portage
 #     holding the default-SMS role. Every bug in this file's history reduces to a violation of it.
 #   - GUARDS THAT OVERLAP SURVIVE EACH OTHER'S MUTATION. The post-take read-back and the restore-side
@@ -74,6 +80,11 @@ set -uo pipefail
 #     any `tr -d` left the suite green while every real run aborted after taking the SMS role.
 #   - ANDROID_SERIAL=STUBSERIAL is exported on every invocation deliberately: if the stub `adb` ever
 #     failed to land on PATH, a real `adb` would fail on that serial rather than touching a phone.
+#   - restore_sms_role is ~56 non-comment lines, over the 50-line guideline in coding-style.md, and
+#     that is deliberate. It is three sequential phases (unverifiable / hand-back-or-remove / verify)
+#     sharing one exit contract and one problems accumulator. Two separate rounds of bugs in this
+#     file were about state lost ACROSS boundaries, so adding boundaries here is the wrong trade.
+#     Split at the phase seam if it grows again.
 #   - RUNTIME is ~15s, nearly all of it await budgets burning down in scenarios that never converge.
 #     Do NOT add a test-only env knob to shorten it in the production script: a timing override that
 #     exists for the tests is the kind of thing that later gets set in anger on a real device.
@@ -265,7 +276,7 @@ scenario() {
   setup_tree
   echo "com.example.sms" > "$WORK/run/state/holder"
   echo false > "$WORK/run/state/cal_granted"
-  local s extra_env=""
+  local s extra_env="" want_problems=""
   for s in "$@"; do
     case "$s" in
       holder=*) printf '%s' "${s#holder=}" > "$WORK/run/state/holder" ;;
@@ -274,6 +285,7 @@ scenario() {
       role_read_dies_after=*) echo "${s#role_read_dies_after=}" > "$WORK/run/state/role_read_dies_after" ;;
       take_visible_after=*) echo "${s#take_visible_after=}" > "$WORK/run/state/take_visible_after" ;;
       current_user=*) echo "${s#current_user=}" > "$WORK/run/state/current_user" ;;
+      expect_problems=*) want_problems="${s#expect_problems=}" ;;
       *)        touch "$WORK/run/state/$s" ;;
     esac
   done
@@ -304,6 +316,22 @@ scenario() {
   # per-scenario want_holder pins those.)
   if test "$rc" -eq 0 && test "$holder" = "com.ventouxlabs.portage.recv"; then
     ok=0; why="$why exited 0 leaving portage as the default SMS app;"
+  fi
+  # Every banner-level failure must ALSO be listed in the end-of-run inventory. Asserts SHAPE, not
+  # wording, so rewording a banner does not turn scenarios red — but deleting the inventory does.
+  # Without this the whole restore_problems[] feature was unverified: removing its printf left the
+  # suite fully green.
+  if grep -q '!!!' <<<"$out" && ! grep -q 'NOT FULLY RESTORED' <<<"$out"; then
+    ok=0; why="$why printed a !!! failure banner but no end-of-run inventory;"
+  fi
+  # (3) Some scenarios pin HOW MANY problems are listed — the accumulator exists so that multiple
+  # independent failures surface together, and a version that only ever kept the last one would
+  # otherwise pass.
+  if test -n "$want_problems"; then
+    local listed
+    listed="$(grep -c '^  - ' <<<"$out" || true)"
+    test "$listed" -ge "$want_problems" ||
+      { ok=0; why="$why expected >=$want_problems inventory lines, got $listed;"; }
   fi
   # And any run that reached instrumentation must have carried the grants-prepared flag. Without it
   # every precondition in the suite reverts to an assumption-skip that JUnit still counts toward
@@ -418,6 +446,10 @@ scenario NO_PRIOR_REMOVE_IGNORED nonzero "$PKG"          -- holder= handback_ign
 
 # --- permissions --------------------------------------------------------------------------------
 scenario REVOKE_FAILS            nonzero com.example.sms -- revoke_ignored
+# TWO independent failures in one run: the role handback is ignored AND both revokes are ignored.
+# This is what restore_problems[] exists for, and it is also the regression test for the split —
+# before it, a failing role restore aborted the trap under `set -e` and the revokes never ran.
+scenario ROLE_AND_PERM_BOTH_FAIL nonzero "$PKG"          -- handback_ignored revoke_ignored expect_problems=3
 scenario PERM_NO_USER_BLOCK      nonzero com.example.sms -- perm_read_broken
 scenario PERM_NO_RUNTIME_SECTION nonzero com.example.sms -- perm_no_runtime_section
 

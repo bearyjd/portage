@@ -275,7 +275,7 @@ await_role_holder() {
   for _attempt in 1 2 3 4 5 6; do
     got="$(read_role_holder)" || got="<unreadable>"
     if test "$got" = "$want"; then printf '%s' "$got"; return 0; fi
-    sleep 0.5
+    test "$_attempt" -lt 6 && sleep 0.5
   done
   printf '%s' "$got"
   return 1
@@ -286,6 +286,9 @@ restore_done=0
 # and are set at the point of the act, so the trap can tell "never touched it" from "took it and
 # cannot verify" — which need opposite handling and used to be indistinguishable.
 role_taken=0
+# READ EXACTLY ONCE, at the top of restore_sms_role, to tell "took the role but never proved the
+# reader" from "took it and can verify". Nothing downstream consumes it, so writing to it later in
+# the restore changes NOTHING — an earlier version did exactly that and the assignment was dead.
 role_read_trusted=0
 # One short line per thing that could not be restored or verified, printed together at the end. A
 # lone "see above" made the operator scroll back past a gradle build and a full instrumentation dump
@@ -333,41 +336,40 @@ restore_sms_role() {
   fi
 
   if test -n "$prior"; then
-      # Handing back to a NAMED app: the verification below expects a non-empty answer, which a
-      # broken reader cannot counterfeit. Nothing extra needed.
-      adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$prior" >/dev/null ||
-        true
+    # Handing back to a NAMED app: the verification below waits for a non-empty answer, which a
+    # broken reader cannot counterfeit. Nothing extra needed.
+    adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$prior" >/dev/null ||
+      true
   else
-      # The blank-read trap, one level deeper than the pre-read. An empty `prior` makes this a
-      # REMOVAL, whose verification expects a blank answer — indistinguishable from what a broken
-      # reader returns. The take-time read-back proved the reader worked THEN; a reader that dies
-      # mid-run (adbd restart, USB flap, reboot) lands right here. So re-prove it against an answer
-      # already known: portage holds the role at this instant. If the device will not say so, its
-      # blank answer after a removal would mean nothing — and removing on that basis risks stripping
-      # a holder we never actually saw.
-      local live
-      # await_, not read_: a reader that is merely LAGGING must not be branded "gone bad" and
-      # trigger the alarm below on a device that is fine.
-      live="$(await_role_holder "$pkg")" || true
-      if test "$live" = "$pkg"; then
-        adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null ||
-          true
-      else
-        # Same reasoning as the unverifiable branch above: the removal NAMES portage, so it can only
-        # drop our own claim, and the take already evicted whoever held it before. Abstaining here
-        # protected nothing and left a test app holding the role. Do it, and report that it could
-        # not be confirmed.
-        echo "" >&2
-        echo "!!! ROLE READER WENT BAD MID-RUN !!!" >&2
-        echo "  $pkg should hold $role at this point, but the device says '$live'." >&2
-        adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null 2>&1 ||
-          true
-        echo "  Dropped $pkg's claim anyway (it can only ever remove OUR claim); unconfirmed." >&2
-        echo "  Check by hand: Settings > Apps > Default apps > SMS app" >&2
-        restore_problems+=("SMS role: reader failed mid-run — dropped $pkg's claim, unconfirmed")
-        role_read_trusted=0
-        return 1
-      fi
+    # The blank-read trap, one level deeper than the pre-read. An empty `prior` makes this a
+    # REMOVAL, whose verification expects a blank answer — indistinguishable from what a broken
+    # reader returns. The take-time read-back proved the reader worked THEN; a reader that dies
+    # mid-run (adbd restart, USB flap, reboot) lands right here. So re-prove it against an answer
+    # already known: portage holds the role at this instant. If the device will not say so, its
+    # blank answer after a removal would mean nothing — and removing on that basis risks stripping
+    # a holder we never actually saw.
+    local live
+    # await_, not read_: a reader that is merely LAGGING must not be branded "gone bad" and
+    # trigger the alarm below on a device that is fine.
+    live="$(await_role_holder "$pkg")" || true
+    if test "$live" = "$pkg"; then
+      adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null ||
+        true
+    else
+      # Same reasoning as the unverifiable branch above: the removal NAMES portage, so it can only
+      # drop our own claim, and the take already evicted whoever held it before. Abstaining here
+      # protected nothing and left a test app holding the role. Do it, and report that it could
+      # not be confirmed.
+      echo "" >&2
+      echo "!!! ROLE READER WENT BAD MID-RUN !!!" >&2
+      echo "  $pkg should hold $role at this point, but the device says '$live'." >&2
+      adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null 2>&1 ||
+        true
+      echo "  Dropped $pkg's claim anyway (it can only ever remove OUR claim); unconfirmed." >&2
+      echo "  Check by hand: Settings > Apps > Default apps > SMS app" >&2
+      restore_problems+=("SMS role: reader failed mid-run — dropped $pkg's claim, unconfirmed")
+      return 1
+    fi
   fi
 
   # The POST-STATE is authoritative; the write's exit status is not even consulted. That command can
@@ -427,6 +429,7 @@ report_restore_result() {
   echo "" >&2
   echo "device-contract: THE DEVICE WAS NOT FULLY RESTORED:" >&2
   printf '  - %s\n' "${restore_problems[@]}" >&2
+  echo "  (the remediation command for each is in the banner above it)" >&2
   exit 1
 }
 

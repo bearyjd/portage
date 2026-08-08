@@ -18,7 +18,12 @@ def cut(text, start, end, replacement=""):
     i = text.index(start); j = text.index(end, i)
     return text[:i] + replacement + text[j:]
 
-def check(name, want, mutant):
+def check(name, want, build):
+    try:
+        mutant = build(src)
+    except Exception as exc:               # stale anchor after a reformat, typically
+        print(f"BROKEN {name:28s} transform raised: {type(exc).__name__}: {exc}")
+        return False
     if mutant == src:
         print(f"BROKEN {name:28s} transform changed nothing"); return False
     open(MUT, "w").write(mutant)
@@ -46,9 +51,9 @@ m("DOT_REQUIREMENT_DROPPED", "ROLE_READ_BARE_TOKEN", lambda s: s.replace(
 m("EMPTY_PRIOR_CORROBORATION", "ROLE_READ_TRANSIENT", lambda s: cut(
     s, '  if test -z "$prior"; then', '  # portage ALREADY holding the role'))
 m("RESTORE_LIVENESS_CHECK", "ROLE_READER_DIES_MID_RUN", lambda s: cut(
-    s, '      local live', '      fi\n  fi',
-    '      adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" '
-    '>/dev/null || true\n      if false; then :\n'))
+    s, '    local live', '    fi\n  fi',
+    '    adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" '
+    '>/dev/null || true\n    if false; then :\n'))
 m("POST_TAKE_READBACK", "TAKE_SILENTLY_IGNORED", lambda s: cut(
     s, '  took="$(await_role_holder "$pkg")"', 'fi\n\n# Built ONCE',
     '  role_read_trusted=1\n'))
@@ -83,12 +88,22 @@ m("FILTER_LINE_ORIENTED_GREP", "FILTER_NEWLINE", lambda s: cut(
 m("UNTRUSTED_ABSTAINS", "ROLE_READ_SILENT", lambda s: cut(
     s, '    if test -n "$prior"; then\n      echo "  Attempting to hand',
     "    echo \"  Dropped $pkg's claim on $role"))
+# The restore_problems[] feature itself. Before these three the whole inventory was unverified:
+# deleting its printf, keeping only the last problem, or never calling the reporter at all left the
+# suite fully green.
+INV_PRINTF = "  printf '  - %s" + chr(92) + "n' " + chr(34) + "${restore_problems[@]}" + chr(34) + " >&2" + chr(10)
+m("INVENTORY_NOT_PRINTED", "ROLE_AND_PERM_BOTH_FAIL", lambda s: s.replace(INV_PRINTF, ""))
+m("ONLY_LAST_PROBLEM_KEPT", "ROLE_AND_PERM_BOTH_FAIL",
+  lambda s: s.replace("restore_problems+=(", "restore_problems=("))
+m("REPORT_NEVER_CALLED", "ROLE_AND_PERM_BOTH_FAIL",
+  lambda s: s.replace("  report_restore_result\n}", "  return 0\n}"))
+
 m("LIVENESS_ABSTAINS", "ROLE_READER_DIES_MID_RUN", lambda s: cut(
-    s, '        adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" '
-       '>/dev/null 2>&1 ||\n          true\n        echo "  Dropped',
-    '        echo "  Check by hand:'))
+    s, 'role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null 2>&1 ||\n'
+       '        true\n      echo "  Dropped',
+    '      echo "  Check by hand:'))
 
 print(f"mutation test: {len(M)} guards, each reverted in turn\n")
-results = [check(n, w, f(src)) for n, w, f in M]
+results = [check(n, w, f) for n, w, f in M]
 print(f"\nred: {sum(results)}/{len(results)}")
 sys.exit(0 if all(results) else 1)
