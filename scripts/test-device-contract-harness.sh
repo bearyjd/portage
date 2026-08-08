@@ -38,7 +38,7 @@ set -uo pipefail
 #   the revoke re-read -> a bare warning                               REVOKE_FAILS
 #   perm_granted_for_user's `return 2` paths -> `return 1`             PERM_NO_RUNTIME_SECTION
 #   signal handlers -> `trap restore_device INT TERM` (resume, no exit) SIGTERM_MID_RUN
-#   the `trap -p INT` install check removed                            NO_JOB_CONTROL_REFUSES
+#   the `trap -p INT` install check removed                            SIGINT_UNTRAPPABLE_REFUSES
 #   whole-string `case` filter guard -> the line-oriented grep          FILTER_NEWLINE
 #
 # Recorded so nobody re-derives them:
@@ -278,7 +278,7 @@ signal_case() {
   # async children, the script's INT handler cannot install, and (correctly) it now refuses to take
   # the SMS role at all. Job control gives the child its own process group, so the signal below
   # reaches the script ALONE — which is the case being tested. See NO_JOB_CONTROL_REFUSES for the
-  # other half.
+  # other half (SIGINT_UNTRAPPABLE_REFUSES).
   set -m
   ( cd "$WORK/run" && STUB_STATE="$WORK/run/state" PATH="$WORK/run/bin:$PATH" \
     ANDROID_SERIAL=STUBSERIAL exec bash scripts/device-contract.sh ) >/dev/null 2>&1 &
@@ -348,24 +348,29 @@ scenario ZERO_TESTS              nonzero com.example.sms -- tests=0
 signal_case SIGTERM_MID_RUN      TERM 143
 signal_case SIGINT_MID_RUN       INT  130
 
-# POSIX forbids trapping a signal that was SIG_IGN on entry, and bash obeys SILENTLY — so launched
-# without job control the INT handler never installs and Ctrl-C/cancel becomes a no-op. A run that
-# cannot be interrupted must not take the user's default-SMS role.
-no_job_control_case() {
+# POSIX forbids trapping a signal that was SIG_IGN when the shell started, and bash obeys SILENTLY,
+# so the INT handler never installs and Ctrl-C/cancel becomes a no-op. A run that cannot be
+# interrupted must not take the user's default-SMS role.
+#
+# The condition is CONSTRUCTED (`trap "" INT` then `exec`) rather than induced by launching async
+# from a non-job-control shell. Both produce it, but the async route depends on the ambient shell's
+# job-control state, which is not the same everywhere: this scenario passed locally and failed on a
+# GitHub runner, whose shell left SIGINT trappable in async children. `trap "" INT; exec` sets the
+# disposition explicitly, so the test measures the guard rather than the environment around it.
+sigint_untrappable_case() {
   setup_tree
   echo "com.example.sms" > "$WORK/run/state/holder"
   local rc ops ok=1 why=""
-  # No `set -m`: this is the async-from-non-job-control-shell launch the guard exists for.
   ( cd "$WORK/run" && STUB_STATE="$WORK/run/state" PATH="$WORK/run/bin:$PATH" \
-    ANDROID_SERIAL=STUBSERIAL bash scripts/device-contract.sh >/dev/null 2>&1 ) &
-  wait $!; rc=$?
+    ANDROID_SERIAL=STUBSERIAL bash -c 'trap "" INT; exec bash scripts/device-contract.sh' \
+    >/dev/null 2>&1 ); rc=$?
   ops="$(cat "$WORK/run/state/role_ops" 2>/dev/null || true)"
   test "$rc" -ne 0 || { ok=0; why="$why expected a refusal, got rc=0;"; }
   test -z "$ops"   || { ok=0; why="$why took the role in an uninterruptible run: $ops;"; }
-  if test "$ok" = "1"; then printf 'ok   NO_JOB_CONTROL_REFUSES\n'; pass=$((pass + 1))
-  else printf 'FAIL NO_JOB_CONTROL_REFUSES —%s\n' "$why"; fail=$((fail + 1)); fi
+  if test "$ok" = "1"; then printf 'ok   SIGINT_UNTRAPPABLE_REFUSES\n'; pass=$((pass + 1))
+  else printf 'FAIL SIGINT_UNTRAPPABLE_REFUSES —%s\n' "$why"; fail=$((fail + 1)); fi
 }
-no_job_control_case
+sigint_untrappable_case
 
 # --- filter validation (no device mutation expected) --------------------------------------------
 # filter_case <name> <filter> <accept|reject> [<role: touched|untouched>]
