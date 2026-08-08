@@ -466,8 +466,10 @@ class ProviderDeviceContractTest {
     /**
      * Sweep the fixed-marker fixtures, before AND after every test.
      *
-     * The queries here are deliberately null-tolerant, unlike every other read in this file: cleanup
-     * runs from `@After`, so raising would replace the real test result with a cleanup error. A
+     * The queries here are deliberately null-tolerant, unlike every other read in this file. The
+     * reason is the `@After` path, where raising would replace the real test result with a cleanup
+     * error; on the `@Before` path raising would be harmless, but a sweep that behaves differently
+     * depending on which end of the test it runs from is worse than one that is uniformly quiet. A
      * fixture that survives is visible on the next run instead (the markers are stable), which is
      * the tradeoff being made — not an oversight.
      *
@@ -525,12 +527,14 @@ class ProviderDeviceContractTest {
     }
 
     /**
-     * Delete ONLY the calendars THIS RUN created, by recorded `_ID` (#165 codex review, P1). The
-     * predecessor swept a fixed marker name, which had no provenance predicate and could match a
-     * user's real account-less calendar; an `_ID` recorded at insert time cannot.
+     * Delete ONLY the calendars THIS TEST INSTANCE created, by recorded `_ID` (#165 codex review,
+     * P1). The predecessor swept a fixed marker name, which had no provenance predicate and could
+     * match a user's real account-less calendar; an `_ID` recorded at insert time cannot.
      *
-     * A failure is logged, never thrown: this runs from @After, where throwing would mask the real
-     * test result. So the log IS the failure report, and it has to be good enough to act on.
+     * A failure is logged, never thrown. This is reachable from `@After` (via [cleanup]) and from
+     * the calendar test's own `finally`, and throwing on either path would replace the real test
+     * result with a cleanup error. So the log IS the failure report, and it has to be good enough
+     * to act on.
      *
      * An id is retained for retry when the delete threw AND when it matched ZERO rows. The zero case
      * used to be logged and dropped, which was the wrong half to give up on: a zero-row delete
@@ -581,17 +585,24 @@ class ProviderDeviceContractTest {
      * name is ever confirmed to equal the marker.
      *
      * The plain [ContentUris] URI carries no account predicate, so it cannot miss for that reason.
-     * It is a narrower operation, not a looser one: `_ID` is still the selection, so this can only
-     * ever touch the row this instance recorded at insert time. Whether it leaves a soft
-     * `deleted=1` ghost is a rule documented for Events that I have NOT verified applies to
-     * Calendars — but a ghost is strictly better than a visible calendar on someone's phone.
+     * Be precise about why that is safe: it carries FEWER predicates, so as a query it matches a
+     * SUPERSET of what the sync-adapter URI matches — it is looser, not narrower. What bounds it is
+     * the provenance of `id`, which came from [markerCalendarIds] filtering on ACCOUNT_TYPE_LOCAL
+     * plus this instance's UUID, and `Calendars._ID` is AUTOINCREMENT so ids are not recycled.
+     * The bound is the id, not the URI.
+     *
+     * Whether the plain URI leaves a soft `deleted=1` ghost is a rule documented for Events that I
+     * have NOT verified applies to Calendars — but a ghost is strictly better than a visible
+     * calendar on someone's phone.
      */
     private fun deleteCalendarRow(id: Long): Int {
-        val viaSyncAdapter = resolver.delete(
-            ContentUris.withAppendedId(syncAdapterCalendars(calendarMarker), id),
-            null,
-            null,
-        )
+        // runCatching, not a bare call: if the sync-adapter delete THROWS (a SecurityException, or
+        // an IllegalArgumentException from the account params), an uncaught throw would propagate
+        // past the fallback to the caller's runCatching and the fallback below would never run —
+        // leaving the safety net unreachable for the one case it was added to survive.
+        val viaSyncAdapter = runCatching {
+            resolver.delete(ContentUris.withAppendedId(syncAdapterCalendars(calendarMarker), id), null, null)
+        }.getOrDefault(0)
         if (viaSyncAdapter > 0) return viaSyncAdapter
         return resolver.delete(ContentUris.withAppendedId(Calendars.CONTENT_URI, id), null, null)
     }
@@ -622,7 +633,7 @@ class ProviderDeviceContractTest {
             "${Calendars.ACCOUNT_TYPE} = ? AND ${Calendars.CALENDAR_DISPLAY_NAME} = ?",
             arrayOf(CalendarContract.ACCOUNT_TYPE_LOCAL, calendarMarker),
             null,
-        ) ?: error("CalendarProvider returned no cursor for the run marker")
+        ) ?: error("CalendarProvider returned no cursor for this instance's calendar marker")
         cursor.use { while (it.moveToNext()) add(it.getLong(0)) }
     }
 

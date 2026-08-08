@@ -152,11 +152,19 @@ needs it — prefer the smallest scoped command):
 - Device-only instrumentation test (`app-recv`'s `ProviderDeviceContractTest`, real
   `ContentResolver` writes): `scripts/device-contract.sh` — requires an attached/authorized `adb`
   device, installs the debug APK + test APK, **may take** the SMS role (see below), and restores via
-  a trap on EXIT/INT/TERM. The role handback is **verified by re-reading the holder, and a failed
-  restore fails the run** with a loud `RESTORE FAILED` naming the package — `add-role-holder` can
-  report success without the role moving, and the previous version swallowed that and exited 0 with
-  portage still the device's texting app. Relatedly, the script refuses to take the role at all if it
-  could not first read the current holder, since it could not then give it back.
+  a trap on EXIT/INT/TERM. Restore is **verified by re-reading device state, and a failed restore
+  fails the run** — for the role (loud `RESTORE FAILED` naming the holder) and for the calendar
+  permissions alike. `cmd role add-role-holder` and `pm revoke` can both report success without
+  acting, so their exit status is not consulted; only the post-state is. It **refuses to start**
+  in three cases, all of which used to proceed silently: the current holder can't be read (it could
+  not then give the role back), portage *already* holds the role (the fingerprint of an earlier run
+  killed before its trap — restoring "to portage" would bless the leak permanently; override with
+  `PORTAGE_CONTRACT_ALLOW_PRIOR_SELF=1`), or the role read can't observe a write the script just
+  made (a read that fails *silently* is byte-identical to "nobody holds it", which is the value that
+  selects the destructive branch). **`scripts/test-device-contract-harness.sh` self-tests all of
+  this in CI** by driving the real script against a stub `adb` — no phone needed; it asserts final
+  device state, not just exit status. Mutation-test it if you change the restore logic; the header
+  records the eight mutations and which scenario each must turn red.
   Never run outside this script (it's destructive-but-self-cleaning, not
   idempotent standalone). It accepts an optional `'<class>#<method>'` filter, which **narrows** the
   blast radius — it does not eliminate it:

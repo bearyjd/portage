@@ -34,7 +34,21 @@ filter="${1:-}"
 # quoting, so `;`, backticks and $(...) in it would execute as SHELL UID. Self-inflicted via own
 # argv rather than a privilege-boundary breach, but shell uid is the exact thing ADR-003 exists to
 # control, so refuse anything that is not a plain JUnit class#method selector.
-if test -n "$filter" && ! printf '%s' "$filter" | grep -qE '^[A-Za-z0-9_.]+(#[A-Za-z0-9_]+)?(,[A-Za-z0-9_.]+(#[A-Za-z0-9_]+)?)*$'; then
+#
+# TWO checks, because the obvious one alone does not hold. `grep` is LINE-oriented: `^...$` anchor to
+# a line, and `-q` succeeds if ANY line matches — so a filter whose first line is a well-formed
+# selector passed validation with arbitrary content on line 2, and `adb shell` happily forwarded the
+# newline for the device shell to run as a second command. The `case` glob below is whole-string and
+# so rejects the newline (and every other out-of-charset byte); the regex then checks the SHAPE of
+# what survived. Do not collapse these back into one grep.
+case "$filter" in
+  "") ;;
+  *[!A-Za-z0-9_.#,]*)
+    echo "Refusing filter: contains a character outside the class#method charset" >&2
+    exit 1 ;;
+esac
+if test -n "$filter" &&
+   ! [[ "$filter" =~ ^[A-Za-z0-9_.]+(#[A-Za-z0-9_]+)?(,[A-Za-z0-9_.]+(#[A-Za-z0-9_]+)?)*$ ]]; then
   echo "Refusing filter '$filter': expected <class>[#<method>][,<class>[#<method>]...]" >&2
   exit 1
 fi
@@ -52,15 +66,23 @@ role="android.app.role.SMS"
 user="$(adb -s "$serial" shell am get-current-user 2>/dev/null | tr -d '\r' | tr -cd '0-9')"
 test -n "$user" || { echo "Could not determine current user via am get-current-user" >&2; exit 1; }
 
-# Is $2 granted to $pkg FOR $user? Fails CLOSED: any adb error, or output that doesn't contain the
-# user's block at all, is an error rather than "not granted" — otherwise a transient USB hiccup
-# reads as "not granted", we grant, and the EXIT trap then REVOKES a permission the user really
-# had. Same fail-open shape CLAUDE.md documents for the boundary gate.
+# Is $2 granted to $pkg FOR $user?
+#
+#   0 = granted   1 = not granted   2 = COULD NOT TELL
+#
+# Three states, not two, and that is the whole point. Any adb error, or output that doesn't contain
+# the user's block at all, must not collapse into "not granted" — otherwise a transient USB hiccup
+# reads as not-granted, we grant, and the EXIT trap then REVOKES a permission the user really had.
+# Same fail-open shape CLAUDE.md documents for the boundary gate.
+#
+# Returns 2 rather than exiting, because this is called from the EXIT trap to verify the revokes:
+# exiting there would skip the remaining restore steps and the failure banner. Callers must handle
+# 2 explicitly — the pre-test detection treats it as fatal, the trap as "restore unverified".
 perm_granted_for_user() {
   local perm="$1" out block
   out="$(adb -s "$serial" shell dumpsys package "$pkg" 2>/dev/null | tr -d '\r')" || {
-    echo "adb dumpsys failed while reading permissions" >&2; exit 1; }
-  test -n "$out" || { echo "empty dumpsys output for $pkg" >&2; exit 1; }
+    echo "adb dumpsys failed while reading permissions" >&2; return 2; }
+  test -n "$out" || { echo "empty dumpsys output for $pkg" >&2; return 2; }
   # Prefix match, NOT equality: the header line carries trailing fields
   # ("    User 0: ceDataInode=... installed=true ..."), so an exact compare silently selects the
   # wrong block, finds no grant, and we would grant-then-REVOKE a permission the user really had.
@@ -68,11 +90,11 @@ perm_granted_for_user() {
     $0 ~ ("^[[:space:]]+" u "([[:space:]]|$)") {inblock=1; next}
     /^[[:space:]]+User [0-9]+:([[:space:]]|$)/ {inblock=0}
     inblock {print}')"
-  test -n "$block" || { echo "no 'User $user:' block for $pkg in dumpsys" >&2; exit 1; }
+  test -n "$block" || { echo "no 'User $user:' block for $pkg in dumpsys" >&2; return 2; }
   # Without this the parse could degrade to a block that simply has no permissions section, which
   # would read as "not granted" — the same fail-open by a different route.
   grep -q 'runtime permissions:' <<<"$block" || {
-    echo "no 'runtime permissions:' section for user $user — refusing to guess" >&2; exit 1; }
+    echo "no 'runtime permissions:' section for user $user — refusing to guess" >&2; return 2; }
   # The LAST fail-open branch in a function whose whole point is failing closed: grep returns 1 for
   # not-found but >=2 for an ERROR (and 128+n if it is killed), and the caller writes
   # `if ! perm_granted_for_user`, which collapses every non-zero to "not granted". The consequence is
@@ -88,7 +110,7 @@ perm_granted_for_user() {
   case "$status" in
     0) return 0 ;;
     1) return 1 ;;
-    *) echo "grep failed (status $status) reading '$perm' for user $user" >&2; exit 1 ;;
+    *) echo "grep failed (status $status) reading '$perm' for user $user" >&2; return 2 ;;
   esac
 }
 
@@ -104,19 +126,50 @@ if test -n "$filter" &&
   needs_sms=0
 fi
 
-# The prior default-SMS holder, "" meaning nobody held it. That conflation is only safe because a
-# FAILED query must never reach this variable: restore_device's empty branch REMOVES the role from
-# portage, so a transient adb hiccup read as "nobody held it" would strip the user's real texting app
-# instead of handing it back. `cmd role get-role-holders` prints one package per line and nothing at
-# all when the role is unheld, so anything that is not a package name (an exception trace, a usage
-# message from an option this OS does not support) is a failed query and must stop the run before we
-# touch the role.
+# The prior default-SMS holder, "" meaning nobody held it. That conflation is load-bearing and
+# dangerous: restore_device's empty branch REMOVES the role, so a FAILED query misread as "nobody
+# held it" strips the user's real texting app instead of handing it back.
+#
+# The validation therefore inspects the WHOLE output, and the earlier `test -n "$prior" && ...` shape
+# was unsound for exactly the value that matters — it could not fire on empty, and empty is what a
+# failed query most often looks like. `cmd role get-role-holders` can fail while writing to stderr
+# and still exit 0, leaving stdout blank, so:
+#   - stderr is folded in with 2>&1, so error text lands IN the value and fails the charset test
+#     instead of vanishing and leaving a blank that reads as "unheld";
+#   - the accept set is "exactly nothing" or "exactly one package token" — a blank-but-present line,
+#     a stack trace, or a usage message all fail;
+#   - `sed -n 1p` rather than `head -1`: it reads to EOF, so it cannot SIGPIPE the writer and
+#     manufacture a pipeline failure under `set -o pipefail`.
+# Empty then means "the device told us, in a well-formed way, that nobody holds it".
 prior=""
 if test "$needs_sms" = "1"; then
-  prior="$(adb -s "$serial" shell cmd role get-role-holders --user "$user" "$role" | tr -d '\r' | head -1)"
-  if test -n "$prior" && ! grep -qE '^[A-Za-z0-9._]+$' <<<"$prior"; then
-    echo "Could not read the current $role holder (got: '$prior')" >&2
+  role_read="$(adb -s "$serial" shell cmd role get-role-holders --user "$user" "$role" 2>&1 |
+    tr -d '\r' | sed -n 1p)"
+  # Accept: empty, or one dotted package token. Android requires at least two segments in a package
+  # name, so "must contain a dot, but not lead or trail with one" is a real constraint, not a guess.
+  role_ok=0
+  case "$role_read" in
+    "") role_ok=1 ;;
+    *[!A-Za-z0-9._]*) role_ok=0 ;;
+    .*|*.) role_ok=0 ;;
+    *.*) role_ok=1; prior="$role_read" ;;
+  esac
+  if test "$role_ok" != "1"; then
+    echo "Could not read the current $role holder (got: '$role_read')" >&2
     echo "Refusing to take the SMS role, because this run could not then give it back." >&2
+    exit 1
+  fi
+
+  # portage ALREADY holding the role is not a state to restore to — it is the fingerprint of a
+  # previous run that died before its trap (the header documents the SIGKILL/yanked-cable case).
+  # Proceeding would take the role, hand it back to portage, verify "restored", and exit 0, blessing
+  # the leak permanently. This script cannot know what the real texting app was, so it stops and
+  # says so. Genuinely-portage-by-choice devices set the override.
+  if test "$prior" = "$pkg" && test "${PORTAGE_CONTRACT_ALLOW_PRIOR_SELF:-0}" != "1"; then
+    echo "$pkg ALREADY holds $role." >&2
+    echo "That usually means an earlier run was killed before it could hand the role back." >&2
+    echo "Restore your real texting app first (Settings > Apps > Default apps > SMS app)," >&2
+    echo "or set PORTAGE_CONTRACT_ALLOW_PRIOR_SELF=1 if portage is deliberately the default." >&2
     exit 1
   fi
 fi
@@ -142,51 +195,105 @@ granted_calendar=""
 # Every step is individually guarded rather than allowed to abort the handler: this runs as a trap
 # under `set -e`, so a bare failure partway through would skip the revokes and the uninstall below.
 # Failures are accumulated and reported at the end, and a failed ROLE restore exits non-zero.
+restore_done=0
+# Did we take the role, and did we ever PROVE the role read works on this device? Both start false
+# and are set at the point of the act, so the trap can tell "never touched it" from "took it and
+# cannot verify" — which need opposite handling and used to be indistinguishable.
+role_taken=0
+role_read_trusted=0
 restore_device() {
-  local restore_failed=0
-  if test "$needs_sms" = "1"; then
-    if test -n "$prior" && test "$prior" != "$pkg"; then
+  # Runs from EXIT and, via the signal handlers below, from INT/TERM. Guard against a second pass:
+  # it would be harmless but would reprint the banner, and a banner still on screen after a restore
+  # that actually succeeded is its own kind of misinformation.
+  test "$restore_done" = "0" || return 0
+  restore_done=1
+
+  local restore_failed=0 perm_status=0
+  local now=""
+  if test "$needs_sms" = "1" && test "$role_taken" = "1" && test "$role_read_trusted" != "1"; then
+    # We hold the role and cannot trust the read that told us who held it before. Both recoveries
+    # are guesses: handing back to a `prior` that may be fiction, or removing the role and possibly
+    # deleting the real texting app's claim. Refusing to guess and saying so loudly beats performing
+    # a destructive action on data we already know is unreliable.
+    echo "" >&2
+    echo "!!! SMS ROLE STATE UNVERIFIABLE — NOT GUESSING !!!" >&2
+    echo "  $pkg holds $role and this device's role read could not be trusted," >&2
+    echo "  so the prior holder is unknown. Set your texting app by hand:" >&2
+    echo "    Settings > Apps > Default apps > SMS app" >&2
+    restore_failed=1
+  elif test "$needs_sms" = "1" && test "$role_taken" = "1"; then
+    if test -n "$prior"; then
       adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$prior" >/dev/null ||
-        restore_failed=1
-    elif test -z "$prior"; then
+        true
+    else
       adb -s "$serial" shell cmd role remove-role-holder --user "$user" "$role" "$pkg" >/dev/null ||
-        restore_failed=1
+        true
     fi
-    # Verify by RE-READING, never by trusting the exit status above: `cmd role add-role-holder` can
-    # report success without the role actually moving. The post-state must equal the pre-state, and
-    # a query that fails here is itself a failure — "I cannot tell you who holds your SMS role" is
-    # not an acceptable way to finish.
-    local now
-    if now="$(adb -s "$serial" shell cmd role get-role-holders --user "$user" "$role" 2>/dev/null |
-      tr -d '\r' | head -1)"; then
+    # The POST-STATE is authoritative; the exit status above is not even consulted. That command can
+    # report success without the role moving, AND report failure for a no-op that left the device
+    # correct (removing a role portage never took) — judging by its status produced both a missed
+    # real failure and a false alarm. What the device says afterwards produces neither. A read we
+    # cannot perform is itself a failure: "I cannot tell you who holds your SMS role" is not an
+    # acceptable way to finish.
+    if now="$(adb -s "$serial" shell cmd role get-role-holders --user "$user" "$role" 2>&1 |
+      tr -d '\r' | sed -n 1p)"; then
       test "$now" = "$prior" || restore_failed=1
     else
       now="<query failed>"
       restore_failed=1
     fi
   fi
+
+  # Verified by re-reading, the same way and for the same reason as the role. A failed `pm revoke`
+  # leaves portage holding a calendar permission the user never granted; warning about that while
+  # exiting 0 is the same fail-open shape, just with a smaller blast radius. perm_granted_for_user
+  # returns 2 for "could not tell", which must not be read as "successfully revoked".
   for perm in $granted_calendar; do
-    adb -s "$serial" shell pm revoke --user "$user" "$pkg" "$perm" >/dev/null 2>&1 ||
-      echo "WARNING: could not revoke $perm from $pkg — revoke it by hand" >&2
+    adb -s "$serial" shell pm revoke --user "$user" "$pkg" "$perm" >/dev/null 2>&1 || true
+    perm_status=0
+    perm_granted_for_user "$perm" || perm_status=$?
+    case "$perm_status" in
+      1) ;;
+      0) echo "!!! PERMISSION RESTORE FAILED: $pkg still holds $perm !!!" >&2
+         echo "    adb -s $serial shell pm revoke --user $user $pkg $perm" >&2
+         restore_failed=1 ;;
+      *) echo "!!! PERMISSION RESTORE UNVERIFIED: could not read $perm back !!!" >&2
+         echo "    adb -s $serial shell pm revoke --user $user $pkg $perm" >&2
+         restore_failed=1 ;;
+    esac
   done
   adb -s "$serial" uninstall "$pkg.test" >/dev/null 2>&1 || true
 
   if test "$restore_failed" = "1"; then
-    echo "" >&2
-    echo "!!! DEFAULT-SMS ROLE RESTORE FAILED !!!" >&2
-    echo "  expected holder: ${prior:-<none>}" >&2
-    echo "  actual holder:   ${now:-<none>}" >&2
-    if test "${now:-}" = "$pkg"; then
-      echo "  portage IS STILL THIS DEVICE'S TEXTING APP. Fix it now:" >&2
-      echo "    adb -s $serial shell cmd role add-role-holder --user $user $role <your-sms-app>" >&2
-      echo "  or in Settings > Apps > Default apps > SMS app." >&2
+    if test "$needs_sms" = "1" && test "$role_read_trusted" = "1" && test "$now" != "$prior"; then
+      echo "" >&2
+      echo "!!! DEFAULT-SMS ROLE RESTORE FAILED !!!" >&2
+      echo "  expected holder: ${prior:-<none>}" >&2
+      echo "  actual holder:   ${now:-<none>}" >&2
+      # Printed when the holder is portage OR unknown. Withholding it on "unknown" was backwards:
+      # that is exactly the case where the worst outcome cannot be ruled out.
+      if test "$now" = "$pkg" || test "$now" = "<query failed>"; then
+        echo "  portage MAY STILL BE THIS DEVICE'S TEXTING APP. Fix it now:" >&2
+        echo "    adb -s $serial shell cmd role add-role-holder --user $user $role <your-sms-app>" >&2
+        echo "  or in Settings > Apps > Default apps > SMS app." >&2
+      fi
     fi
+    echo "device-contract: THE DEVICE WAS NOT FULLY RESTORED — see above." >&2
     exit 1
   fi
 }
 # INT/TERM as well as EXIT: a Ctrl-C mid-run would otherwise leave the calendar permission granted
 # and, on a needs_sms run, portage still holding the default-SMS role.
-trap restore_device EXIT INT TERM
+#
+# The signal handlers must TERMINATE, not just clean up. `trap restore_device INT TERM` ran the
+# handler and then let bash resume at the next statement — so a `kill -TERM` from `timeout`, a CI
+# cancel, or an IDE stop button would restore the device and then carry on to TAKE THE SMS ROLE
+# after being asked to stop. (Ctrl-C at a terminal usually hid this: it signals the whole process
+# group, so the child died and `set -e` aborted anyway.) Re-raising with the default disposition
+# also yields the conventional 130/143 exit rather than a synthesised one.
+trap restore_device EXIT
+trap 'restore_device; trap - INT; kill -INT $$' INT
+trap 'restore_device; trap - TERM; kill -TERM $$' TERM
 
 export ANDROID_SERIAL="$serial"
 # Do NOT force an isolated GRADLE_USER_HOME. minSdk/compileSdk need a JDK 17 toolchain, and on a
@@ -210,10 +317,20 @@ adb -s "$serial" install -r "$test_apk" >/dev/null
 # device. Detecting post-install is also still correct for "what did the user have before we
 # touched it": `install -r` preserves existing grants, and a genuinely fresh install has none, so
 # we grant and the trap revokes exactly what we added.
+#
+# Status 2 ("could not tell") is FATAL here and must not be folded in with 1 ("not granted") by a
+# bare `if !` — that is the fail-open the three-state return exists to prevent: an unreadable
+# dumpsys would read as not-granted, we would grant, and the trap would revoke a permission the
+# user really held.
 for perm in android.permission.READ_CALENDAR android.permission.WRITE_CALENDAR; do
-  if ! perm_granted_for_user "$perm"; then
-    granted_calendar="$granted_calendar $perm"
-  fi
+  detect_status=0
+  perm_granted_for_user "$perm" || detect_status=$?
+  case "$detect_status" in
+    0) ;;
+    1) granted_calendar="$granted_calendar $perm" ;;
+    *) echo "Could not determine whether $pkg holds $perm for user $user — refusing to guess" >&2
+       exit 1 ;;
+  esac
 done
 
 for perm in $granted_calendar; do
@@ -221,6 +338,23 @@ for perm in $granted_calendar; do
 done
 if test "$needs_sms" = "1"; then
   adb -s "$serial" shell cmd role add-role-holder --user "$user" "$role" "$pkg" >/dev/null
+  role_taken=1
+  # PROVE THE READ WORKS, here, while the answer is known.
+  #
+  # Everything protecting the user's texting app rests on `get-role-holders` telling the truth, and
+  # the restore check compares two reads from that same command — so a broken read is invisible to
+  # it: both sides come back empty, they match, and the run reports a successful restore having
+  # verified nothing. This is the one moment the expected answer is known independently (we just
+  # took the role), so it is the only place the read itself can be tested. If it cannot observe a
+  # write we just made, abort before running a single test rather than proceed with a blind restore.
+  took="$(adb -s "$serial" shell cmd role get-role-holders --user "$user" "$role" 2>&1 |
+    tr -d '\r' | sed -n 1p)"
+  test "$took" = "$pkg" || {
+    echo "Cannot verify the SMS role on this device: after taking it, the holder reads" >&2
+    echo "  '$took' rather than $pkg." >&2
+    echo "Aborting rather than running with a restore check that cannot detect its own failure." >&2
+    exit 1; }
+  role_read_trusted=1
 fi
 
 # Built ONCE, with the filter as the only difference. This used to be two near-identical
