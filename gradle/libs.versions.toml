@@ -5,7 +5,7 @@
 
 [versions]
 # Build
-agp = "9.3.1"                 # AGP 9.x: built-in Kotlin (no standalone kotlin-android); needs Gradle >= 9.4.1
+agp = "9.4.0"                 # AGP 9.x: built-in Kotlin (no standalone kotlin-android); needs Gradle >= 9.4.1
 kotlin = "2.4.10"             # K2; Compose compiler is bundled via the kotlin compose plugin
 # SDK levels — Pixel 6 and newer (Tensor era)
 minSdk = "31"                 # Android 12 = Pixel 6 launch floor
