@@ -32,6 +32,7 @@ SDK via `ANDROID_HOME` or a `local.properties` `sdk.dir=` line (git-ignored), th
 |---------|---------|
 | `./gradlew :settings-catalog:test` | Pure-JVM safety-critical settings-allowlist guardrails (fast lane, no SDK) |
 | `./gradlew :core-model:test` | Wire-protocol model unit tests |
+| `./gradlew :core-lineage:test` | Atomic lineage/checkpoints, restart, revocation, and exact expiry tests |
 | `./gradlew :core-transport:testDebugUnitTest` | Noise PSK_XX loopback + adversarial transport tests |
 | `./gradlew :adb-bridge:testDebugUnitTest` | Privilege-bridge unit tests |
 | `./gradlew :wizard:testDebugUnitTest` | Bootstrap state-machine tests |
@@ -42,7 +43,7 @@ SDK via `ANDROID_HOME` or a `local.properties` `sdk.dir=` line (git-ignored), th
 
 **Full local gate** (mirrors CI; run with `--no-daemon` — the gradle daemon is flaky in some envs):
 ```sh
-./gradlew :settings-catalog:test :core-model:test :core-transport:testDebugUnitTest \
+./gradlew :settings-catalog:test :core-model:test :core-lineage:test :core-transport:testDebugUnitTest \
   :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest \
   :app-recv:testDegoogleDebugUnitTest :app-recv:testPlayDebugUnitTest \
   :app-send:testDegoogleDebugUnitTest :app-send:testPlayDebugUnitTest \
@@ -53,7 +54,7 @@ SDK via `ANDROID_HOME` or a `local.properties` `sdk.dir=` line (git-ignored), th
 ## Testing
 
 - Frameworks: JUnit 4 + Truth (`com.google.truth`); coroutines-test for async.
-- Pure-JVM modules (`core-model`, `settings-catalog`) use `test`; Android modules use
+- Pure-JVM modules (`core-model`, `core-lineage`, `settings-catalog`) use `test`; Android modules use
   `testDebugUnitTest` (library modules) or `testDegoogleDebugUnitTest` / `testPlayDebugUnitTest` (app modules).
 - Safety-critical invariants are guardrail tests — a green test must pass for the *right*
   reason (e.g. the settings-allowlist "no non-DEVICE_SPECIFIC key is unvalidated" test, the

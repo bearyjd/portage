@@ -13,6 +13,7 @@ import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.model.ItemMeta
 import com.ventouxlabs.portage.model.Tier
 import com.ventouxlabs.portage.model.TransferManifest
+import com.ventouxlabs.portage.model.ManifestValidation
 
 /** One selectable line in the receiver checklist. */
 data class ChecklistItem(val meta: ItemMeta, val checked: Boolean)
@@ -44,7 +45,7 @@ object ReceiverChecklist {
 
     /** Build the grouped checklist from a manifest, preserving first-seen group order. */
     fun build(manifest: TransferManifest): List<ChecklistGroup> =
-        manifest.items
+        manifest.also(ManifestValidation::requireIdentities).items
             .groupBy { it.group }
             .map { (group, items) ->
                 ChecklistGroup(

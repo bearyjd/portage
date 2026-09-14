@@ -13,10 +13,11 @@ import java.io.InputStream
 import java.security.MessageDigest
 
 /** Streaming SHA-256 → lowercase hex; the at-rest integrity value in ItemMeta/ITEM_END. */
-fun sha256Hex(input: InputStream): String {
+fun sha256Hex(input: InputStream, checkCancelled: () -> Unit = {}): String {
     val digest = MessageDigest.getInstance("SHA-256")
     val buffer = ByteArray(8 * 1024)
     while (true) {
+        checkCancelled()
         val read = input.read(buffer)
         if (read < 0) break
         digest.update(buffer, 0, read)

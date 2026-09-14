@@ -29,6 +29,7 @@ rootProject.name = "portage"
 include(":app-send")
 include(":app-recv")
 include(":core-model")
+include(":core-lineage")
 include(":core-transport")
 include(":providers")
 include(":adb-bridge")

@@ -65,6 +65,9 @@ sealed interface ReceiverState {
     /** Landing: explain the flow, offer "Scan". */
     data object Idle : ReceiverState
 
+    /** Waiting briefly for the previous ViewModel to release the saved move's writer lock. */
+    data object OpeningSavedMove : ReceiverState
+
     /** Camera up, looking for the pairing QR. */
     data object Scanning : ReceiverState
 
@@ -141,8 +144,12 @@ sealed interface ReceiverState {
         val failedItems: List<FailedItem> = emptyList(),
     ) : ReceiverState
 
-    /** Fail-closed terminal state with a user-facing reason. */
-    data class Failed(val reason: String) : ReceiverState
+    /** An interrupted connection can leave both a resumable move and already-applied changes. */
+    data class Failed(
+        val reason: String,
+        val canResumeSavedMove: Boolean = false,
+        val mayHaveAppliedChanges: Boolean = false,
+    ) : ReceiverState
 
     /**
      * The visible state of one tapped role (#122). There is deliberately no SUCCEEDED entry: a

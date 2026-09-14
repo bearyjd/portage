@@ -11,8 +11,17 @@ package com.ventouxlabs.portage.transport
 
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
+import org.junit.Assert.assertThrows
 
 class PskRegistryTest {
+
+    @Test
+    fun `invalid length SID cannot enter the consumption registry`() {
+        val registry = PskRegistry()
+        for (size in listOf(0, 15, 17, 32)) {
+            assertThrows(IllegalArgumentException::class.java) { registry.tryConsume(ByteArray(size)) }
+        }
+    }
 
     @Test
     fun `a sid can be consumed exactly once`() {

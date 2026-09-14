@@ -9,6 +9,8 @@
  */
 package com.ventouxlabs.portage.send
 
+import com.ventouxlabs.portage.model.ItemResult
+
 /** Where one requested item is in its stream→ack lifecycle on the sender. */
 enum class SendPhase { QUEUED, SENDING, ACKED, FAILED }
 
@@ -20,12 +22,16 @@ data class SendProgress(
     val bytesSent: Long = 0,
     val phase: SendPhase = SendPhase.QUEUED,
     val detail: String? = null,
+    val receipt: ItemResult? = null,
 )
 
 /** The sender's single screen state (portage-prp-prompt.md §7: "Transfer to new phone"). */
 sealed interface SenderState {
     /** Landing: device summary + permissions + "Start transfer". */
     data object Home : SenderState
+
+    /** A previous ViewModel is releasing the saved-move writer lock. */
+    data object OpeningSavedMove : SenderState
 
     /** Exporting available domains into staging and building the manifest. */
     data object Preparing : SenderState
@@ -40,8 +46,22 @@ sealed interface SenderState {
     data class Sending(val items: List<SendProgress>) : SenderState
 
     /** Done summary from the receiver's acks. */
-    data class Done(val sent: Int, val failed: Int) : SenderState
+    data class Done(
+        val sent: Int,
+        /** Terminal failures which another identical attempt cannot resolve. */
+        val failed: Int,
+        val unknown: Int = 0,
+        val notSent: Int = 0,
+        /** Failures such as a transient write error or in-transit hash mismatch. */
+        val retryableFailed: Int = 0,
+    ) : SenderState {
+        val canResume: Boolean get() = unknown > 0 || notSent > 0 || retryableFailed > 0
+    }
 
     /** Fail-closed terminal state with a user-facing reason. */
-    data class Failed(val reason: String) : SenderState
+    data class Failed(
+        val reason: String,
+        val canResume: Boolean = false,
+        val hasSavedMove: Boolean = canResume,
+    ) : SenderState
 }

@@ -11,8 +11,19 @@ package com.ventouxlabs.portage.send
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ventouxlabs.portage.lineage.ActiveLineage
+import com.ventouxlabs.portage.lineage.Checkpoint
+import com.ventouxlabs.portage.lineage.CheckpointKey
+import com.ventouxlabs.portage.lineage.CredentialState
+import com.ventouxlabs.portage.lineage.LineageBusyException
+import com.ventouxlabs.portage.lineage.LineageRepository
+import com.ventouxlabs.portage.model.ItemResult
 import com.ventouxlabs.portage.model.ItemStatus
+import com.ventouxlabs.portage.model.isRetryable
+import com.ventouxlabs.portage.model.PairingMode
 import com.ventouxlabs.portage.model.PairingPayload
+import com.ventouxlabs.portage.model.ProtocolMessage
+import com.ventouxlabs.portage.model.ReceiptPhase
 import com.ventouxlabs.portage.providers.ExportProvider
 import com.ventouxlabs.portage.providers.apk.InstalledApp
 import com.ventouxlabs.portage.providers.apk.InstalledAppSource
@@ -25,6 +36,10 @@ import com.ventouxlabs.portage.send.relay.RelayFile
 import com.ventouxlabs.portage.send.relay.relayExportProviders
 import com.ventouxlabs.portage.send.transfer.ManifestBuilder
 import com.ventouxlabs.portage.send.transfer.StagedManifest
+import com.ventouxlabs.portage.send.transfer.StagedItem
+import com.ventouxlabs.portage.send.transfer.SerializedSendChannel
+import com.ventouxlabs.portage.send.transfer.TransferCancelledException
+import com.ventouxlabs.portage.send.transfer.interruptedResults
 import com.ventouxlabs.portage.send.transfer.TransferEngine
 import com.ventouxlabs.portage.send.userfile.PickedUserFile
 import com.ventouxlabs.portage.send.userfile.userFileExportProviders
@@ -36,10 +51,16 @@ import com.ventouxlabs.portage.transport.PairingCodecImpl
 import com.ventouxlabs.portage.transport.SecureChannel
 import com.ventouxlabs.portage.transport.withDataPhaseDeadline
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -93,9 +114,24 @@ class SenderViewModel(
     // can't reset the streaming socket mid-frame (#85). NoOp default (tests/previews); production
     // wires a foreground-service-backed implementation. Driven start-before-phase / stop-in-finally.
     private val transferKeepAlive: TransferKeepAlive = TransferKeepAlive.NoOp,
+    private val lineageRepository: LineageRepository? = null,
+    private val transferIoDispatcher: CoroutineDispatcher = relayResolveDispatcher,
+    private val lineageRepositoryFactory: () -> LineageRepository = {
+        LineageRepository(File(stagingDir, "lineage"), random = random)
+    },
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow<SenderState>(SenderState.Home)
+    // Production repository construction can parse/reconcile/fsync a large saved move. Keep that
+    // entirely off Main. Tests may inject an already-open repository, which is safe to publish now.
+    @Volatile private var loadedLineageRepository: Result<LineageRepository>? =
+        lineageRepository?.let { Result.success(it) }
+    private val repository: LineageRepository get() = checkNotNull(loadedLineageRepository).getOrThrow()
+    private val _state = MutableStateFlow<SenderState>(
+        when {
+            loadedLineageRepository?.isSuccess == true -> SenderState.Home
+            else -> SenderState.OpeningSavedMove
+        },
+    )
     val state: StateFlow<SenderState> = _state.asStateFlow()
 
     /**
@@ -140,8 +176,19 @@ class SenderViewModel(
     private var channel: SecureChannel? = null
     private var staged: StagedManifest? = null
     private var transferJob: Job? = null
+    private var teardownJob: Job? = null
+    private var repositoryJob: Job? = null
+    @Volatile private var cancellationRequested = false
+    private var cancelling = false
+    private var peerDeletionConfirmed = false
+    @Volatile private var awaitingReply = false
+    @Volatile private var cancelAlreadySent = false
+    @Volatile private var validatingFiles = false
+    private var activeLineageId: String? = null
 
     init {
+        if (loadedLineageRepository?.isSuccess == true) showLoadedMoveState()
+        else retryRepositoryAcquisition()
         inventorySource?.let { source ->
             _relayCandidates.value = runCatching { RelayAppDetector.detect(source) }.getOrDefault(emptyList())
         }
@@ -152,6 +199,100 @@ class SenderViewModel(
             viewModelScope.launch(relayResolveDispatcher) {
                 _availableApps.value = runCatching { source.installedUserApps() }.getOrDefault(emptyList())
             }
+        }
+    }
+
+    /** Open off Main; a replaced ViewModel may retain the writer lock while its owners unwind. */
+    private fun retryRepositoryAcquisition() {
+        if (repositoryJob?.isCompleted == false) return
+        _state.value = SenderState.OpeningSavedMove
+        repositoryJob = viewModelScope.launch {
+            repeat(REPOSITORY_OPEN_ATTEMPTS) {
+                var recoveredAfterOpen: RecoveredMove? = null
+                withContext(transferIoDispatcher) {
+                    // Publish ownership before returning to Main. onCleared() then sees and closes
+                    // an acquired repository even when lifecycle cancellation wins that handoff.
+                    val opened = runCatching { lineageRepositoryFactory() }
+                    loadedLineageRepository = opened
+                    opened.getOrNull()?.let { store ->
+                        runCatching { recoverMove(store) }.fold(
+                            onSuccess = { recoveredAfterOpen = it },
+                            onFailure = { failure ->
+                                store.close()
+                                loadedLineageRepository = Result.failure(failure)
+                            },
+                        )
+                    }
+                }
+                if (loadedLineageRepository?.isSuccess == true) {
+                    publishLoadedMoveState(checkNotNull(recoveredAfterOpen))
+                    return@launch
+                }
+                if (loadedLineageRepository?.exceptionOrNull() !is LineageBusyException) {
+                    _state.value = SenderState.Failed(SAVED_MOVE_LOAD_FAILURE)
+                    return@launch
+                }
+                delay(REPOSITORY_OPEN_RETRY_MS)
+            }
+            _state.value = SenderState.Failed("The previous move is still closing. Try again shortly.")
+        }
+    }
+
+    private fun showLoadedMoveState() {
+        runCatching { recoverMove(repository) }.fold(
+            onSuccess = ::publishLoadedMoveState,
+            onFailure = { failure ->
+                loadedLineageRepository?.getOrNull()?.close()
+                loadedLineageRepository = Result.failure(failure)
+                _state.value = SenderState.Failed(SAVED_MOVE_LOAD_FAILURE)
+            },
+        )
+    }
+
+    private fun publishLoadedMoveState(recovered: RecoveredMove) {
+        val active = recovered.active
+        activeLineageId = active?.id
+        _state.value = if (active == null) SenderState.Home else SenderState.Failed(
+            "An unfinished move is saved on this phone.",
+            canResume = recovered.canResume,
+            hasSavedMove = true,
+        )
+    }
+
+    /** Rebuild resume eligibility from durable phases and persisted receipt statuses. */
+    private fun recoverMove(store: LineageRepository): RecoveredMove {
+        val active = store.active() ?: return RecoveredMove(null, false)
+        if (!active.prepared) return RecoveredMove(active, false)
+        val manifest = checkNotNull(active.manifest) { "prepared move has no manifest" }
+        val canResume = manifest.items.any { meta ->
+            val checkpoint = checkNotNull(store.checkpoint(CheckpointKey.from(active.id, meta))) {
+                "prepared move has no checkpoint"
+            }
+            checkpoint.canRetry()
+        }
+        return RecoveredMove(active, canResume)
+    }
+
+    private fun Checkpoint.canRetry(): Boolean = when (phase) {
+        ReceiptPhase.PREPARED, ReceiptPhase.RECEIVED_VERIFIED, ReceiptPhase.APPLYING,
+        ReceiptPhase.UNKNOWN_INTERRUPTED -> true
+        ReceiptPhase.APPLIED_DURABLE -> false
+        ReceiptPhase.FAILED -> storedItemStatus(detail)?.isRetryable == true
+    }
+
+    /** Move one authenticated, selected replay occurrence back through legal durable phases. */
+    private fun restartCheckpointForReplay(key: CheckpointKey) {
+        var checkpoint = checkNotNull(repository.checkpoint(key))
+        if (checkpoint.phase == ReceiptPhase.RECEIVED_VERIFIED ||
+            checkpoint.phase == ReceiptPhase.APPLYING) {
+            checkpoint = repository.transition(
+                key,
+                checkpoint.phase,
+                ReceiptPhase.UNKNOWN_INTERRUPTED,
+            )
+        }
+        if (checkpoint.phase != ReceiptPhase.PREPARED) {
+            repository.transition(key, checkpoint.phase, ReceiptPhase.PREPARED)
         }
     }
 
@@ -236,34 +377,70 @@ class SenderViewModel(
     }
 
     fun onStartTransfer() {
-        if (_state.value !is SenderState.Home && _state.value !is SenderState.Failed) return
+        beginTransfer(resume = false)
+    }
+
+    /** Retry retains the prepared manifest and identities, including before the first handshake. */
+    fun onResumeTransfer() {
+        beginTransfer(resume = true)
+    }
+
+    private fun beginTransfer(resume: Boolean) {
+        if (loadedLineageRepository == null ||
+            loadedLineageRepository?.exceptionOrNull() is LineageBusyException) {
+            retryRepositoryAcquisition()
+            return
+        }
+        if (loadedLineageRepository?.isFailure != false || repositoryJob?.isCompleted == false) return
+        // A cancelled job may still own a listener or be unwinding its keep-alive.
+        if (cancelling || transferJob?.isCompleted == false || teardownJob?.isCompleted == false) return
+        val currentState = _state.value
+        if (currentState !is SenderState.Home && currentState !is SenderState.Failed &&
+            currentState !is SenderState.Done) return
+        if (resume && when (currentState) {
+                is SenderState.Failed -> !currentState.canResume
+                is SenderState.Done -> !currentState.canResume
+                else -> true
+            }) return
+        cancellationRequested = false
+        peerDeletionConfirmed = false
+        cancelAlreadySent = false
         _state.value = SenderState.Preparing
         transferJob = viewModelScope.launch {
+            var resumeCredential: ByteArray? = null
+            var keepAliveStarted = false
             try {
-                // Probe each pick's stream BEFORE staging: if the grant was lost (process death /
-                // revoke) the open throws, so we mark that pick expired and EXCLUDE it — but it stays
-                // in the list flagged so the UI shows "Expired — re-pick this file". A relay item must
-                // never silently ship-without-itself, and the user must always know it did not go.
-                val livePicks = probeRelayPicks(_relayPicks.value)
-
-                // Append the user-driven relay staging path (PRP-06 §4): each LIVE user-picked
-                // app-backup file becomes an APP_BACKUP_RELAY export provider, so ManifestBuilder stages
-                // it as its own item — distinct id + file — alongside the auto-detected Tier-0
-                // providers. A half-finished pick self-omits (the provider's available() gate). This is
-                // the single integration point that gives APP_BACKUP_RELAY a producer.
-                //
-                // Append the user-SELECTED apps to carry the SAME way (ADR-006 Phase 1b): each selected
-                // installed app becomes an APK export provider so ManifestBuilder stages its split set as
-                // its own item. Selection is sender-side — only selected apps get a provider, so only they
-                // are staged/hashed/manifested (default = none selected, no surprise multi-GB transfer).
-                // READ-ONLY PackageManager + file reads; no privilege, no escalation.
-                val allProviders =
-                    providers +
-                        relayExportProviders(livePicks) +
-                        apkExportProviders(selectedApps()) +
-                        userFileExportProviders(_userFiles.value)
-                val built = ManifestBuilder(allProviders, stagingDir, senderName).build()
-                    .also { staged = it }
+                val active = if (resume) checkNotNull(repository.active()) { "No saved move to resume" }
+                    else repository.startNewMove()
+                activeLineageId = active.id
+                val built = withContext(transferIoDispatcher) {
+                    val context = currentCoroutineContext()
+                    context.ensureActive()
+                    if (resume) {
+                        check(active.prepared) { "Preparation was interrupted; start a new move" }
+                        val manifest = checkNotNull(active.manifest) { "Preparation was interrupted; start a new move" }
+                        StagedManifest(manifest, manifest.items.map { meta ->
+                            val key = CheckpointKey.from(active.id, meta)
+                            context.ensureActive()
+                            val file = checkNotNull(repository.stagedFile(key, context::ensureActive)) {
+                                "Saved bytes are missing or changed; start a new move"
+                            }
+                            StagedItem(meta, file)
+                        })
+                    } else {
+                        // Keep expired SAF picks visible while excluding unreadable exports.
+                        val livePicks = probeRelayPicks(_relayPicks.value)
+                        val allProviders = providers +
+                            relayExportProviders(livePicks) + apkExportProviders(selectedApps()) +
+                            userFileExportProviders(_userFiles.value)
+                        ManifestBuilder(allProviders, repository.stagingDir, senderName, active.id,
+                            newOccurrenceId = repository::newOccurrenceId,
+                            ioDispatcher = transferIoDispatcher).build().also { prepared ->
+                            repository.savePreparedManifest(prepared.manifest,
+                                prepared.items.associate { it.meta.itemId to it.file }, context::ensureActive)
+                        }
+                    }
+                }.also { staged = it }
                 if (built.items.isEmpty()) {
                     fail("Nothing to carry yet — grant the read permissions on this phone")
                     return@launch
@@ -274,12 +451,19 @@ class SenderViewModel(
                     return@launch
                 }
 
+                resumeCredential = when (active.credentialState) {
+                    CredentialState.ESTABLISHED -> repository.credentialForResume()
+                    CredentialState.PENDING -> repository.pendingBootstrapCredential(active.id)
+                    CredentialState.NONE -> null
+                }
+                val mode = if (resumeCredential == null) PairingMode.NEW else PairingMode.RESUME
                 val payload = PairingPayload(
                     psk = randomBytes(PairingPayload.PSK_BYTES),
                     sid = randomBytes(PairingPayload.SID_BYTES),
                     ip = hints,
                     port = portFinder(),
                     expiresAtEpochSeconds = nowEpochSeconds() + PairingPayload.DEFAULT_TTL_SECONDS,
+                    mode = mode,
                 )
                 _state.value = SenderState.ShowingQr(
                     qrText = pairingCodec.encode(payload),
@@ -292,8 +476,14 @@ class SenderViewModel(
                 // runs exactly once, after the prepare guards above; the stop() in the finally below
                 // is the idempotent half that always runs on EVERY exit (done / fail / timeout / reset).
                 transferKeepAlive.start()
-                val ch = channelFactory.acceptAsSender(payload).also { channel = it }
+                keepAliveStarted = true
+                val ch = channelFactory.acceptAsSender(payload, resumeCredential, active.id.takeIf { mode == PairingMode.RESUME })
+                    .let(::SerializedSendChannel)
+                    .also { channel = it }
                 _state.value = SenderState.Linked
+
+                val bootstrap = if (mode == PairingMode.RESUME) ProtocolMessage.LineageResume(active.id)
+                    else ProtocolMessage.LineageInit(active.id, repository.establishResumeCredential(active.id))
 
                 // Cap the WHOLE data phase, not just each read. withDataPhaseDeadline returns null
                 // on ITS OWN deadline ONLY, so a stalled peer becomes a visible Failed rather than
@@ -303,40 +493,109 @@ class SenderViewModel(
                 // native code, so the cap fires at ~dataPhaseTimeoutMs instead of the old
                 // budget-plus-one-soTimeout slack. See [DATA_PHASE_TIMEOUT_MS].
                 val results = withDataPhaseDeadline(ch, dataPhaseTimeoutMs) {
-                    engine.run(ch, built) { event -> onEngineEvent(built, event) }
+                    try {
+                        engine.run(ch, built, bootstrap,
+                            onLineageAcknowledged = {
+                                withContext(transferIoDispatcher) {
+                                    repository.confirmResumeCredential(active.id)
+                                    repository.authenticated(active.id)
+                                }
+                            },
+                            onSelectionReceived = { selected ->
+                                if (resume) withContext(transferIoDispatcher) {
+                                    val context = currentCoroutineContext()
+                                    selected.forEach { itemId ->
+                                        context.ensureActive()
+                                        val meta = checkNotNull(built.itemById(itemId)).meta
+                                        val key = CheckpointKey.from(active.id, meta)
+                                        restartCheckpointForReplay(key)
+                                    }
+                                }
+                            },
+                            isCancellationRequested = { cancellationRequested },
+                            isCancelAlreadySent = { cancelAlreadySent },
+                            onAwaitingReply = { awaitingReply = it },
+                            onPeerCancel = {
+                                withContext(transferIoDispatcher) {
+                                    if (repository.active()?.id == active.id) repository.cancel(active.id)
+                                }
+                            },
+                            ioDispatcher = transferIoDispatcher,
+                            onValidatingPayload = { validatingFiles = it },
+                        ) { event -> onEngineEvent(built, event) }
+                    } finally {
+                        if (bootstrap is ProtocolMessage.LineageInit) bootstrap.resumeCredential.fill(0)
+                    }
                 }
                 if (results == null) {
-                    // null ⇒ the aggregate budget elapsed (a reset() cancels transferJob instead).
-                    // fail() closes the listener/channel and sweeps staging.
-                    fail("Transfer timed out — it took too long to finish")
+                    val sending = _state.value as? SenderState.Sending
+                    if (sending != null && !cancellationRequested) {
+                        val interrupted = interruptedResults(
+                            sending.items.map { checkNotNull(built.itemById(it.itemId)) },
+                            sending.items.mapNotNull { it.receipt }.associateBy { it.itemId },
+                            sending.items.filter { it.phase != SendPhase.QUEUED }.map { it.itemId }.toSet(),
+                        )
+                        interrupted.forEach { recordFinalReceipt(built, it) }
+                        closeChannel()
+                        _state.value = summarizeResults(interrupted)
+                    } else if (!cancellationRequested) fail("Transfer timed out — it took too long to finish")
                     return@launch
                 }
                 ensureActive() // a reset() mid-run must not be overwritten by Done
-                val ok = results.count { it.status == ItemStatus.OK }
-                _state.value = SenderState.Done(sent = ok, failed = results.size - ok)
+                if (cancellationRequested) return@launch
+                results.forEach { recordFinalReceipt(built, it) }
+                val unknown = results.count { it.phase == ReceiptPhase.UNKNOWN_INTERRUPTED }
+                _state.value = summarizeResults(results)
                 closeChannel()
-                cleanupStaging()
                 // Clear the picks that SHIPPED (and release their SAF grants) on success too, not only
                 // on reset(). Picks flagged expired are KEPT so the user still sees "did not ship —
                 // re-pick" on the Done screen; they never silently disappear.
-                clearShippedRelayPicks()
-                clearUserFiles()
+                if (unknown == 0 && results.none { it.phase == ReceiptPhase.PREPARED }) {
+                    clearShippedRelayPicks()
+                    clearUserFiles()
+                }
+            } catch (cancelled: TransferCancelledException) {
+                peerDeletionConfirmed = cancelled.peerDeletionConfirmed
+                if (cancelled.peerDeletionConfirmed) {
+                    val id = staged?.manifest?.lineageId
+                    if (id != null) {
+                        withContext(transferIoDispatcher) {
+                            if (repository.active()?.id == id) repository.cancel(id)
+                            repository.markPeerDeleted(id)
+                        }
+                    }
+                }
+                if (!cancelling) {
+                    closeChannel()
+                    _state.value = SenderState.Failed(when {
+                        peerDeletionConfirmed -> "Move cancelled. Both phones confirmed deletion of saved move data."
+                        cancelled.peerInitiated -> "The other phone cancelled this move. Saved data was deleted on this phone; deletion on the other phone was not confirmed."
+                        else -> "Move cancelled on this phone. Deletion on the other phone was not confirmed."
+                    })
+                }
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
                 // reset() cancels and tears the channel down under the coroutine; the
                 // resulting IO error must not flip the user's Home back to Failed.
                 ensureActive()
-                fail(t.message ?: "Transfer failed")
+                if (!cancelling) {
+                    // A timeout/disconnect does not prove that a PENDING bootstrap credential is
+                    // incompatible or lost. Keep the durable move resumable unless authenticated,
+                    // conclusive protocol state says otherwise.
+                    fail(t.message ?: "Transfer failed")
+                }
             } finally {
                 // Always release the keep-alive — done, fail, timeout, or a reset() cancellation
                 // unwinding through here. Idempotent: a no-op if start() was never reached.
-                transferKeepAlive.stop()
+                if (keepAliveStarted) transferKeepAlive.stop()
+                resumeCredential?.fill(0)
             }
         }
     }
 
     private fun onEngineEvent(built: StagedManifest, event: TransferEngine.Event) {
+        if (cancellationRequested) return
         when (event) {
             is TransferEngine.Event.SelectReceived ->
                 _state.value = SenderState.Sending(
@@ -351,13 +610,20 @@ class SenderViewModel(
             is TransferEngine.Event.ItemProgressed ->
                 updateItem(event.itemId) { it.copy(bytesSent = event.bytesSent) }
 
-            is TransferEngine.Event.ItemAcked ->
+            is TransferEngine.Event.ItemAcked -> {
+                val meta = checkNotNull(built.itemById(event.result.itemId)).meta
+                val key = CheckpointKey.from(built.manifest.lineageId, meta)
+                val phase = checkNotNull(repository.checkpoint(key)).phase
+                if (phase != event.result.phase) repository.transition(key, phase, event.result.phase,
+                    detail = durableReceiptDetail(event.result))
                 updateItem(event.result.itemId) {
                     it.copy(
                         phase = if (event.result.status == ItemStatus.OK) SendPhase.ACKED else SendPhase.FAILED,
                         detail = event.result.detail,
+                        receipt = event.result,
                     )
                 }
+            }
         }
     }
 
@@ -369,10 +635,29 @@ class SenderViewModel(
     }
 
     fun reset() {
+        if (loadedLineageRepository == null ||
+            loadedLineageRepository?.exceptionOrNull() is LineageBusyException) {
+            retryRepositoryAcquisition()
+            return
+        }
+        if (loadedLineageRepository?.isFailure != false || repositoryJob?.isCompleted == false) return
+        if (cancelling) return
+        if (channel != null && _state.value !is SenderState.Done) {
+            cancelTransfer()
+            return
+        }
+        cancellationRequested = true
         transferJob?.cancel()
-        transferJob = null
         closeChannel()
-        cleanupStaging()
+        try {
+            repository.active()?.let {
+                if (_state.value is SenderState.Done) repository.finish(it.id) else repository.cancel(it.id)
+            }
+        } catch (failure: Exception) {
+            fail("Saved move could not be closed: ${failure.message}")
+            return
+        }
+        staged = null
         // Drop the relay picks too (and release each SAF grant): returning Home is a fresh start; the
         // user re-picks from the live app export each session.
         clearRelayPicks()
@@ -381,6 +666,129 @@ class SenderViewModel(
         // which apps to carry rather than silently re-carrying the last set.
         clearAppSelection()
         _state.value = SenderState.Home
+    }
+
+    /** Revoke locally immediately, then allow a bounded authenticated peer-delete exchange. */
+    fun cancelTransfer() {
+        if (loadedLineageRepository == null ||
+            loadedLineageRepository?.exceptionOrNull() is LineageBusyException) {
+            retryRepositoryAcquisition()
+            return
+        }
+        if (loadedLineageRepository?.isFailure != false || repositoryJob?.isCompleted == false) return
+        if (cancelling) return
+        // Fence callbacks and stop long local validation before touching the store. A
+        // connected exchange keeps its sole reader until the bounded delete exchange ends.
+        cancellationRequested = true
+        cancelling = true
+        val cancelChannel = channel
+        val sendWhileReceiving = awaitingReply
+        val job = transferJob
+        val stopLocalWork = cancelChannel == null || validatingFiles
+        if (stopLocalWork) job?.cancel()
+        val expectedId = activeLineageId
+        teardownJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var failureReason: String? = null
+            try {
+                // This local revocation is the first suspended operation and cannot be cancelled by
+                // ViewModelStore.clear(). Peer acknowledgement and owner joins are deliberately later.
+                val id = withContext(NonCancellable + transferIoDispatcher) {
+                    val active = repository.active()
+                    val target = expectedId ?: active?.id
+                    if (target != null && active?.id == target) repository.cancel(target)
+                    target
+                }
+                if (cancelChannel != null) withDataPhaseDeadline(cancelChannel, 1_500L) {
+                    if (stopLocalWork) {
+                        // The cancelled validation had no receive in flight. Wait for its
+                        // stream finally before becoming the cancellation exchange's reader.
+                        job?.join()
+                        if (id != null) {
+                            peerDeletionConfirmed = requestPeerCancellation(cancelChannel, id)
+                            if (peerDeletionConfirmed) withContext(transferIoDispatcher) {
+                                repository.markPeerDeleted(id)
+                            }
+                        }
+                    } else {
+                        if (sendWhileReceiving && id != null) {
+                            cancelAlreadySent = true
+                            runCatching { cancelChannel.send(ProtocolMessage.Cancel(id)) }
+                        }
+                        job?.join()
+                    }
+                    Unit
+                }
+                if (cancelChannel == null) job?.join()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                failureReason = "Saved move could not be cancelled: ${failure.message}"
+            } finally {
+                closeChannel()
+                job?.cancel()
+                // Retain the cancelled owner until completion: isActive becomes false
+                // before a blocking accept/read and its keep-alive finally have unwound.
+                staged = null
+                clearRelayPicks()
+                clearUserFiles()
+                clearAppSelection()
+                cancelling = false
+                _state.value = SenderState.Failed(failureReason ?:
+                    if (peerDeletionConfirmed) "Move cancelled. Both phones confirmed deletion of saved move data."
+                    else "Move cancelled on this phone. Deletion on the other phone was not confirmed.",
+                )
+            }
+        }
+    }
+
+    private suspend fun requestPeerCancellation(channel: SecureChannel, lineageId: String): Boolean {
+        channel.send(ProtocolMessage.Cancel(lineageId))
+        while (true) {
+            when (val message = channel.receive()) {
+                is ProtocolMessage.CancelAck -> return message.lineageId == lineageId
+                is ProtocolMessage.Cancel -> {
+                    if (message.lineageId != lineageId) return false
+                    channel.send(ProtocolMessage.CancelAck(lineageId))
+                }
+                is ProtocolMessage.Ping, is ProtocolMessage.Hello, is ProtocolMessage.LineageAck,
+                is ProtocolMessage.ItemAck, is ProtocolMessage.BatchAck -> Unit
+                else -> return false
+            }
+        }
+    }
+
+    private fun recordFinalReceipt(built: StagedManifest, result: ItemResult) {
+        val key = CheckpointKey.from(built.manifest.lineageId, checkNotNull(built.itemById(result.itemId)).meta)
+        var phase = checkNotNull(repository.checkpoint(key)).phase
+        if (phase == result.phase) return
+        if (result.phase == ReceiptPhase.PREPARED) return
+        if (phase == ReceiptPhase.PREPARED && result.phase == ReceiptPhase.UNKNOWN_INTERRUPTED) {
+            // No verified receipt arrived; preserve PREPARED rather than invent receipt proof.
+            return
+        }
+        if (phase == ReceiptPhase.FAILED && result.phase == ReceiptPhase.UNKNOWN_INTERRUPTED) return
+        if (phase == ReceiptPhase.RECEIVED_VERIFIED && result.phase == ReceiptPhase.APPLIED_DURABLE) {
+            repository.transition(key, phase, ReceiptPhase.APPLYING)
+            phase = ReceiptPhase.APPLYING
+        }
+        repository.transition(key, phase, result.phase, detail = durableReceiptDetail(result))
+    }
+
+    private fun summarizeResults(results: List<ItemResult>) = SenderState.Done(
+        sent = results.count { it.status == ItemStatus.OK && it.phase == ReceiptPhase.APPLIED_DURABLE },
+        failed = results.count { it.phase == ReceiptPhase.FAILED && !it.status.isRetryable },
+        unknown = results.count { it.phase == ReceiptPhase.UNKNOWN_INTERRUPTED },
+        notSent = results.count { it.phase == ReceiptPhase.PREPARED },
+        retryableFailed = results.count { it.phase == ReceiptPhase.FAILED && it.status.isRetryable },
+    )
+
+    private fun durableReceiptDetail(result: ItemResult): String =
+        "$CHECKPOINT_STATUS_PREFIX${result.status.name}\n${result.detail.orEmpty()}"
+
+    private fun storedItemStatus(detail: String?): ItemStatus? {
+        if (detail?.startsWith(CHECKPOINT_STATUS_PREFIX) != true) return null
+        val wire = detail.removePrefix(CHECKPOINT_STATUS_PREFIX).substringBefore('\n')
+        return runCatching { ItemStatus.valueOf(wire) }.getOrNull()
     }
 
     /**
@@ -432,8 +840,14 @@ class SenderViewModel(
     /** Fail-closed terminal transition: release the listener/channel, surface the reason. */
     private fun fail(reason: String) {
         closeChannel()
-        cleanupStaging()
-        _state.value = SenderState.Failed(reason)
+        val recovered = loadedLineageRepository?.getOrNull()?.let {
+            runCatching { recoverMove(it) }.getOrNull()
+        }
+        _state.value = SenderState.Failed(
+            reason,
+            canResume = recovered?.canResume == true,
+            hasSavedMove = recovered?.active != null,
+        )
     }
 
     private fun closeChannel() {
@@ -441,24 +855,35 @@ class SenderViewModel(
         channel = null
     }
 
-    /** Staged payloads hold personal data — delete them the moment they're not needed. */
-    private fun cleanupStaging() {
-        staged?.cleanup()
-        staged = null
-    }
-
     private fun randomBytes(count: Int): ByteArray = ByteArray(count).also(random::nextBytes)
 
     override fun onCleared() {
+        cancellationRequested = true
+        cancelling = true
         closeChannel()
-        cleanupStaging()
-        clearRelayPicks()
-        clearUserFiles()
+        val owners = listOfNotNull(transferJob, teardownJob, repositoryJob)
+        owners.forEach { it.cancel() }
+        // viewModelScope is cancelled as this callback returns. Retain repository ownership in a
+        // lifecycle-independent scope until every listener, stream, durable cancel, and keep-alive
+        // finally has exited, so a replacement cannot start before the old keep-alive stops.
+        CoroutineScope(transferIoDispatcher).launch {
+            owners.forEach { it.join() }
+            loadedLineageRepository?.getOrNull()?.close()
+            clearRelayPicks()
+            clearUserFiles()
+        }
         super.onCleared()
     }
 
     private companion object {
+        const val CHECKPOINT_STATUS_PREFIX = "portage:item-status="
+        const val REPOSITORY_OPEN_ATTEMPTS = 50
+        const val REPOSITORY_OPEN_RETRY_MS = 100L
+        const val SAVED_MOVE_LOAD_FAILURE = "Saved move could not be read. Close the app and reset its saved move data before trying again."
+
         /** Probe-and-release; acceptAsSender rebinds with SO_REUSEADDR so the race is benign. */
         fun findFreePort(): Int = ServerSocket(0).use { it.localPort }
     }
+
+    private data class RecoveredMove(val active: ActiveLineage?, val canResume: Boolean)
 }

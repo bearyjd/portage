@@ -11,6 +11,9 @@ package com.ventouxlabs.portage.model
 
 import kotlinx.serialization.Serializable
 
+@Serializable
+enum class PairingMode { NEW, RESUME }
+
 /**
  * Payload encoded into the pairing QR. Serialized as CBOR then base64url and prefixed
  * with the URI scheme [SCHEME]. The QR is the OUT-OF-BAND TRUST ANCHOR — see
@@ -30,6 +33,7 @@ data class PairingPayload(
     val ip: List<String>,
     val port: Int,
     val expiresAtEpochSeconds: Long,
+    val mode: PairingMode = PairingMode.NEW,
 ) {
     init {
         require(psk.size == PSK_BYTES) { "psk must be $PSK_BYTES bytes" }
@@ -44,7 +48,7 @@ data class PairingPayload(
             sid.contentEquals(other.sid) &&
             ip == other.ip &&
             port == other.port &&
-            expiresAtEpochSeconds == other.expiresAtEpochSeconds
+            expiresAtEpochSeconds == other.expiresAtEpochSeconds && mode == other.mode
     }
 
     override fun hashCode(): Int {
@@ -54,6 +58,7 @@ data class PairingPayload(
         result = 31 * result + ip.hashCode()
         result = 31 * result + port
         result = 31 * result + expiresAtEpochSeconds.hashCode()
+        result = 31 * result + mode.hashCode()
         return result
     }
 
@@ -67,13 +72,14 @@ data class PairingPayload(
     }
 
     companion object {
-        // v5 adds DEFAULT_ROLES (v4 added MMS). ItemKind is serialized as an enum BY KOTLIN
+        // v6 adds authenticated lineage/resume and phased receipts; v5 added DEFAULT_ROLES.
+        // ItemKind is serialized as an enum BY KOTLIN
         // CONSTANT NAME — the `wire` strings on ItemKind are decorative, not @SerialName — so an
         // unknown kind is a hard SerializationException on an older peer, not a skipped field.
         // Bump on EVERY new kind: an unbumped version means both peers still advertise the same
         // number, QR validation passes, and the transfer instead dies at manifest decode AFTER
         // pairing — precisely the failure this gate exists to convert into a clean refusal.
-        const val PROTOCOL_VERSION = 5
+        const val PROTOCOL_VERSION = 6
         const val PSK_BYTES = 32
         const val SID_BYTES = 16
         const val SCHEME = "portage1:"

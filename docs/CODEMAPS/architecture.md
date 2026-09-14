@@ -5,20 +5,25 @@
 Device-to-device parity transfer for GrapheneOS over LAN. No cloud. AGPL-3.0.
 TWO APKs by design (privilege-by-packaging): `portage-send` (exporter) + `portage-recv` (importer).
 
-## Module DAG (8 Gradle modules)
+## Module DAG (9 Gradle modules)
 
 ```
 core-model ......... wire protocol model (pure JVM, no deps)
+core-lineage ....... atomic lineage/checkpoint store → core-model
 settings-catalog ... SAFE settings allowlist (pure JVM, no deps)
 adb-bridge ......... privileged ADB entry point (android lib, no deps)
 core-transport ..... Noise PSK_XX channel ......... → core-model
 wizard ............. privilege bootstrap state-machine → adb-bridge
 providers .......... export/apply per ItemKind ..... → core-model, settings-catalog
-app-send  (APK) .... → core-model, core-transport, providers
-app-recv  (APK) .... → core-model, core-transport, providers, settings-catalog, wizard, adb-bridge
+app-send  (APK) .... → core-model, core-lineage, core-transport, providers
+app-recv  (APK) .... → core-model, core-lineage, core-transport, providers, settings-catalog, wizard, adb-bridge
 ```
 
 KEY INVARIANTS
+- `core-lineage` owns the single-writer atomic no-backup snapshot, exact-key staging revalidation,
+  24-hour staging and 30-day lineage expiry, terminal tombstones, and interrupted-apply reconciliation.
+- Protocol v6 NEW establishes a 32-byte resume credential over Noise; RESUME requires it plus a fresh QR.
+- Receipt acknowledgement is RECEIVED_VERIFIED; only final BATCH_ACK may assert APPLIED_DURABLE.
 - `app-send` has NO edge to `adb-bridge`/`wizard` → provably cannot escalate (CI no-escalation gate).
 - `providers` has NO edge to `adb-bridge` → privilege is INJECTED as a seam from `app-recv` (ADR-006 C1).
 - `AdbBridge` is the ONLY privileged entry point; no module else speaks the ADB wire protocol (ADR-003).

@@ -9,6 +9,9 @@
  */
 package com.ventouxlabs.portage.recv.checklist
 
+import com.ventouxlabs.portage.recv.testItemMeta
+import com.ventouxlabs.portage.recv.testManifest
+
 import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.model.ItemMeta
 import com.ventouxlabs.portage.model.TransferManifest
@@ -17,10 +20,23 @@ import org.junit.Test
 
 class ReceiverChecklistTest {
 
-    private fun meta(id: Int, kind: ItemKind, group: String) =
-        ItemMeta(id, kind, size = 1, sha256 = "x", displayName = kind.wire, group = group)
+    @Test
+    fun `malformed or duplicate occurrences never construct checklist rows`() {
+        val valid = testItemMeta(1, ItemKind.CONTACTS_VCF, 1, "a".repeat(64), "Contacts", "People")
+        for (occurrence in listOf("", "A".repeat(32), "f".repeat(31), "f".repeat(33), "z".repeat(32))) {
+            org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+                ReceiverChecklist.build(testManifest("phone", listOf(valid.copy(occurrenceId = occurrence)), 1))
+            }
+        }
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            ReceiverChecklist.build(testManifest("phone", listOf(valid, valid.copy(itemId = 2)), 2))
+        }
+    }
 
-    private val manifest = TransferManifest(
+    private fun meta(id: Int, kind: ItemKind, group: String) =
+        testItemMeta(id, kind, size = 1, sha256 = "x", displayName = kind.wire, group = group)
+
+    private val manifest = testManifest(
         senderName = "old phone",
         items = listOf(
             meta(1, ItemKind.CONTACTS_VCF, "People"),
@@ -59,7 +75,7 @@ class ReceiverChecklistTest {
     @Test
     fun `selected provider kinds map to the receiver permissions needed before apply`() {
         val groups = ReceiverChecklist.build(
-            TransferManifest(
+            testManifest(
                 senderName = "old phone",
                 items = listOf(
                     meta(1, ItemKind.CONTACTS_VCF, "People"),
@@ -83,7 +99,7 @@ class ReceiverChecklistTest {
     fun `unselected kinds do not request their receiver permissions`() {
         val groups = ReceiverChecklist.toggle(
             ReceiverChecklist.build(
-                TransferManifest(
+                testManifest(
                     senderName = "old phone",
                     items = listOf(meta(1, ItemKind.CONTACTS_VCF, "People")),
                     totalBytes = 1,
@@ -118,7 +134,7 @@ class ReceiverChecklistTest {
 
     @Test
     fun `a manifest advertising everything has no absent kinds`() {
-        val full = TransferManifest(
+        val full = testManifest(
             senderName = "s",
             items = listOf(
                 meta(1, ItemKind.CONTACTS_VCF, "g"), meta(2, ItemKind.CALENDAR_ICS, "g"),

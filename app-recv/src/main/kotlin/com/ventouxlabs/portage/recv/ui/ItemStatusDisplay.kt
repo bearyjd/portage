@@ -28,6 +28,7 @@ internal fun statusWord(status: ItemStatus): String = when (status) {
     ItemStatus.WRITE_ERROR -> "NOT SAVED"
     ItemStatus.UNKNOWN_KIND -> "UNKNOWN"
     ItemStatus.OVERSIZE -> "TOO BIG"
+    ItemStatus.UNKNOWN_INTERRUPTED -> "UNCONFIRMED"
 }
 
 internal fun statusReason(status: ItemStatus): String? = when (status) {
@@ -38,9 +39,10 @@ internal fun statusReason(status: ItemStatus): String? = when (status) {
     ItemStatus.UNKNOWN_KIND ->
         "This phone's portage doesn't know this kind of item — update portage here, then send again."
     ItemStatus.OVERSIZE -> "Too big to carry — this phone caps what one item can bring."
+    ItemStatus.UNKNOWN_INTERRUPTED -> "The connection ended before saving could be confirmed."
 }
 
 internal fun isTerminal(status: ItemStatus): Boolean = when (status) {
-    ItemStatus.OK, ItemStatus.HASH_MISMATCH, ItemStatus.WRITE_ERROR -> false
+    ItemStatus.OK, ItemStatus.HASH_MISMATCH, ItemStatus.WRITE_ERROR, ItemStatus.UNKNOWN_INTERRUPTED -> false
     ItemStatus.SKIPPED, ItemStatus.UNKNOWN_KIND, ItemStatus.OVERSIZE -> true
 }

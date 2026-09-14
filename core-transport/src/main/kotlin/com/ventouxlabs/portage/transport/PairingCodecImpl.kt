@@ -26,7 +26,11 @@ class PairingCodecImpl : PairingCodec {
 
     override fun encode(payload: PairingPayload): String {
         val body = cbor.encodeToByteArray(PairingPayload.serializer(), payload)
-        return PairingPayload.SCHEME + encoder.encodeToString(body)
+        return try {
+            PairingPayload.SCHEME + encoder.encodeToString(body)
+        } finally {
+            body.fill(0)
+        }
     }
 
     override fun decode(qr: String, nowEpochSeconds: Long): Result<PairingPayload> = runCatching {
@@ -34,19 +38,28 @@ class PairingCodecImpl : PairingCodec {
         val encoded = qr.removePrefix(PairingPayload.SCHEME)
         require(encoded.length <= MAX_ENCODED_CHARS) { "pairing QR too large" }
         val body = decoder.decode(encoded)
-        val payload = cbor.decodeFromByteArray(PairingPayload.serializer(), body)
-        // Trust boundary: the QR is attacker-controllable in the malicious-peer scenarios.
-        require(payload.version == PairingPayload.PROTOCOL_VERSION) {
-            "unsupported protocol version ${payload.version}"
+        var decoded: PairingPayload? = null
+        try {
+            val payload = cbor.decodeFromByteArray(PairingPayload.serializer(), body)
+            decoded = payload
+            // Trust boundary: the QR is attacker-controllable in the malicious-peer scenarios.
+            require(payload.version == PairingPayload.PROTOCOL_VERSION) {
+                "unsupported protocol version ${payload.version}"
+            }
+            require(payload.port in 1..65535) { "port out of range" }
+            require(payload.ip.size <= MAX_IP_HINTS) { "too many ip hints" }
+            require(nowEpochSeconds <= payload.expiresAtEpochSeconds) { "pairing QR expired" }
+            // Reject a far-future expiry that would defeat the short-TTL replay window.
+            require(payload.expiresAtEpochSeconds <= nowEpochSeconds + MAX_REMAINING_TTL_SECONDS) {
+                "pairing QR expiry implausibly far in the future"
+            }
+            payload
+        } catch (t: Throwable) {
+            decoded?.wipe()
+            throw t
+        } finally {
+            body.fill(0)
         }
-        require(payload.port in 1..65535) { "port out of range" }
-        require(payload.ip.size <= MAX_IP_HINTS) { "too many ip hints" }
-        require(nowEpochSeconds <= payload.expiresAtEpochSeconds) { "pairing QR expired" }
-        // Reject a far-future expiry that would defeat the short-TTL replay window.
-        require(payload.expiresAtEpochSeconds <= nowEpochSeconds + MAX_REMAINING_TTL_SECONDS) {
-            "pairing QR expiry implausibly far in the future"
-        }
-        payload
     }
 
     private companion object {

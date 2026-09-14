@@ -9,6 +9,9 @@
  */
 package com.ventouxlabs.portage.recv.transfer
 
+import com.ventouxlabs.portage.recv.testItemMeta
+import com.ventouxlabs.portage.recv.testManifest
+
 import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.model.ItemMeta
 import com.ventouxlabs.portage.model.ItemStatus
@@ -83,7 +86,7 @@ class LoopbackTransferSmokeTest {
         val exportBytes = ByteArrayOutputStream().also {
             ContactsExportProvider(MemoryContactsStore(mutableListOf(ada))).exportTo(it)
         }.toByteArray()
-        val meta = ItemMeta(
+        val meta = testItemMeta(
             itemId = 1,
             kind = ItemKind.CONTACTS_VCF,
             size = exportBytes.size.toLong(),
@@ -137,7 +140,7 @@ class LoopbackTransferSmokeTest {
         check(channel.receive() is ProtocolMessage.Hello) { "expected HELLO" }
         channel.send(
             ProtocolMessage.Manifest(
-                TransferManifest("loopback sender", listOf(meta), meta.size),
+                testManifest("loopback sender", listOf(meta), meta.size),
             ),
         )
         val select = channel.receive() as ProtocolMessage.Select

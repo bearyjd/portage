@@ -46,10 +46,19 @@ class CborMessageCodec : MessageCodec {
             is ProtocolMessage.BatchEnd -> cbor.encodeToByteArray(ProtocolMessage.BatchEnd.serializer(), message)
             is ProtocolMessage.BatchAck -> cbor.encodeToByteArray(ProtocolMessage.BatchAck.serializer(), message)
             ProtocolMessage.Ping -> cbor.encodeToByteArray(ProtocolMessage.Ping.serializer(), ProtocolMessage.Ping)
+            is ProtocolMessage.LineageInit -> cbor.encodeToByteArray(ProtocolMessage.LineageInit.serializer(), message)
+            is ProtocolMessage.LineageResume -> cbor.encodeToByteArray(ProtocolMessage.LineageResume.serializer(), message)
+            is ProtocolMessage.LineageAck -> cbor.encodeToByteArray(ProtocolMessage.LineageAck.serializer(), message)
+            is ProtocolMessage.Cancel -> cbor.encodeToByteArray(ProtocolMessage.Cancel.serializer(), message)
+            is ProtocolMessage.CancelAck -> cbor.encodeToByteArray(ProtocolMessage.CancelAck.serializer(), message)
         }
-        return ByteArray(1 + body.size).also {
-            it[0] = message.type.t.toByte()
-            body.copyInto(it, 1)
+        return try {
+            ByteArray(1 + body.size).also {
+                it[0] = message.type.t.toByte()
+                body.copyInto(it, 1)
+            }
+        } finally {
+            body.fill(0)
         }
     }
 
@@ -62,17 +71,26 @@ class CborMessageCodec : MessageCodec {
         val type = MessageType.entries.firstOrNull { it.t == t }
             ?: throw IllegalArgumentException("unknown message type byte: $t")
         val body = bytes.copyOfRange(1, bytes.size)
-        return when (type) {
-            MessageType.HELLO -> cbor.decodeFromByteArray(ProtocolMessage.Hello.serializer(), body)
-            MessageType.MANIFEST -> cbor.decodeFromByteArray(ProtocolMessage.Manifest.serializer(), body)
-            MessageType.SELECT -> cbor.decodeFromByteArray(ProtocolMessage.Select.serializer(), body)
-            MessageType.ITEM_BEGIN -> cbor.decodeFromByteArray(ProtocolMessage.ItemBegin.serializer(), body)
-            MessageType.ITEM_DATA -> cbor.decodeFromByteArray(ProtocolMessage.ItemData.serializer(), body)
-            MessageType.ITEM_END -> cbor.decodeFromByteArray(ProtocolMessage.ItemEnd.serializer(), body)
-            MessageType.ITEM_ACK -> cbor.decodeFromByteArray(ProtocolMessage.ItemAck.serializer(), body)
-            MessageType.BATCH_END -> cbor.decodeFromByteArray(ProtocolMessage.BatchEnd.serializer(), body)
-            MessageType.BATCH_ACK -> cbor.decodeFromByteArray(ProtocolMessage.BatchAck.serializer(), body)
-            MessageType.PING -> ProtocolMessage.Ping
+        return try {
+            when (type) {
+                MessageType.HELLO -> cbor.decodeFromByteArray(ProtocolMessage.Hello.serializer(), body)
+                MessageType.MANIFEST -> cbor.decodeFromByteArray(ProtocolMessage.Manifest.serializer(), body)
+                MessageType.SELECT -> cbor.decodeFromByteArray(ProtocolMessage.Select.serializer(), body)
+                MessageType.ITEM_BEGIN -> cbor.decodeFromByteArray(ProtocolMessage.ItemBegin.serializer(), body)
+                MessageType.ITEM_DATA -> cbor.decodeFromByteArray(ProtocolMessage.ItemData.serializer(), body)
+                MessageType.ITEM_END -> cbor.decodeFromByteArray(ProtocolMessage.ItemEnd.serializer(), body)
+                MessageType.ITEM_ACK -> cbor.decodeFromByteArray(ProtocolMessage.ItemAck.serializer(), body)
+                MessageType.BATCH_END -> cbor.decodeFromByteArray(ProtocolMessage.BatchEnd.serializer(), body)
+                MessageType.BATCH_ACK -> cbor.decodeFromByteArray(ProtocolMessage.BatchAck.serializer(), body)
+                MessageType.PING -> ProtocolMessage.Ping
+                MessageType.LINEAGE_INIT -> cbor.decodeFromByteArray(ProtocolMessage.LineageInit.serializer(), body)
+                MessageType.LINEAGE_RESUME -> cbor.decodeFromByteArray(ProtocolMessage.LineageResume.serializer(), body)
+                MessageType.LINEAGE_ACK -> cbor.decodeFromByteArray(ProtocolMessage.LineageAck.serializer(), body)
+                MessageType.CANCEL -> cbor.decodeFromByteArray(ProtocolMessage.Cancel.serializer(), body)
+                MessageType.CANCEL_ACK -> cbor.decodeFromByteArray(ProtocolMessage.CancelAck.serializer(), body)
+            }
+        } finally {
+            body.fill(0)
         }
     }
 }

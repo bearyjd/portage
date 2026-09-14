@@ -16,6 +16,14 @@ import com.ventouxlabs.portage.model.ItemMeta
 import com.ventouxlabs.portage.model.ItemResult
 import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.model.ProtocolMessage
+import com.ventouxlabs.portage.model.ManifestValidation
+import com.ventouxlabs.portage.model.PairingMode
+import com.ventouxlabs.portage.model.ResumePoint
+import com.ventouxlabs.portage.model.ReceiptPhase
+import com.ventouxlabs.portage.lineage.CheckpointKey
+import com.ventouxlabs.portage.lineage.LineageRepository
+import com.ventouxlabs.portage.lineage.LineageBusyException
+import com.ventouxlabs.portage.lineage.CredentialState
 import com.ventouxlabs.portage.providers.ApplyOutcome
 import com.ventouxlabs.portage.providers.ApplyProviderRegistry
 import com.ventouxlabs.portage.providers.apk.ApkContainerValidation
@@ -42,13 +50,22 @@ import com.ventouxlabs.portage.transport.SecureChannel
 import com.ventouxlabs.portage.transport.withDataPhaseDeadline
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -72,7 +89,7 @@ class ReceiverViewModel(
     private val appVersion: String = "0.1.0",
     private val osFingerprint: String = android.os.Build.FINGERPRINT,
     // Deliberately NO default: staged payloads are plaintext PII, so the staging location
-    // must be wired explicitly (production: app-private cacheDir via the factory).
+    // must be wired explicitly (production: noBackupFilesDir via the lineage repository).
     private val stagingDir: File,
     // Inert by default: without a real coordinator (or its manifest role components) SMS
     // can never be granted, so the apply path always self-skips.
@@ -124,9 +141,20 @@ class ReceiverViewModel(
     // AND costs a thread hop per frame: NoiseSecureChannel's own withContext(Dispatchers.IO) skips
     // dispatch only while the outer interceptor already IS Dispatchers.IO.
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    lineageRepository: LineageRepository? = null,
+    private val lineageRepositoryFactory: () -> LineageRepository = { LineageRepository(File(stagingDir, "lineage")) },
+    // Test seam for a non-cooperative store commit after cancellation passed its final check.
+    private val beforeInitialLineageCommit: () -> Unit = {},
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow<ReceiverState>(ReceiverState.Idle)
+    // Only an already-open injected store is immediately usable. Opening a production store can
+    // reconcile/fsync checkpoints and purge expired staging, so it must never run in construction.
+    @Volatile private var loadedLineageRepository: Result<LineageRepository>? =
+        lineageRepository?.let { Result.success(it) }
+    private val lineageRepository: LineageRepository get() = checkNotNull(loadedLineageRepository).getOrThrow()
+    private val _state = MutableStateFlow<ReceiverState>(
+        if (loadedLineageRepository != null) ReceiverState.Idle else ReceiverState.OpeningSavedMove,
+    )
     val state: StateFlow<ReceiverState> = _state.asStateFlow()
 
     /** Reinstall checklist produced by the app-inventory apply (one user tap per app). */
@@ -226,14 +254,8 @@ class ReceiverViewModel(
                 // shared the main thread. Each lambda must be idempotent for the same CAS-retry
                 // reason documented on [updateItem]; re-reading `it` and re-appending is.
                 //
-                // SCOPE, precisely: update {} closes the LOST UPDATE. It does NOT order these
-                // against reset() — an apply still in flight can repopulate a sink AFTER reset()
-                // cleared it. That residual predates #158 (pre-change an apply could resume from a
-                // suspension point after reset() and push identically). It fails closed: reset()
-                // closes the channel, so the stream throws into catch(t) → fail() → Failed, and
-                // Done — the only screen that renders these — is never reached. A stale entry would
-                // have to survive into a LATER transfer's Done to be visible. Fully ordering it
-                // needs an epoch guard or a cancellable transfer job; deliberately out of scope.
+                // Reset joins the owning jobs before another scan can start, then clears these
+                // sinks again. A provider finishing during teardown cannot contaminate a later move.
                 // NOTE onRepairEntries is exempt: it REPLACES rather than appends, so update {}
                 // would change nothing (a replace has no read-modify-write to lose).
                 onInstallActions = { actions ->
@@ -283,6 +305,20 @@ class ReceiverViewModel(
         applyRegistry.forKind(ItemKind.APP_BACKUP_RELAY) as? AppBackupRelayApplyProvider
 
     private var channel: SecureChannel? = null
+    private var currentLineageId: String? = null
+    private data class PendingLineageAdoption(val epoch: Long, val lineageId: String)
+    private var pendingLineageAdoption: PendingLineageAdoption? = null
+    @Volatile private var cancellationRequested = false
+    private var firstStreamMessage: Deferred<ProtocolMessage?>? = null
+    private var pairingJob: Job? = null
+    private var transferJob: Job? = null
+    private var teardownJob: Job? = null
+    private var repositoryJob: Job? = null
+    @Volatile private var sessionEpoch = 0L
+
+    /** True only after an authenticated CANCEL_ACK; an offline cancel remains local-only. */
+    private val _peerDeletionConfirmed = MutableStateFlow(false)
+    val peerDeletionConfirmed: StateFlow<Boolean> = _peerDeletionConfirmed.asStateFlow()
 
     /**
      * Serializes the user-driven opt-in grants on the Done screen. [AdbRuntimePermissionGranter] documents
@@ -297,18 +333,67 @@ class ReceiverViewModel(
 
     init {
         refreshSmsRoleStrand()
+        if (loadedLineageRepository == null) retryRepositoryAcquisition()
+    }
+
+    /** Initial IO acquisition also retries a previous ViewModel's still-unwinding writer lock. */
+    private fun retryRepositoryAcquisition() {
+        if (repositoryJob?.isCompleted == false) return
+        _state.value = ReceiverState.OpeningSavedMove
+        repositoryJob = viewModelScope.launch {
+            repeat(50) {
+                withContext(ioDispatcher) {
+                    // Publish ownership before dispatching back, so clearing the VM during the
+                    // handoff still closes an acquired repository after joining this job.
+                    loadedLineageRepository = runCatching { lineageRepositoryFactory() }
+                }
+                if (loadedLineageRepository?.isSuccess == true) {
+                    _state.value = ReceiverState.Idle
+                    return@launch
+                }
+                if (loadedLineageRepository?.exceptionOrNull() !is LineageBusyException) {
+                    _state.value = ReceiverState.Failed(SAVED_MOVE_LOAD_FAILURE)
+                    return@launch
+                }
+                delay(100)
+            }
+            _state.value = ReceiverState.Failed("The previous move is still closing. Try again shortly.")
+        }
     }
 
     fun startScanning() {
+        if (loadedLineageRepository?.exceptionOrNull() is LineageBusyException) {
+            retryRepositoryAcquisition()
+            return
+        }
+        if (loadedLineageRepository?.isSuccess != true || !sessionStopped()) return
         if (_state.value is ReceiverState.Idle || _state.value is ReceiverState.Failed) {
             // Clear the role state on the way IN as well as on the way out (#122). reset() covers
             // the Done → Home exit, but Failed → Scanning re-enters without passing through it, so
             // a failed transfer's carried roles would survive into the next one — where the sink's
             // distinctBy { role } keeps the FIRST entry and the stale row would SHADOW the new
             // transfer's legitimate one for that role.
-            clearRoleState()
+            clearDoneState()
+            sessionEpoch++
+            pendingLineageAdoption = null
+            firstStreamMessage = null
+            cancellationRequested = false
+            _peerDeletionConfirmed.value = false
             _state.value = ReceiverState.Scanning
         }
+    }
+
+    private fun sessionStopped(): Boolean = listOf(pairingJob, transferJob, teardownJob, firstStreamMessage, repositoryJob)
+        .all { it == null || it.isCompleted }
+
+    /** Reconnect after an uncertain final acknowledgement, retaining the original move and secret. */
+    fun resumeSavedMove() {
+        val current = _state.value
+        if (current !is ReceiverState.Done && (current !is ReceiverState.Failed || !current.canResumeSavedMove)) return
+        if (!sessionStopped()) return
+        if (currentLineageId == null) return
+        _state.value = ReceiverState.Idle
+        startScanning()
     }
 
     /** Drop every Done-scoped role flow (#122). Both the entry and the exit path must call this. */
@@ -326,23 +411,148 @@ class ReceiverViewModel(
             return
         }
         _state.value = ReceiverState.Pairing
-        viewModelScope.launch {
+        val epoch = sessionEpoch
+        pairingJob = viewModelScope.launch {
             try {
-                val ch = channelFactory.connectAsReceiver(payload).also { channel = it }
+                val existing = withContext(ioDispatcher) { lineageRepository.active() }
+                require(payload.mode != PairingMode.NEW || existing?.manifest == null) {
+                    "A move is already saved. Resume it, or return home and start a new move."
+                }
+                val credential = if (payload.mode == PairingMode.RESUME) lineageRepository.credentialForResume() else null
+                val ch = try {
+                    channelFactory.connectAsReceiver(payload, credential, if (credential != null) existing?.id else null)
+                } finally { credential?.fill(0) }.let { connected ->
+                    // UI cancellation may send concurrently with ITEM_ACK. Noise's send key
+                    // and frame writer must advance once, in the same serialized order.
+                    val sends = Mutex()
+                    object : SecureChannel {
+                        override suspend fun send(message: ProtocolMessage) = sends.withLock { connected.send(message) }
+                        override suspend fun receive(): ProtocolMessage? = connected.receive()
+                        override fun close() = connected.close()
+                    }
+                }
+                if (epoch != sessionEpoch || cancellationRequested) {
+                    ch.close()
+                    return@launch
+                }
+                channel = ch
                 ch.send(ProtocolMessage.Hello(appVersion, osFingerprint))
-                when (val msg = ch.receive()) {
-                    is ProtocolMessage.Manifest ->
+                val lineageMessage = receiveBootstrap(
+                    ch, existing?.id, epoch,
+                    allowCancel = payload.mode != PairingMode.NEW || existing == null,
+                ) ?: run {
+                    if (!cancellationRequested) fail("Sender did not establish the move.", epoch)
+                    return@launch
+                }
+                ensureActive()
+                if (epoch != sessionEpoch || cancellationRequested) return@launch
+                val authenticatedId = when {
+                    payload.mode == PairingMode.NEW && lineageMessage is ProtocolMessage.LineageInit -> {
+                        // Capture the expected identity on Main before entering a non-suspending
+                        // store commit. reset must recognize adoption that lands after cancellation.
+                        pendingLineageAdoption = PendingLineageAdoption(epoch, lineageMessage.lineageId)
+                        try {
+                            withContext(ioDispatcher) {
+                                beforeInitialLineageCommit()
+                                lineageRepository.acceptInitial(lineageMessage.lineageId, lineageMessage.resumeCredential)
+                            }
+                        }
+                        finally { lineageMessage.resumeCredential.fill(0) }
+                        lineageMessage.lineageId
+                    }
+                    payload.mode == PairingMode.RESUME && lineageMessage is ProtocolMessage.LineageResume -> {
+                        require(existing?.id == lineageMessage.lineageId) { "resumed lineage mismatch" }
+                        lineageMessage.lineageId
+                    }
+                    else -> error("Sender did not establish the expected lineage")
+                }
+                withContext(ioDispatcher) { lineageRepository.authenticated(authenticatedId) }
+                currentLineageId = authenticatedId
+                ch.send(ProtocolMessage.LineageAck(authenticatedId))
+                when (val msg = receiveBootstrap(ch, authenticatedId, epoch)) {
+                    is ProtocolMessage.Manifest -> {
+                        ManifestValidation.requireValid(msg.manifest)
+                        require(msg.manifest.lineageId == authenticatedId) { "manifest lineage mismatch" }
+                        withContext(ioDispatcher) { lineageRepository.saveManifest(msg.manifest) }
+                        ensureActive()
+                        if (epoch != sessionEpoch || cancellationRequested) return@launch
                         _state.value = ReceiverState.Reviewing(
                             senderName = msg.manifest.senderName,
                             groups = ReceiverChecklist.build(msg.manifest),
                             absentKinds = ReceiverChecklist.absentKinds(msg.manifest),
                         )
-                    else -> fail("Sender did not send a manifest")
+                        // Keep one reader during user review so a connected peer can cancel.
+                        // Its first data message is handed to the stream, never consumed twice.
+                        firstStreamMessage = viewModelScope.async(ioDispatcher) {
+                            try {
+                                receiveBootstrap(ch, authenticatedId, epoch)
+                            } catch (c: CancellationException) {
+                                throw c
+                            } catch (_: Exception) {
+                                if (epoch == sessionEpoch) {
+                                    fail("The connection ended. Scan a fresh resume QR to reconnect.", epoch)
+                                }
+                                null
+                            }
+                        }
+                    }
+                    null -> if (!cancellationRequested) fail("Sender did not send a manifest", epoch)
+                    else -> fail("Sender did not send a manifest", epoch)
                 }
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
-                fail(t.message ?: "Pairing failed")
+                fail("Pairing failed. Scan a fresh QR to reconnect.", epoch)
+            }
+        }
+    }
+
+    /** The same authenticated cancellation contract applies before and after the manifest. */
+    private suspend fun receiveBootstrap(
+        ch: SecureChannel,
+        lineageId: String?,
+        epoch: Long,
+        allowCancel: Boolean = true,
+    ): ProtocolMessage? {
+        while (true) {
+            when (val message = ch.receive()) {
+                is ProtocolMessage.Ping -> Unit
+                is ProtocolMessage.Cancel -> {
+                    // A fresh NEW QR proves no continuity with a saved move. Only exact
+                    // LineageInit credential verification may unlock mutations to that move.
+                    require(allowCancel) { "saved move continuity has not been established" }
+                    ManifestValidation.requireIdentity(message.lineageId)
+                    require(lineageId == null || message.lineageId == lineageId) { "cancel lineage mismatch" }
+                    // Remove Confirm synchronously before persistence or the possibly suspending ACK.
+                    if (epoch == sessionEpoch) {
+                        cancellationRequested = true
+                        _state.value = ReceiverState.Failed("The sender cancelled this move.")
+                    }
+                    // Before NEW bootstrap there is no saved credential to revoke. After adoption
+                    // the matching lineage must be durably revoked before acknowledgement.
+                    withContext(ioDispatcher) {
+                        val activeId = lineageRepository.active()?.id
+                        require(activeId == null || activeId == message.lineageId) { "cancel lineage mismatch" }
+                        if (activeId != null) lineageRepository.cancel(message.lineageId)
+                    }
+                    if (epoch == sessionEpoch) {
+                        _state.value = ReceiverState.Failed("The sender cancelled this move. Local move data was deleted.")
+                    }
+                    try {
+                        ch.send(ProtocolMessage.CancelAck(message.lineageId))
+                    } finally {
+                        ch.close()
+                        if (epoch == sessionEpoch && channel === ch) channel = null
+                    }
+                    return null
+                }
+                is ProtocolMessage.CancelAck -> {
+                    require(cancellationRequested && message.lineageId == lineageId) { "unexpected cancel acknowledgement" }
+                    withContext(ioDispatcher) { lineageRepository.markPeerDeleted(message.lineageId) }
+                    if (epoch == sessionEpoch) _peerDeletionConfirmed.value = true
+                    return null
+                }
+                else -> return message
             }
         }
     }
@@ -354,27 +564,41 @@ class ReceiverViewModel(
 
     fun onConfirm() {
         val current = _state.value as? ReceiverState.Reviewing ?: return
+        if (cancellationRequested || teardownJob?.isCompleted == false) return
         val selected = ReceiverChecklist.selectedMetas(current.groups)
         if (selected.isEmpty()) return
-        // Retry ledgers prevent duplicate rows only within this transfer. A later intentional
-        // transfer must be able to restore records the user deleted in the meantime.
-        applyRegistry.beginTransfer()
-        _state.value = ReceiverState.Transferring(
+        val lineageId = currentLineageId ?: return
+        val epoch = sessionEpoch
+        val transferring = ReceiverState.Transferring(
             items = selected.map { ItemProgress(it.itemId, it.displayName, totalBytes = it.size) },
         )
+        if (!_state.compareAndSet(current, transferring)) return
         val needsSmsRole = selected.any { it.kind == ItemKind.SMS || it.kind == ItemKind.MMS }
-        viewModelScope.launch {
+        transferJob = viewModelScope.launch {
             try {
-                val ch = channel ?: error("no channel")
+                if (cancellationRequested || epoch != sessionEpoch) return@launch
+                withContext(ioDispatcher) {
+                    selected.forEach { lineageRepository.checkpoint(CheckpointKey.from(lineageId, it)) }
+                }
+                // Retry ledgers belong to this transfer, after the session owns confirmation.
+                applyRegistry.beginTransfer()
+                val connected = channel ?: error("no channel")
+                val first = firstStreamMessage
+                val ch = if (first == null) connected else object : SecureChannel {
+                    private var consumed = false
+                    override suspend fun send(message: ProtocolMessage) = connected.send(message)
+                    override suspend fun receive(): ProtocolMessage? =
+                        if (!consumed) { consumed = true; first.await() } else connected.receive()
+                    override fun close() = connected.close()
+                }
                 // Hold the process alive + CPU awake for the whole item stream (#85): released in the
                 // finally below on EVERY exit (done / fail / timeout / reset). Idempotent.
                 transferKeepAlive.start()
                 // Cap the WHOLE data phase, not just each read. withDataPhaseDeadline returns null
                 // on ITS OWN deadline ONLY, so a stalled peer becomes a visible Failed rather than
                 // a re-thrown cancellation. null strictly means "this budget elapsed": the block
-                // always returns a non-null List, and a concurrent reset() here CLOSES THE CHANNEL
-                // (the receiver has no transferJob to cancel) — which surfaces as a transport error
-                // in catch(t), never as null (the helper rethrows pre-deadline errors untouched).
+                // always returns a non-null List. Reset cancels the owning transfer job and closes
+                // the channel after the bounded cancellation exchange.
                 // Its watchdog closes the channel at the deadline (#56), unblocking even a read
                 // parked in native code, so the cap fires at ~dataPhaseTimeoutMs instead of the old
                 // budget-plus-one-soTimeout slack; the block's finally clauses (staging sweep /
@@ -382,7 +606,17 @@ class ReceiverViewModel(
                 // [DATA_PHASE_TIMEOUT_MS].
                 val results = withDataPhaseDeadline(ch, dataPhaseTimeoutMs) {
                     withSmsRoleIfNeeded(needsSmsRole) {
-                        ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
+                        val resume = withContext(ioDispatcher) {
+                            val context = currentCoroutineContext()
+                            selected.mapNotNull { meta ->
+                                lineageRepository.verifiedStaged(CheckpointKey.from(lineageId, meta)) {
+                                    context.ensureActive()
+                                    if (cancellationRequested || epoch != sessionEpoch) throw CancellationException("move cancelled")
+                                }
+                                    ?.let { ResumePoint(meta.itemId, meta.size) }
+                            }
+                        }
+                        ch.send(ProtocolMessage.Select(selected.map { it.itemId }, resume))
                         // Off Main for the whole stream (#158). Deliberately INSIDE
                         // withSmsRoleIfNeeded, not outside it: acquireRole/relinquishTo launch an
                         // interactive system dialog through ActivityResultLauncher, which is NOT
@@ -395,7 +629,11 @@ class ReceiverViewModel(
                         // note) — withContext adds no parallelism.
                         withContext(ioDispatcher) {
                             ItemStreamReceiver(
-                                stagingDir = stagingDir,
+                                stagingDir = lineageRepository.stagingDir,
+                                lineageRepository = lineageRepository,
+                                lineageId = lineageId,
+                                resumeItems = resume.map { it.itemId }.toSet(),
+                                cancellationRequested = { cancellationRequested || epoch != sessionEpoch },
                                 // Raise the per-item cap for the two large-payload kinds, each to
                                 // its OWN documented ceiling: the APP_BACKUP_RELAY opaque blob
                                 // (PRP-06 §5) and the APK container item (ADR-006 D4, 1 GiB via
@@ -412,7 +650,7 @@ class ReceiverViewModel(
                                 channel = ch,
                                 expected = selected.associateBy { it.itemId },
                                 apply = ::applyStaged,
-                                onEvent = ::onReceiveEvent,
+                                onEvent = { if (epoch == sessionEpoch) onReceiveEvent(it) },
                             )
                         }
                     }
@@ -421,10 +659,11 @@ class ReceiverViewModel(
                     // null ⇒ the aggregate budget elapsed (a reset() closes the channel → transport
                     // error in catch(t), not null). Fail closed: fail() closes the channel; the block's
                     // finally clauses already swept staging / relinquished the SMS role on the unwind.
-                    fail("Transfer timed out — it took too long to finish")
+                    fail("Transfer timed out — it took too long to finish", epoch)
                     return@launch
                 }
                 ensureActive() // a reset() mid-run must not be overwritten by Done
+                if (epoch != sessionEpoch || cancellationRequested) return@launch
                 // Built while the state is still Transferring — doneStateFrom reads it for the
                 // per-item display names.
                 _state.value = doneStateFrom(results)
@@ -433,14 +672,14 @@ class ReceiverViewModel(
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
-                // reset() closes the channel underneath this coroutine (the receiver stores no
-                // transferJob, so it cannot cancel the coroutine — only the sender does that).
-                // ensureActive() guards only a true external cancel; a reset()-induced IO error
-                // falls through to fail(), which may overwrite the Idle reset() just set. This
-                // is a pre-existing, accepted LOW: the window is narrow and it fails closed.
                 ensureActive()
-                fail(t.message ?: "Transfer failed")
+                fail(t.message ?: "Transfer failed", epoch)
             } finally {
+                if (epoch == sessionEpoch) {
+                    _peerDeletionConfirmed.value = lineageRepository.tombstones().any {
+                        it.lineageId == lineageId && it.peerDeleted
+                    }
+                }
                 // Always release the keep-alive — done, fail, timeout, or reset() close
                 // unwinding through here. Idempotent.
                 transferKeepAlive.stop()
@@ -760,13 +999,111 @@ class ReceiverViewModel(
     }
 
     fun reset() {
-        channel?.close()
+        if (loadedLineageRepository?.exceptionOrNull() is LineageBusyException) {
+            retryRepositoryAcquisition()
+            return
+        }
+        if (loadedLineageRepository?.isSuccess != true || repositoryJob?.isCompleted == false ||
+            teardownJob?.isCompleted == false
+        ) return
+        val ch = channel
+        val pairing = pairingJob
+        val transfer = transferJob
+        val first = firstStreamMessage
+        val finished = _state.value is ReceiverState.Done
+        val expectedLineageIds = setOfNotNull(
+            currentLineageId,
+            pendingLineageAdoption?.takeIf { it.epoch == sessionEpoch }?.lineageId,
+        )
+        val epoch = ++sessionEpoch
+        // Signal and cancel before touching the repository. A validation read may still be
+        // running on IO; its cancellation callback must be able to stop without waiting on Main.
+        cancellationRequested = true
+        pairing?.cancel()
+        transfer?.cancel()
+        first?.cancel()
+        teardownJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val watchdog = launch { delay(5_000); ch?.close() }
+            try {
+                // Local revocation cannot depend on a provider or socket reader cooperating.
+                // Enter this block before reset returns and let the durable write finish even
+                // if the ViewModel is cleared while its owners are still unwinding.
+                val activeId = withContext(NonCancellable + ioDispatcher) {
+                    val immediatelyRevokedId = lineageRepository.active()?.id.also { id ->
+                        if (id != null) {
+                            if (finished) lineageRepository.finish(id) else lineageRepository.cancel(id)
+                        }
+                    }
+                    // Cancellation does not interrupt a store commit already running on IO.
+                    // Join every old owner, then sweep its captured identity before releasing the
+                    // replacement-session fence. Keep the joins and sweep non-cancellable too:
+                    // onCleared must not close the store before this late adoption is revoked.
+                    pairing?.join()
+                    first?.join()
+                    transfer?.join()
+                    val lateId = lineageRepository.active()?.id?.takeIf {
+                        it == immediatelyRevokedId || it in expectedLineageIds
+                    }
+                    if (lateId != null) {
+                        if (finished) lineageRepository.finish(lateId) else lineageRepository.cancel(lateId)
+                    }
+                    immediatelyRevokedId ?: lateId
+                }
+                // Only now may teardown become the socket's sole reader.
+                val peerDeleted = withContext(ioDispatcher) {
+                    if (ch != null && activeId != null && !finished) {
+                        try {
+                            withTimeoutOrNull(5_000) {
+                                ch.send(ProtocolMessage.Cancel(activeId))
+                                while (true) {
+                                    when (val ack = ch.receive()) {
+                                        is ProtocolMessage.CancelAck -> {
+                                            require(ack.lineageId == activeId) { "cancel acknowledgement lineage mismatch" }
+                                            lineageRepository.markPeerDeleted(activeId)
+                                            break
+                                        }
+                                        is ProtocolMessage.Cancel -> {
+                                            require(ack.lineageId == activeId) { "cancel lineage mismatch" }
+                                            lineageRepository.cancel(activeId)
+                                            ch.send(ProtocolMessage.CancelAck(activeId))
+                                        }
+                                        null -> break
+                                        else -> Unit
+                                    }
+                                }
+                            }
+                        } catch (c: CancellationException) {
+                            throw c
+                        } catch (_: Exception) {
+                            // Local deletion is committed; a missing peer acknowledgement
+                            // leaves remote deletion unconfirmed.
+                        }
+                    }
+                    abandonSessions()
+                    lineageRepository.tombstones().any { it.lineageId == activeId && it.peerDeleted }
+                }
+                if (epoch == sessionEpoch) _peerDeletionConfirmed.value = peerDeleted
+            } catch (c: CancellationException) {
+                throw c
+            } catch (_: Exception) {
+                if (epoch == sessionEpoch) {
+                    _state.value = ReceiverState.Failed("Local move data could not be removed. Try again.")
+                }
+            } finally {
+                ch?.close()
+                watchdog.cancel()
+                if (epoch == sessionEpoch) clearDoneState()
+            }
+        }
         channel = null
-        // Abandon any sealed-but-uncommitted PackageInstaller sessions from this run before clearing
-        // the prompt list — a user who never tapped install and hits Home must not leave APK bytes
-        // lingering in uncommitted sessions (fix 5). Best-effort: abandonUncommittedSessions is
-        // wrapped in runCatching inside the adapter so this can never throw.
-        abandonSessions()
+        currentLineageId = null
+        clearDoneState()
+        _state.value = ReceiverState.Idle
+        // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
+        refreshSmsRoleStrand()
+    }
+
+    private fun clearDoneState() {
         _installActions.value = emptyList()
         _repairEntries.value = emptyList()
         _relayPrompts.value = emptyList()
@@ -781,9 +1118,6 @@ class ReceiverViewModel(
         // distinctBy { it.role }, which keeps the FIRST occurrence, so a retained stale candidate
         // would SHADOW the next transfer's legitimate one for that role.
         clearRoleState()
-        _state.value = ReceiverState.Idle
-        // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
-        refreshSmsRoleStrand()
     }
 
     /**
@@ -806,15 +1140,48 @@ class ReceiverViewModel(
         }
     }
 
-    /** Fail-closed terminal transition: close the live channel, then surface the reason. */
-    private fun fail(reason: String) {
+    /** A failed acknowledgement cannot undo writes already performed by an apply provider. */
+    private suspend fun fail(reason: String, epoch: Long = sessionEpoch) {
+        if (epoch != sessionEpoch) return
         channel?.close()
         channel = null
-        _state.value = ReceiverState.Failed(reason)
+        if (cancellationRequested && _state.value is ReceiverState.Failed) return
+        val previous = _state.value
+        val priorChanges = previous is ReceiverState.Transferring ||
+            (previous as? ReceiverState.Failed)?.mayHaveAppliedChanges == true
+        val (savedLineageId, canResume, persistedChanges) = withContext(ioDispatcher) {
+            runCatching {
+                val active = lineageRepository.active()
+                val resumable = active?.credentialState == CredentialState.ESTABLISHED
+                val persistedChanges = active?.manifest?.items.orEmpty().any { meta ->
+                    val phase = lineageRepository.checkpoint(CheckpointKey.from(checkNotNull(active).id, meta))?.phase
+                    phase != null && phase != ReceiptPhase.PREPARED && phase != ReceiptPhase.RECEIVED_VERIFIED
+                }
+                Triple(active?.id, resumable, persistedChanges)
+            }.getOrDefault(Triple(null, false, false))
+        }
+        if (epoch != sessionEpoch) return
+        if (cancellationRequested && _state.value is ReceiverState.Failed) return
+        if (canResume) currentLineageId = savedLineageId
+        _state.value = ReceiverState.Failed(
+            reason = reason,
+            canResumeSavedMove = canResume,
+            mayHaveAppliedChanges = priorChanges || persistedChanges,
+        )
     }
 
     override fun onCleared() {
+        sessionEpoch++
+        cancellationRequested = true
         channel?.close()
+        val owners = listOfNotNull(pairingJob, transferJob, firstStreamMessage, teardownJob, repositoryJob)
+        owners.forEach { it.cancel() }
+        // Keep the single-writer lock until suspended providers and all cleanup have exited.
+        // viewModelScope is already cancelled here, so the final join has its own cleanup scope.
+        CoroutineScope(ioDispatcher).launch {
+            owners.forEach { it.join() }
+            loadedLineageRepository?.getOrNull()?.close()
+        }
         super.onCleared()
     }
 }
@@ -826,3 +1193,4 @@ class ReceiverViewModel(
  * MUST NOT be the default cap: Tier-0/PII items keep the 64 MiB DEFAULT_MAX_ITEM_BYTES.
  */
 private const val MAX_RELAY_ITEM_BYTES = 2L * 1024 * 1024 * 1024
+private const val SAVED_MOVE_LOAD_FAILURE = "Saved move data could not be loaded. Close the app and reset its saved move data before trying again."

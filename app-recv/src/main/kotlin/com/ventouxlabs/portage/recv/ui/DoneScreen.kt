@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +52,7 @@ fun DoneScreen(
     moved: Int,
     skipped: Int,
     onDone: () -> Unit,
+    onResume: () -> Unit = {},
     modifier: Modifier = Modifier,
     installActions: List<InstallAction> = emptyList(),
     repairEntries: List<RePairEntry> = emptyList(),
@@ -93,7 +95,8 @@ fun DoneScreen(
                 onOpenBackup = onOpenBackup,
             )
             Spacer(Modifier.height(s.xl))
-            SwissPrimaryButton(text = "Done", onClick = onDone, fullWidth = true)
+            ResumeMoveButton(onResume)
+            SwissPrimaryButton(text = "Finish move", onClick = onDone, fullWidth = true)
         }
         return
     }
@@ -152,9 +155,17 @@ fun DoneScreen(
         ) {
             HairlineDivider()
             Column(modifier = Modifier.padding(horizontal = s.gutter, vertical = s.md)) {
-                SwissPrimaryButton(text = "Done", onClick = onDone, fullWidth = true)
+                ResumeMoveButton(onResume)
+                SwissPrimaryButton(text = "Finish move", onClick = onDone, fullWidth = true)
             }
         }
+    }
+}
+
+@Composable
+private fun ResumeMoveButton(onResume: () -> Unit) {
+    TextButton(onClick = onResume, modifier = Modifier.fillMaxWidth()) {
+        Text("Resume saved move")
     }
 }
 

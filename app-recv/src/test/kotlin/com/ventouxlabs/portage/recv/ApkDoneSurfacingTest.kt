@@ -92,7 +92,7 @@ class ApkDoneSurfacingTest {
     }
 
     private inner class FakeChannel(vararg incoming: ProtocolMessage) : SecureChannel {
-        private val queue = ArrayDeque(incoming.toList())
+        private val queue = ArrayDeque(withLineageBootstrap(incoming.toList()))
         override suspend fun send(message: ProtocolMessage) = Unit
         override suspend fun receive(): ProtocolMessage? = if (queue.isEmpty()) null else queue.removeFirst()
         override fun close() = Unit
@@ -131,9 +131,9 @@ class ApkDoneSurfacingTest {
     )
 
     private fun channelFor(apk: ByteArray): SecureChannel {
-        val meta = ItemMeta(9, ItemKind.APK, apk.size.toLong(), sha256(apk), "Example", "Apps")
+        val meta = testItemMeta(9, ItemKind.APK, apk.size.toLong(), sha256(apk), "Example", "Apps")
         return FakeChannel(
-            ProtocolMessage.Manifest(TransferManifest("old phone", listOf(meta), apk.size.toLong())),
+            ProtocolMessage.Manifest(testManifest("old phone", listOf(meta), apk.size.toLong())),
             ProtocolMessage.ItemBegin(9, ItemKind.APK, meta.size, apk.size),
             ProtocolMessage.ItemData(9, 0, apk),
             ProtocolMessage.ItemEnd(9, meta.sha256),
@@ -224,11 +224,13 @@ class ApkDoneSurfacingTest {
         TestScopeRun(vm) { advanceUntilIdle() }
         assertThat(abandonCalled).isFalse() // not called yet — user is on Done screen
         vm.reset()
+        advanceUntilIdle() // session teardown and PackageInstaller cleanup run off Main
         assertThat(abandonCalled).isTrue() // called on return-home
     }
 
     /** Drive scan → review → toggle the APK item ON (it's Tier-1, opt-in) → confirm → done. */
     private fun TestScopeRun(vm: ReceiverViewModel, advance: () -> Unit): ReceiverState.Done {
+        advance() // Finish asynchronous saved-move opening before starting the transfer.
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advance()

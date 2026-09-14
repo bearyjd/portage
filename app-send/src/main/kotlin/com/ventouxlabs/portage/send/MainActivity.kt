@@ -22,6 +22,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import com.ventouxlabs.portage.providers.ExportProvider
 import com.ventouxlabs.portage.providers.bluetooth.AndroidBluetoothStore
 import com.ventouxlabs.portage.providers.bluetooth.BluetoothStore
@@ -87,9 +89,8 @@ class MainActivity : ComponentActivity() {
             WindowManager.LayoutParams.FLAG_SECURE,
             WindowManager.LayoutParams.FLAG_SECURE,
         )
-        // Sweep staging orphaned by a mid-transfer process death — staged exports are
-        // plaintext PII and must never outlive a single session (security review 2026-06-11).
-        File(cacheDir, STAGING_DIR).deleteRecursively()
+        // The lineage repository owns retained bytes and expiry across process restarts.
+        lifecycleScope.launch { runCatching { cleanupLegacyStaging(cacheDir, noBackupFilesDir) } }
         sweepOrphanedRelayGrantsOnce()
         val summary = deviceSummary()
         setContent {
@@ -175,7 +176,7 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
         @Suppress("UNCHECKED_CAST")
         return SenderViewModel(
             providers = providers,
-            stagingDir = File(context.cacheDir, STAGING_DIR),
+            stagingDir = File(context.noBackupFilesDir, STAGING_DIR),
             senderName = deviceName(context),
             // The same inventory seam the app-list provider uses — here it detects which relay-capable
             // apps (Signal/Molly/Aegis) are installed so the Home screen can offer to ferry their

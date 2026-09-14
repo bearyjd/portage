@@ -35,4 +35,16 @@ class Sha256Test {
         assertThat(once).isEqualTo(twice)
         assertThat(once).hasLength(64)
     }
+
+    @Test fun `hashing checks cancellation before reading each buffer`() {
+        val input = ByteArrayInputStream(ByteArray(100_000))
+        var checks = 0
+        val failure = runCatching {
+            sha256Hex(input) {
+                if (++checks == 2) throw kotlinx.coroutines.CancellationException("cancelled")
+            }
+        }.exceptionOrNull()
+        assertThat(failure).isInstanceOf(kotlinx.coroutines.CancellationException::class.java)
+        assertThat(input.available()).isEqualTo(100_000 - 8 * 1024)
+    }
 }

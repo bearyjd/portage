@@ -29,18 +29,42 @@ enum class MessageType(val t: Int) {
     BATCH_END(7),
     BATCH_ACK(8),
     PING(9),
+    LINEAGE_INIT(10),
+    LINEAGE_RESUME(11),
+    LINEAGE_ACK(12),
+    CANCEL(13),
+    CANCEL_ACK(14),
 }
 
 /** Receiver's per-item verdict. Anything other than [OK] never aborts the batch. */
 @Serializable
-enum class ItemStatus { OK, SKIPPED, HASH_MISMATCH, WRITE_ERROR, UNKNOWN_KIND, OVERSIZE }
+enum class ItemStatus { OK, SKIPPED, HASH_MISMATCH, WRITE_ERROR, UNKNOWN_KIND, OVERSIZE, UNKNOWN_INTERRUPTED }
+
+/** Failures a retry can resolve without changing the manifest or application version. */
+val ItemStatus.isRetryable: Boolean get() = when (this) {
+    ItemStatus.HASH_MISMATCH, ItemStatus.WRITE_ERROR, ItemStatus.UNKNOWN_INTERRUPTED -> true
+    ItemStatus.OK, ItemStatus.SKIPPED, ItemStatus.UNKNOWN_KIND, ItemStatus.OVERSIZE -> false
+}
+
+@Serializable
+enum class ReceiptPhase { PREPARED, RECEIVED_VERIFIED, APPLYING, APPLIED_DURABLE, FAILED, UNKNOWN_INTERRUPTED }
 
 /** A request to resume a partially-received item from a byte offset. */
 @Serializable
 data class ResumePoint(val itemId: Int, val offset: Long)
 
 @Serializable
-data class ItemResult(val itemId: Int, val status: ItemStatus, val detail: String? = null)
+data class ItemResult(
+    val itemId: Int,
+    val status: ItemStatus,
+    val detail: String? = null,
+    val phase: ReceiptPhase = when (status) {
+        ItemStatus.OK -> ReceiptPhase.APPLIED_DURABLE
+        ItemStatus.UNKNOWN_INTERRUPTED -> ReceiptPhase.UNKNOWN_INTERRUPTED
+        else -> ReceiptPhase.FAILED
+    },
+    val occurrenceId: String = "",
+)
 
 /**
  * Closed set of application messages. The CBOR codec (in :core-transport) maps each to a
@@ -122,5 +146,35 @@ sealed interface ProtocolMessage {
     @Serializable
     data object Ping : ProtocolMessage {
         override val type get() = MessageType.PING
+    }
+
+    @Serializable
+    @OptIn(ExperimentalSerializationApi::class)
+    data class LineageInit(val lineageId: String, @ByteString val resumeCredential: ByteArray) : ProtocolMessage {
+        override val type get() = MessageType.LINEAGE_INIT
+        override fun toString(): String = "LineageInit(lineageId=$lineageId, resumeCredential=<redacted>)"
+        override fun equals(other: Any?): Boolean = other is LineageInit &&
+            lineageId == other.lineageId && resumeCredential.contentEquals(other.resumeCredential)
+        override fun hashCode(): Int = 31 * lineageId.hashCode() + resumeCredential.contentHashCode()
+    }
+
+    @Serializable
+    data class LineageResume(val lineageId: String) : ProtocolMessage {
+        override val type get() = MessageType.LINEAGE_RESUME
+    }
+
+    @Serializable
+    data class LineageAck(val lineageId: String) : ProtocolMessage {
+        override val type get() = MessageType.LINEAGE_ACK
+    }
+
+    @Serializable
+    data class Cancel(val lineageId: String) : ProtocolMessage {
+        override val type get() = MessageType.CANCEL
+    }
+
+    @Serializable
+    data class CancelAck(val lineageId: String) : ProtocolMessage {
+        override val type get() = MessageType.CANCEL_ACK
     }
 }
