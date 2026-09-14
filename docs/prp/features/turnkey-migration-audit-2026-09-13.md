@@ -1,7 +1,9 @@
 # Turnkey Migration Audit and Delivery Plan
 
 **Status:** Approved implementation plan; this PR changes documentation only.
-**Date:** 2026-09-13  
+
+**Date:** 2026-09-13
+
 **Decision:** Establish durable, truthful transfer semantics before adding relay or Home Map workflows.
 Exact arbitrary cross-launcher restoration is not a capability Portage can promise as an ordinary app.
 Spike same-launcher Launcher3/Seedvault restore first; otherwise ship a bounded, private reconstruction guide.
@@ -463,10 +465,10 @@ https://developer.android.com/identity/data/autobackup
   configuration and never the user-choice configuration; a negative fixture shows app-window capture
   becoming invisible after Home does not produce accepted guide frames. A hardware path covers
   Portage → launcher → 3 pages + 2 opened folders → Portage on every supported build; any build where
-  the OEM override prevents this disables V2. POST_NOTIFICATIONS denial starts no projection and lands on
-  app-notifications disabled, channel importance NONE, or permission denial starts no projection and lands on
-  the ordered-picker fallback; grant plus enabled channel shows the FGS Stop action, and returning shows the
-  in-app Stop action. Disabling either during capture stops before the next accepted frame. The session stops at
+  the OEM override prevents this disables V2. App notifications disabled, channel importance NONE, or
+  POST_NOTIFICATIONS permission denial starts no projection and lands on the ordered-picker fallback; grant plus
+  enabled channel shows the FGS Stop action, and returning shows the in-app Stop action. Disabling either during
+  capture stops before the next accepted frame. The session stops at
   10 minutes and the injected-clock test proves 10 minutes minus one millisecond remains active while the exact
   deadline stops it.
   Capture survives that app switch, while every stop path
