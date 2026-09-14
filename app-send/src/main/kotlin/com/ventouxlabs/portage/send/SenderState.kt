@@ -46,7 +46,17 @@ sealed interface SenderState {
     data class Sending(val items: List<SendProgress>) : SenderState
 
     /** Done summary from the receiver's acks. */
-    data class Done(val sent: Int, val failed: Int, val unknown: Int = 0, val notSent: Int = 0) : SenderState
+    data class Done(
+        val sent: Int,
+        /** Terminal failures which another identical attempt cannot resolve. */
+        val failed: Int,
+        val unknown: Int = 0,
+        val notSent: Int = 0,
+        /** Failures such as a transient write error or in-transit hash mismatch. */
+        val retryableFailed: Int = 0,
+    ) : SenderState {
+        val canResume: Boolean get() = unknown > 0 || notSent > 0 || retryableFailed > 0
+    }
 
     /** Fail-closed terminal state with a user-facing reason. */
     data class Failed(

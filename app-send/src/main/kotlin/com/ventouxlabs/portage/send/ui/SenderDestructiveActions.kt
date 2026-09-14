@@ -52,7 +52,7 @@ internal fun destructiveActionFor(
         } else null
 
     SenderDestructiveIntent.COMPLETE ->
-        if (state is SenderState.Done && (state.unknown > 0 || state.notSent > 0)) {
+        if (state is SenderState.Done && state.canResume) {
             SenderDestructiveAction.DISCARD_UNCERTAIN_MOVE
         } else null
 

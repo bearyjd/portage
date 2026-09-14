@@ -44,6 +44,8 @@ class SenderDestructiveActionsTest {
             SenderDestructiveIntent.COMPLETE)).isEqualTo(SenderDestructiveAction.DISCARD_UNCERTAIN_MOVE)
         assertThat(destructiveActionFor(SenderState.Done(1, 0, notSent = 1),
             SenderDestructiveIntent.COMPLETE)).isEqualTo(SenderDestructiveAction.DISCARD_UNCERTAIN_MOVE)
+        assertThat(destructiveActionFor(SenderState.Done(1, 0, retryableFailed = 1),
+            SenderDestructiveIntent.COMPLETE)).isEqualTo(SenderDestructiveAction.DISCARD_UNCERTAIN_MOVE)
 
         // Every result is receipt-terminal, so Done only finishes an already-terminal lineage.
         assertThat(destructiveActionFor(SenderState.Done(1, 1), SenderDestructiveIntent.COMPLETE)).isNull()

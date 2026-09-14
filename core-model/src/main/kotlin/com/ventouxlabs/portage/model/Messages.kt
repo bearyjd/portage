@@ -40,6 +40,12 @@ enum class MessageType(val t: Int) {
 @Serializable
 enum class ItemStatus { OK, SKIPPED, HASH_MISMATCH, WRITE_ERROR, UNKNOWN_KIND, OVERSIZE, UNKNOWN_INTERRUPTED }
 
+/** Failures a retry can resolve without changing the manifest or application version. */
+val ItemStatus.isRetryable: Boolean get() = when (this) {
+    ItemStatus.HASH_MISMATCH, ItemStatus.WRITE_ERROR, ItemStatus.UNKNOWN_INTERRUPTED -> true
+    ItemStatus.OK, ItemStatus.SKIPPED, ItemStatus.UNKNOWN_KIND, ItemStatus.OVERSIZE -> false
+}
+
 @Serializable
 enum class ReceiptPhase { PREPARED, RECEIVED_VERIFIED, APPLYING, APPLIED_DURABLE, FAILED, UNKNOWN_INTERRUPTED }
 

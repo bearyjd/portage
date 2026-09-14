@@ -143,6 +143,8 @@ class ReceiverViewModel(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     lineageRepository: LineageRepository? = null,
     private val lineageRepositoryFactory: () -> LineageRepository = { LineageRepository(File(stagingDir, "lineage")) },
+    // Test seam for a non-cooperative store commit after cancellation passed its final check.
+    private val beforeInitialLineageCommit: () -> Unit = {},
 ) : ViewModel() {
 
     // Only an already-open injected store is immediately usable. Opening a production store can
@@ -304,6 +306,8 @@ class ReceiverViewModel(
 
     private var channel: SecureChannel? = null
     private var currentLineageId: String? = null
+    private data class PendingLineageAdoption(val epoch: Long, val lineageId: String)
+    private var pendingLineageAdoption: PendingLineageAdoption? = null
     @Volatile private var cancellationRequested = false
     private var firstStreamMessage: Deferred<ProtocolMessage?>? = null
     private var pairingJob: Job? = null
@@ -371,6 +375,7 @@ class ReceiverViewModel(
             // transfer's legitimate one for that role.
             clearDoneState()
             sessionEpoch++
+            pendingLineageAdoption = null
             firstStreamMessage = null
             cancellationRequested = false
             _peerDeletionConfirmed.value = false
@@ -443,8 +448,12 @@ class ReceiverViewModel(
                 if (epoch != sessionEpoch || cancellationRequested) return@launch
                 val authenticatedId = when {
                     payload.mode == PairingMode.NEW && lineageMessage is ProtocolMessage.LineageInit -> {
+                        // Capture the expected identity on Main before entering a non-suspending
+                        // store commit. reset must recognize adoption that lands after cancellation.
+                        pendingLineageAdoption = PendingLineageAdoption(epoch, lineageMessage.lineageId)
                         try {
                             withContext(ioDispatcher) {
+                                beforeInitialLineageCommit()
                                 lineageRepository.acceptInitial(lineageMessage.lineageId, lineageMessage.resumeCredential)
                             }
                         }
@@ -1002,6 +1011,10 @@ class ReceiverViewModel(
         val transfer = transferJob
         val first = firstStreamMessage
         val finished = _state.value is ReceiverState.Done
+        val expectedLineageIds = setOfNotNull(
+            currentLineageId,
+            pendingLineageAdoption?.takeIf { it.epoch == sessionEpoch }?.lineageId,
+        )
         val epoch = ++sessionEpoch
         // Signal and cancel before touching the repository. A validation read may still be
         // running on IO; its cancellation callback must be able to stop without waiting on Main.
@@ -1016,16 +1029,27 @@ class ReceiverViewModel(
                 // Enter this block before reset returns and let the durable write finish even
                 // if the ViewModel is cleared while its owners are still unwinding.
                 val activeId = withContext(NonCancellable + ioDispatcher) {
-                    lineageRepository.active()?.id.also { id ->
+                    val immediatelyRevokedId = lineageRepository.active()?.id.also { id ->
                         if (id != null) {
                             if (finished) lineageRepository.finish(id) else lineageRepository.cancel(id)
                         }
                     }
+                    // Cancellation does not interrupt a store commit already running on IO.
+                    // Join every old owner, then sweep its captured identity before releasing the
+                    // replacement-session fence. Keep the joins and sweep non-cancellable too:
+                    // onCleared must not close the store before this late adoption is revoked.
+                    pairing?.join()
+                    first?.join()
+                    transfer?.join()
+                    val lateId = lineageRepository.active()?.id?.takeIf {
+                        it == immediatelyRevokedId || it in expectedLineageIds
+                    }
+                    if (lateId != null) {
+                        if (finished) lineageRepository.finish(lateId) else lineageRepository.cancel(lateId)
+                    }
+                    immediatelyRevokedId ?: lateId
                 }
-                // The former receive owner must exit before this coroutine takes its socket.
-                pairing?.join()
-                first?.join()
-                transfer?.join()
+                // Only now may teardown become the socket's sole reader.
                 val peerDeleted = withContext(ioDispatcher) {
                     if (ch != null && activeId != null && !finished) {
                         try {

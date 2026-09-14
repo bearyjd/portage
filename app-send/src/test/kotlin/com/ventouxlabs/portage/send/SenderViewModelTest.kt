@@ -365,6 +365,110 @@ class SenderViewModelTest {
     }
 
     @Test
+    fun `retryable receipt status survives recreation while oversize remains terminal`() = runTest(dispatcher) {
+        listOf(
+            ItemStatus.WRITE_ERROR to true,
+            ItemStatus.HASH_MISMATCH to true,
+            ItemStatus.OVERSIZE to false,
+        ).forEach { (status, retryable) ->
+            val directory = tmp.newFolder()
+            val repository = LineageRepository(directory)
+            val result = ItemResult(1, status, "receiver detail")
+            val channel = ScriptedChannel(
+                ProtocolMessage.Hello("0.1.0", "recv"),
+                ProtocolMessage.Select(want = listOf(1)),
+                ProtocolMessage.ItemAck(result),
+                ProtocolMessage.BatchAck(listOf(result)),
+            )
+            val original = viewModel(FakeFactory(channel), repository = repository)
+
+            original.onStartTransfer()
+            advanceUntilIdle()
+
+            val done = original.state.value as SenderState.Done
+            assertThat(done.canResume).isEqualTo(retryable)
+            assertThat(done.retryableFailed).isEqualTo(if (retryable) 1 else 0)
+            assertThat(done.failed).isEqualTo(if (retryable) 0 else 1)
+            val active = checkNotNull(repository.active())
+            val checkpoint = repository.checkpoint(
+                com.ventouxlabs.portage.lineage.CheckpointKey.from(
+                    active.id,
+                    checkNotNull(active.manifest).items.single(),
+                ),
+            )
+            assertThat(checkpoint?.phase).isEqualTo(ReceiptPhase.FAILED)
+            repository.close()
+
+            val reopened = LineageRepository(directory)
+            val restored = viewModel(FakeFactory(happyChannel()), providers = emptyList(), repository = reopened)
+            val recovered = restored.state.value as SenderState.Failed
+            assertThat(recovered.canResume).isEqualTo(retryable)
+            assertThat(recovered.hasSavedMove).isTrue()
+            if (retryable) {
+                restored.onResumeTransfer()
+                advanceUntilIdle()
+                assertThat(restored.state.value).isEqualTo(SenderState.Done(1, 0))
+            } else {
+                // Even a direct method call cannot retry a terminal refusal.
+                restored.onResumeTransfer()
+                advanceUntilIdle()
+                assertThat(restored.state.value).isEqualTo(recovered)
+            }
+            reopened.close()
+        }
+    }
+
+    @Test
+    fun `mixed resume resets retryable failure but preserves terminal checkpoint`() = runTest(dispatcher) {
+        val directory = tmp.newFolder()
+        val repository = LineageRepository(directory)
+        val retryable = ItemResult(1, ItemStatus.WRITE_ERROR, "temporary write failure")
+        val terminal = ItemResult(2, ItemStatus.OVERSIZE, "over receiver limit")
+        val channel = ScriptedChannel(
+            ProtocolMessage.Hello("0.1.0", "recv"),
+            ProtocolMessage.Select(want = listOf(1, 2)),
+            ProtocolMessage.ItemAck(retryable),
+            ProtocolMessage.ItemAck(terminal),
+            ProtocolMessage.BatchAck(listOf(retryable, terminal)),
+        )
+        val original = viewModel(
+            FakeFactory(channel),
+            providers = listOf(
+                BytesExport(ItemKind.CONTACTS_VCF, "vcard".toByteArray()),
+                BytesExport(ItemKind.CALL_LOG, "calls".toByteArray()),
+            ),
+            repository = repository,
+        )
+
+        original.onStartTransfer()
+        advanceUntilIdle()
+        assertThat(original.state.value).isEqualTo(
+            SenderState.Done(sent = 0, failed = 1, retryableFailed = 1),
+        )
+        repository.close()
+
+        val reopened = LineageRepository(directory)
+        val restored = viewModel(
+            FakeFactory(acceptError = TransportException("temporary disconnect")),
+            providers = emptyList(),
+            repository = reopened,
+        )
+        restored.onResumeTransfer()
+        advanceUntilIdle()
+
+        val active = checkNotNull(reopened.active())
+        val phases = checkNotNull(active.manifest).items.associate { meta ->
+            meta.itemId to reopened.checkpoint(
+                com.ventouxlabs.portage.lineage.CheckpointKey.from(active.id, meta),
+            )?.phase
+        }
+        assertThat(phases[1]).isEqualTo(ReceiptPhase.PREPARED)
+        assertThat(phases[2]).isEqualTo(ReceiptPhase.FAILED)
+        assertThat((restored.state.value as SenderState.Failed).canResume).isTrue()
+        reopened.close()
+    }
+
+    @Test
     fun `the QR encodes the listener's real coordinates and a fresh PSK`() = runTest(dispatcher) {
         val factory = FakeFactory(happyChannel())
         val vm = viewModel(factory)
@@ -750,13 +854,82 @@ class SenderViewModelTest {
             } else {
                 assertThat(reopened.active()?.credentialState).isEqualTo(CredentialState.PENDING)
                 assertThat(retryChannel.sent).isEmpty()
-                assertThat((retry.state.value as SenderState.Failed).canResume).isFalse()
-                assertThat((retry.state.value as SenderState.Failed).reason).contains("Start a new move")
+                val failed = retry.state.value as SenderState.Failed
+                assertThat(failed.canResume).isTrue()
+                assertThat(failed.reason).doesNotContain("Start a new move")
             }
             reopened.close()
             receiver.close()
             secret.fill(0)
         }
+    }
+
+    @Test
+    fun `transient pending resume failure remains resumable and succeeds on second attempt`() = runTest(dispatcher) {
+        val sender = LineageRepository(tmp.newFolder())
+        val receiver = LineageRepository(tmp.newFolder())
+        val successfulChannel = happyChannel()
+        val interruptedChannel = object : SecureChannel {
+            private var helloRead = false
+            override suspend fun receive(): ProtocolMessage? {
+                if (!helloRead) {
+                    helloRead = true
+                    return ProtocolMessage.Hello("0.1", "recv")
+                }
+                throw TransportException("temporary disconnect")
+            }
+
+            override suspend fun send(message: ProtocolMessage) {
+                if (message is ProtocolMessage.LineageInit) {
+                    receiver.acceptInitial(message.lineageId, message.resumeCredential)
+                }
+            }
+
+            override fun close() = Unit
+        }
+        var attempts = 0
+        val factory = object : SecureChannel.Factory {
+            override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = error("sender only")
+            override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel =
+                error("credential overload required")
+
+            override suspend fun acceptAsSender(
+                payload: PairingPayload,
+                resumeCredential: ByteArray?,
+                lineageId: String?,
+            ): SecureChannel {
+                attempts++
+                if (attempts == 1) return interruptedChannel
+                assertThat(payload.mode).isEqualTo(PairingMode.RESUME)
+                assertThat(lineageId).isEqualTo(receiver.active()?.id)
+                val expected = receiver.credentialForResume()
+                try {
+                    assertThat(resumeCredential).isEqualTo(expected)
+                } finally {
+                    expected.fill(0)
+                }
+                return successfulChannel
+            }
+        }
+        val vm = viewModel(factory, repository = sender)
+
+        vm.onStartTransfer()
+        advanceUntilIdle()
+
+        val interrupted = vm.state.value as SenderState.Failed
+        assertThat(interrupted.reason).contains("temporary disconnect")
+        assertThat(interrupted.reason).doesNotContain("Start a new move")
+        assertThat(interrupted.canResume).isTrue()
+        assertThat(sender.active()?.credentialState).isEqualTo(CredentialState.PENDING)
+
+        vm.onResumeTransfer()
+        advanceUntilIdle()
+
+        assertThat(attempts).isEqualTo(2)
+        assertThat(vm.state.value).isEqualTo(SenderState.Done(1, 0))
+        assertThat(sender.active()?.credentialState).isEqualTo(CredentialState.ESTABLISHED)
+        sender.close()
+        receiver.close()
     }
 
     @Test

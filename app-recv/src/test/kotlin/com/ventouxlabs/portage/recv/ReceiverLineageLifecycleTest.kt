@@ -153,6 +153,105 @@ class ReceiverLineageLifecycleTest {
         }
     }
 
+    @Test fun `reset revokes adoption committed after its first empty repository read`() {
+        assertLateAdoptionRevoked(clearDuringTeardown = false)
+    }
+
+    @Test fun `clearing during reset still revokes adoption committed after its first empty read`() {
+        assertLateAdoptionRevoked(clearDuringTeardown = true)
+    }
+
+    private fun assertLateAdoptionRevoked(clearDuringTeardown: Boolean) = runBlocking {
+        val beforeCommit = CountDownLatch(1)
+        val releaseCommit = CountDownLatch(1)
+        val committed = CountDownLatch(1)
+        // One IO worker is held in adoption; the other can complete immediate local revocation.
+        val io = Executors.newFixedThreadPool(2).asCoroutineDispatcher()
+        val directory = tmp.newFolder()
+        val store = LineageRepository(directory, afterSnapshotReplace = { committed.countDown() })
+        val owner = ViewModelStore()
+        val a = Channel(bootstrap(lineageA))
+        try {
+            val receiver = ReceiverViewModel(
+                pairingCodec = codec,
+                channelFactory = object : SecureChannel.Factory {
+                    override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = a
+                    override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel = error("receiver only")
+                },
+                appVersion = "test", osFingerprint = "test", stagingDir = store.stagingDir,
+                lineageRepository = store, ioDispatcher = io,
+                beforeInitialLineageCommit = {
+                    beforeCommit.countDown()
+                    check(releaseCommit.await(5, TimeUnit.SECONDS)) { "lineage commit was not released" }
+                },
+            ).also { owner.put("receiver", it) }
+            receiver.startScanning()
+            receiver.onQrScanned("new")
+            withTimeout(5_000) {
+                while (beforeCommit.count != 0L) {
+                    dispatcher.scheduler.runCurrent()
+                    delay(1)
+                }
+            }
+            receiver.reset()
+            // Adoption owns one worker. This queued barrier on the other runs only after the
+            // first reset IO pass has read the empty repository and reached its owner join.
+            withContext(io) { }
+            dispatcher.scheduler.runCurrent()
+            assertThat(store.active()).isNull()
+            assertThat(store.tombstones()).isEmpty()
+            assertThat(committed.count).isEqualTo(1)
+            receiver.startScanning()
+            receiver.onQrScanned("new")
+            assertThat(receiver.state.value).isEqualTo(ReceiverState.Idle)
+            if (clearDuringTeardown) owner.clear()
+
+            releaseCommit.countDown()
+            assertThat(committed.await(5, TimeUnit.SECONDS)).isTrue()
+            if (!clearDuringTeardown) {
+                withTimeout(5_000) {
+                    while (receiver.state.value !is ReceiverState.Scanning) {
+                        dispatcher.scheduler.runCurrent()
+                        receiver.startScanning()
+                        delay(1)
+                    }
+                }
+                assertThat(store.active()).isNull()
+                assertThat(a.sent.filterIsInstance<ProtocolMessage.Cancel>().single().lineageId).isEqualTo(lineageA)
+            }
+        } finally {
+            releaseCommit.countDown()
+            owner.clear()
+            try {
+                // Join-before-close must finish even if clearing interrupted the reset join.
+                // Reopening proves both durable deletion and release of the sole writer lock.
+                withTimeout(5_000) {
+                    while (true) {
+                        dispatcher.scheduler.runCurrent()
+                        try {
+                            withContext(io) {
+                                LineageRepository(directory).use { reopened ->
+                                    assertThat(reopened.active()).isNull()
+                                    assertThat(runCatching { reopened.credentialForResume() }.isFailure).isTrue()
+                                    assertThat(reopened.stagingDir.listFiles().orEmpty()).isEmpty()
+                                    assertThat(reopened.tombstones().single().lineageId).isEqualTo(lineageA)
+                                    assertThat(reopened.tombstones().single().reason).isEqualTo("cancelled")
+                                    assertThat(reopened.tombstones().single().peerDeleted).isFalse()
+                                }
+                            }
+                            break
+                        } catch (_: LineageBusyException) {
+                            delay(1)
+                        }
+                    }
+                }
+            } finally {
+                io.close()
+                store.close()
+            }
+        }
+    }
+
     @Test fun `reset revokes saved lineage immediately while a suspended provider still fences the next move`() = runTest(dispatcher) {
         LineageRepository(tmp.newFolder()).use { store ->
             val a = Channel(bootstrap(lineageA) + frames())

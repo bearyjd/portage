@@ -189,6 +189,7 @@ private fun StateBody(
                 failed = current.failed,
                 unknown = current.unknown,
                 notSent = current.notSent,
+                retryableFailed = current.retryableFailed,
                 onResume = viewModel::onResumeTransfer,
                 onDone = { runGuarded(SenderDestructiveIntent.COMPLETE, viewModel::reset) },
                 modifier = Modifier.fillMaxSize(),

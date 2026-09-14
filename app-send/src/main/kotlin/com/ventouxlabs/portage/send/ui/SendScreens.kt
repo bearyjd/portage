@@ -205,6 +205,7 @@ fun SendDoneScreen(
     modifier: Modifier = Modifier,
     unknown: Int = 0,
     notSent: Int = 0,
+    retryableFailed: Int = 0,
     onResume: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
@@ -215,7 +216,7 @@ fun SendDoneScreen(
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = if (unknown > 0 || notSent > 0) "NEEDS REVIEW" else "DONE",
+            text = if (unknown > 0 || notSent > 0 || retryableFailed > 0) "NEEDS REVIEW" else "DONE",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary,
         )
@@ -250,7 +251,14 @@ fun SendDoneScreen(
             Spacer(Modifier.height(s.sm))
             Text("$notSent were not sent in this attempt.", style = MaterialTheme.typography.bodyLarge)
         }
-        if (unknown > 0 || notSent > 0) {
+        if (retryableFailed > 0) {
+            Spacer(Modifier.height(s.sm))
+            Text(
+                "$retryableFailed could not be carried this time. Resume the saved move to try again.",
+                style = MaterialTheme.typography.bodyLarge,
+            )
+        }
+        if (unknown > 0 || notSent > 0 || retryableFailed > 0) {
             onResume?.let {
                 Spacer(Modifier.height(s.md))
                 SwissPrimaryButton(text = "Resume saved move", onClick = it, fullWidth = true)
