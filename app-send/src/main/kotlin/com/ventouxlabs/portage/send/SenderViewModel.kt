@@ -159,15 +159,18 @@ class SenderViewModel(
         lineageRepository ?: LineageRepository(File(stagingDir, "lineage"), random = random)
     }
     private val repository by repositoryDelegate
-    private var cancellationRequested = false
+    @Volatile private var cancellationRequested = false
     private var cancelling = false
     private var peerDeletionConfirmed = false
-    private var awaitingReply = false
-    private var cancelAlreadySent = false
+    @Volatile private var awaitingReply = false
+    @Volatile private var cancelAlreadySent = false
+    @Volatile private var validatingFiles = false
+    private var activeLineageId: String? = null
 
     init {
         runCatching { repository.active() }.fold(
             onSuccess = { active ->
+                activeLineageId = active?.id
                 if (active != null) _state.value = SenderState.Failed(
                     "An unfinished move is saved on this phone.", canResume = active.prepared,
                 )
@@ -286,9 +289,12 @@ class SenderViewModel(
         _state.value = SenderState.Preparing
         transferJob = viewModelScope.launch {
             var resumeCredential: ByteArray? = null
+            var pendingResumeAttempt = false
             try {
                 val active = if (resume) checkNotNull(repository.active()) { "No saved move to resume" }
                     else repository.startNewMove()
+                activeLineageId = active.id
+                pendingResumeAttempt = active.credentialState == CredentialState.PENDING
                 val built = withContext(transferIoDispatcher) {
                     val context = currentCoroutineContext()
                     context.ensureActive()
@@ -331,8 +337,11 @@ class SenderViewModel(
                     return@launch
                 }
 
-                resumeCredential = if (active.credentialState == CredentialState.ESTABLISHED)
-                    repository.credentialForResume() else null
+                resumeCredential = when (active.credentialState) {
+                    CredentialState.ESTABLISHED -> repository.credentialForResume()
+                    CredentialState.PENDING -> repository.pendingBootstrapCredential(active.id)
+                    CredentialState.NONE -> null
+                }
                 val mode = if (resumeCredential == null) PairingMode.NEW else PairingMode.RESUME
                 val payload = PairingPayload(
                     psk = randomBytes(PairingPayload.PSK_BYTES),
@@ -359,9 +368,7 @@ class SenderViewModel(
                 _state.value = SenderState.Linked
 
                 val bootstrap = if (mode == PairingMode.RESUME) ProtocolMessage.LineageResume(active.id)
-                    else ProtocolMessage.LineageInit(active.id,
-                        if (active.credentialState == CredentialState.PENDING) repository.pendingBootstrapCredential(active.id)
-                        else repository.establishResumeCredential(active.id))
+                    else ProtocolMessage.LineageInit(active.id, repository.establishResumeCredential(active.id))
 
                 // Cap the WHOLE data phase, not just each read. withDataPhaseDeadline returns null
                 // on ITS OWN deadline ONLY, so a stalled peer becomes a visible Failed rather than
@@ -375,7 +382,7 @@ class SenderViewModel(
                         engine.run(ch, built, bootstrap,
                             onLineageAcknowledged = {
                                 withContext(transferIoDispatcher) {
-                                    if (mode == PairingMode.NEW) repository.confirmResumeCredential(active.id)
+                                    repository.confirmResumeCredential(active.id)
                                     repository.authenticated(active.id)
                                 }
                             },
@@ -383,9 +390,12 @@ class SenderViewModel(
                             isCancelAlreadySent = { cancelAlreadySent },
                             onAwaitingReply = { awaitingReply = it },
                             onPeerCancel = {
-                                if (repository.active()?.id == active.id) repository.cancel(active.id)
+                                withContext(transferIoDispatcher) {
+                                    if (repository.active()?.id == active.id) repository.cancel(active.id)
+                                }
                             },
                             ioDispatcher = transferIoDispatcher,
+                            onValidatingPayload = { validatingFiles = it },
                         ) { event -> onEngineEvent(built, event) }
                     } finally {
                         if (bootstrap is ProtocolMessage.LineageInit) bootstrap.resumeCredential.fill(0)
@@ -423,8 +433,10 @@ class SenderViewModel(
                 if (cancelled.peerDeletionConfirmed) {
                     val id = staged?.manifest?.lineageId
                     if (id != null) {
-                        if (repository.active()?.id == id) repository.cancel(id)
-                        repository.markPeerDeleted(id)
+                        withContext(transferIoDispatcher) {
+                            if (repository.active()?.id == id) repository.cancel(id)
+                            repository.markPeerDeleted(id)
+                        }
                     }
                 }
                 if (!cancelling) {
@@ -441,7 +453,15 @@ class SenderViewModel(
                 // reset() cancels and tears the channel down under the coroutine; the
                 // resulting IO error must not flip the user's Home back to Failed.
                 ensureActive()
-                if (!cancelling) fail(t.message ?: "Transfer failed")
+                if (!cancelling) {
+                    if (pendingResumeAttempt) {
+                        closeChannel()
+                        _state.value = SenderState.Failed(
+                            "The original phone could not resume this move securely. Start a new move on both phones.",
+                            canResume = false,
+                        )
+                    } else fail(t.message ?: "Transfer failed")
+                }
             } finally {
                 // Always release the keep-alive — done, fail, timeout, or a reset() cancellation
                 // unwinding through here. Idempotent: a no-op if start() was never reached.
@@ -521,40 +541,77 @@ class SenderViewModel(
     /** Revoke locally immediately, then allow a bounded authenticated peer-delete exchange. */
     fun cancelTransfer() {
         if (cancelling) return
-        val id = try {
-            repository.active()?.id?.also(repository::cancel)
-        } catch (failure: Exception) {
-            fail("Saved move could not be cancelled: ${failure.message}")
-            return
-        }
+        // Fence callbacks and stop long local validation before touching the store. A
+        // connected exchange keeps its sole reader until the bounded delete exchange ends.
         cancellationRequested = true
         cancelling = true
         val cancelChannel = channel
         val sendWhileReceiving = awaitingReply
         val job = transferJob
+        val stopLocalWork = cancelChannel == null || validatingFiles
+        if (stopLocalWork) job?.cancel()
+        val expectedId = activeLineageId
         viewModelScope.launch {
-            if (cancelChannel != null) withDataPhaseDeadline(cancelChannel, 1_500L) {
-                // There is exactly one receiver. Sending CANCEL while it waits for a reply
-                // wakes a cooperative peer; the engine validates the acknowledgement.
-                if (sendWhileReceiving && id != null) {
-                    cancelAlreadySent = true
-                    runCatching { cancelChannel.send(ProtocolMessage.Cancel(id)) }
+            var failureReason: String? = null
+            try {
+                val id = withContext(transferIoDispatcher) {
+                    val active = repository.active()
+                    val target = expectedId ?: active?.id
+                    if (target != null && active?.id == target) repository.cancel(target)
+                    target
                 }
-                job?.join()
-                Unit
+                if (cancelChannel != null) withDataPhaseDeadline(cancelChannel, 1_500L) {
+                    if (stopLocalWork) {
+                        // The cancelled validation had no receive in flight. Wait for its
+                        // stream finally before becoming the cancellation exchange's reader.
+                        job?.join()
+                        if (id != null) {
+                            peerDeletionConfirmed = requestPeerCancellation(cancelChannel, id)
+                            if (peerDeletionConfirmed) withContext(transferIoDispatcher) {
+                                repository.markPeerDeleted(id)
+                            }
+                        }
+                    } else {
+                        if (sendWhileReceiving && id != null) {
+                            cancelAlreadySent = true
+                            runCatching { cancelChannel.send(ProtocolMessage.Cancel(id)) }
+                        }
+                        job?.join()
+                    }
+                    Unit
+                }
+            } catch (failure: Exception) {
+                failureReason = "Saved move could not be cancelled: ${failure.message}"
+            } finally {
+                closeChannel()
+                job?.cancel()
+                transferJob = null
+                staged = null
+                clearRelayPicks()
+                clearUserFiles()
+                clearAppSelection()
+                cancelling = false
+                _state.value = SenderState.Failed(failureReason ?:
+                    if (peerDeletionConfirmed) "Move cancelled. Both phones confirmed deletion of saved move data."
+                    else "Move cancelled on this phone. Deletion on the other phone was not confirmed.",
+                )
             }
-            closeChannel()
-            job?.cancel()
-            transferJob = null
-            staged = null
-            clearRelayPicks()
-            clearUserFiles()
-            clearAppSelection()
-            cancelling = false
-            _state.value = SenderState.Failed(
-                if (peerDeletionConfirmed) "Move cancelled. Both phones confirmed deletion of saved move data."
-                else "Move cancelled on this phone. Deletion on the other phone was not confirmed.",
-            )
+        }
+    }
+
+    private suspend fun requestPeerCancellation(channel: SecureChannel, lineageId: String): Boolean {
+        channel.send(ProtocolMessage.Cancel(lineageId))
+        while (true) {
+            when (val message = channel.receive()) {
+                is ProtocolMessage.CancelAck -> return message.lineageId == lineageId
+                is ProtocolMessage.Cancel -> {
+                    if (message.lineageId != lineageId) return false
+                    channel.send(ProtocolMessage.CancelAck(lineageId))
+                }
+                is ProtocolMessage.Ping, is ProtocolMessage.Hello, is ProtocolMessage.LineageAck,
+                is ProtocolMessage.ItemAck, is ProtocolMessage.BatchAck -> Unit
+                else -> return false
+            }
         }
     }
 

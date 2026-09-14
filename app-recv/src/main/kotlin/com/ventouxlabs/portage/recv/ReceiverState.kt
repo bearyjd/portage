@@ -65,6 +65,9 @@ sealed interface ReceiverState {
     /** Landing: explain the flow, offer "Scan". */
     data object Idle : ReceiverState
 
+    /** Waiting briefly for the previous ViewModel to release the saved move's writer lock. */
+    data object OpeningSavedMove : ReceiverState
+
     /** Camera up, looking for the pairing QR. */
     data object Scanning : ReceiverState
 

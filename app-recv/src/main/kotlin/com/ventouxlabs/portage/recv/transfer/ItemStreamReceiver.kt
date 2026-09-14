@@ -25,6 +25,7 @@ import com.ventouxlabs.portage.transport.TransportException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -150,9 +151,25 @@ class ItemStreamReceiver(
             } else {
                 lineageRepository.reconcileInterrupted(checkNotNull(lineageId))
                 // Only exact verified files survive; interrupted partials restart from byte zero.
+                val context = currentCoroutineContext()
                 expected.values.filter { lineageRepository.active()?.id == lineageId }.forEach { meta ->
                     val key = CheckpointKey.from(checkNotNull(lineageId), meta)
-                    if (runCatching { lineageRepository?.verifiedStaged(key) }.getOrNull() == null) {
+                    val verified = try {
+                        if (cancellationRequested() || !context.isActive) {
+                            // Cancellation must not start another full-file read. Persisted verified
+                            // ownership is sufficient to retain a complete file for the next resume;
+                            // PREPARED partials have no stagedName and are removed below.
+                            lineageRepository.checkpoint(key)?.stagedName?.let { File(stagingDir, it) }
+                        } else {
+                            lineageRepository.verifiedStaged(key) {
+                                context.ensureActive()
+                                if (cancellationRequested()) throw CancellationException("move cancelled")
+                            }
+                        }
+                    } catch (c: CancellationException) {
+                        lineageRepository.checkpoint(key)?.stagedName?.let { File(stagingDir, it) }
+                    } catch (_: Exception) { null }
+                    if (verified == null) {
                         File(stagingDir, "${meta.occurrenceId}.bin").delete()
                     }
                 }
@@ -220,7 +237,11 @@ class ItemStreamReceiver(
 
         // Generated name — display fields are NEVER paths (THREAT_MODEL, path traversal).
         val key = if (meta != null && lineageRepository != null) CheckpointKey.from(checkNotNull(lineageId), meta) else null
-        val resumed = if (begin.itemId in resumeItems && key != null) lineageRepository?.verifiedStaged(key) else null
+        val context = currentCoroutineContext()
+        val resumed = if (begin.itemId in resumeItems && key != null) lineageRepository?.verifiedStaged(key) {
+            context.ensureActive()
+            if (cancellationRequested()) throw CancellationException("move cancelled")
+        } else null
         if (begin.itemId in resumeItems && resumed == null) throw TransportException("verified staging unavailable; restart item from zero")
         val file = resumed ?: File(stagingDir, if (lineageRepository == null) "stage-${begin.itemId}.bin"
             else "${meta?.occurrenceId ?: "unrequested-${begin.itemId}"}.bin")
@@ -228,7 +249,13 @@ class ItemStreamReceiver(
         var received = if (resumed != null) begin.size else 0L
         if (resumed != null) resumed.inputStream().use { input ->
             val buffer = ByteArray(64 * 1024)
-            while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+            while (true) {
+                context.ensureActive()
+                if (cancellationRequested()) throw CancellationException("move cancelled")
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
         }
         var nextSeq = 0
         var endSha: String? = null

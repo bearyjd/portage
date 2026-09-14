@@ -171,6 +171,9 @@ private fun StateBody(
 ) {
     val context = LocalContext.current
     when (current) {
+        is ReceiverState.OpeningSavedMove ->
+            PendingBody(headline = "Opening saved move", caption = "Waiting for the previous transfer to finish closing…")
+
         is ReceiverState.Idle ->
             IdleScreen(
                 onScan = viewModel::startScanning,
@@ -473,6 +476,7 @@ private fun PendingBody(headline: String, caption: String) {
  * checklist toggles) from triggering a full crossfade, so motion fires on real screen changes.
  */
 private fun ReceiverState.key(): String = when (this) {
+    is ReceiverState.OpeningSavedMove -> "openingSavedMove"
     is ReceiverState.Idle -> "idle"
     is ReceiverState.Scanning -> "scanning"
     is ReceiverState.Pairing -> "pairing"

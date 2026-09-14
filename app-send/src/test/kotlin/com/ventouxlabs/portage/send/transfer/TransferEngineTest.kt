@@ -27,6 +27,12 @@ import java.io.OutputStream
 import java.io.File
 import java.util.concurrent.Executors
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.StandardTestDispatcher
+import java.io.ByteArrayInputStream
 
 private class ScriptedChannel(vararg incoming: ProtocolMessage?) : SecureChannel {
     private val queue = ArrayDeque(incoming.toList())
@@ -252,5 +258,31 @@ class TransferEngineTest {
         }
         assertThat(threads).isNotEmpty()
         assertThat(threads.toSet()).containsExactly("sender-file-io")
+    }
+
+    @Test fun `cancellation immediately after opening a payload still closes its stream`() = runTest {
+        val bytes = byteArrayOf(1, 2, 3)
+        val staged = stage(bytes)
+        var closed = false
+        var opened = false
+        val stream = object : ByteArrayInputStream(bytes) {
+            override fun close() { closed = true; super.close() }
+        }
+        val channel = ScriptedChannel(hello, lineageAck, ProtocolMessage.Select(listOf(1)))
+        lateinit var sending: Job
+        val engine = TransferEngine(openPayload = {
+            opened = true
+            sending.cancel()
+            stream
+        })
+        sending = launch(start = CoroutineStart.LAZY) {
+            engine.run(channel, staged, bootstrap, ioDispatcher = StandardTestDispatcher(testScheduler)) { }
+        }
+        sending.start()
+        advanceUntilIdle()
+        assertThat(opened).isTrue()
+        assertThat(sending.isCancelled).isTrue()
+        assertThat(closed).isTrue()
+        assertThat(channel.sent.filterIsInstance<ProtocolMessage.ItemData>()).isEmpty()
     }
 }

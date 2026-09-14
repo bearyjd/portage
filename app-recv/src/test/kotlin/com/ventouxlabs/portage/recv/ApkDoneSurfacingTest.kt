@@ -224,6 +224,7 @@ class ApkDoneSurfacingTest {
         TestScopeRun(vm) { advanceUntilIdle() }
         assertThat(abandonCalled).isFalse() // not called yet — user is on Done screen
         vm.reset()
+        advanceUntilIdle() // session teardown and PackageInstaller cleanup run off Main
         assertThat(abandonCalled).isTrue() // called on return-home
     }
 

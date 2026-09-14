@@ -10,7 +10,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.nio.channels.FileChannel
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
@@ -65,6 +67,9 @@ data class ActiveLineage(
 /** Deliberately has no original cause: serializer failures can embed plaintext snapshot secrets. */
 class SnapshotLoadException : IllegalStateException("Saved move state could not be loaded. Reset local move data before starting a new move.")
 
+/** Temporary ownership contention; retry after the previous repository/session closes. */
+class LineageBusyException : IllegalStateException("Saved move state is still in use. Try again after the previous session closes.")
+
 @Serializable
 data class Tombstone(val lineageId: String, val atMillis: Long, val reason: String, val peerDeleted: Boolean = false)
 
@@ -98,25 +103,37 @@ class LineageRepository(
     // Crash-test seams bracket the atomic rename. Production leaves both inert.
     private val beforeSnapshotReplace: () -> Unit = {},
     private val afterSnapshotReplace: () -> Unit = {},
+    // Validation-test seam; invoked without the repository monitor before each staged read.
+    private val beforeStagedRead: () -> Unit = {},
 ) : AutoCloseable {
     val stagingDir = File(directory, "staging")
     private val snapshotFile = File(directory, "lineage.json")
     private val pendingFile = File(directory, "lineage.pending")
     private val json = Json { encodeDefaults = true; ignoreUnknownKeys = false }
+    private val ownershipPath: String
     private val lockChannel: FileChannel
     private val writerLock: java.nio.channels.FileLock
     private var state: Snapshot
     private var closed = false
 
     init {
+        ownershipPath = try { directory.canonicalPath } catch (_: Exception) { throw SnapshotLoadException() }
+        synchronized(ownedDirectories) {
+            if (!ownedDirectories.add(ownershipPath)) throw LineageBusyException()
+        }
         lockChannel = try {
             require(directory.mkdirs() || directory.isDirectory)
             FileChannel.open(File(directory, "writer.lock").toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE)
         } catch (_: Exception) {
+            releaseProcessOwnership()
             throw SnapshotLoadException()
         }
         try {
-            writerLock = checkNotNull(lockChannel.tryLock()) { "lineage store already has a writer" }
+            writerLock = try {
+                lockChannel.tryLock() ?: throw LineageBusyException()
+            } catch (_: OverlappingFileLockException) {
+                throw LineageBusyException()
+            }
             state = loadSnapshot()
             // A pre-rename crash may leave sensitive pending bytes, but cannot commit them.
             if (pendingFile.exists()) check(pendingFile.delete()) { "cannot remove uncommitted snapshot" }
@@ -124,6 +141,8 @@ class LineageRepository(
             reconcileInterruptedAtStartup()
         } catch (t: Throwable) {
             runCatching { lockChannel.close() }
+            releaseProcessOwnership()
+            if (t is LineageBusyException) throw t
             if (t is Exception) throw SnapshotLoadException()
             throw t
         }
@@ -131,7 +150,9 @@ class LineageRepository(
 
     @Synchronized fun active(): ActiveLineage? {
         purgeExpired()
-        return state.active?.let { ActiveLineage(it.id, it.lastAuthenticatedAtMillis, it.manifest, it.credentialState, it.prepared) }
+        return state.active?.let {
+            ActiveLineage(it.id, it.lastAuthenticatedAtMillis, it.manifest?.let(::copyManifest), it.credentialState, it.prepared)
+        }
     }
 
     /** Called only for the user's explicit Start a new move action. Exactly 16 random bytes. */
@@ -216,13 +237,14 @@ class LineageRepository(
     }
 
     @Synchronized fun saveManifest(manifest: TransferManifest) {
-        ManifestValidation.requireValid(manifest)
-        val active = requireActive(manifest.lineageId)
-        require(active.manifest == null || active.manifest == manifest) { "resumed manifest changed occurrence identity" }
-        if (active.manifest == manifest) return
+        val requested = copyManifest(manifest)
+        ManifestValidation.requireValid(requested)
+        val active = requireActive(requested.lineageId)
+        require(active.manifest == null || active.manifest == requested) { "resumed manifest changed occurrence identity" }
+        if (active.manifest == requested) return
         commit(state.copy(
-            active = active.copy(manifest = manifest),
-            checkpoints = manifest.items.map { Checkpoint(CheckpointKey.from(manifest.lineageId, it)) },
+            active = active.copy(manifest = requested),
+            checkpoints = requested.items.map { Checkpoint(CheckpointKey.from(requested.lineageId, it)) },
         ))
     }
 
@@ -231,34 +253,50 @@ class LineageRepository(
      * owned staged file has been validated and its filename is present in the same snapshot.
      * A callback can cancel hashing before any commit; callers own/clean their staging files.
      */
-    @Synchronized fun savePreparedManifest(
+    fun savePreparedManifest(
         manifest: TransferManifest,
         stagedFiles: Map<Int, File>,
         checkCancelled: () -> Unit = {},
     ) {
-        ManifestValidation.requireValid(manifest)
-        val active = requireActive(manifest.lineageId)
-        require(active.manifest == null || active.manifest == manifest) { "prepared manifest changed occurrence identity" }
-        require(stagedFiles.keys == manifest.items.map { it.itemId }.toSet()) { "prepared staging must cover the exact manifest" }
-        val prepared = manifest.items.map { meta ->
+        // Copy caller collections before releasing the monitor so the validated input itself
+        // cannot change while file I/O is in progress.
+        val requested = copyManifest(manifest)
+        val files = stagedFiles.toMap()
+        val observed = synchronized(this) {
+            ManifestValidation.requireValid(requested)
+            val active = requireActive(requested.lineageId)
+            require(active.manifest == null || active.manifest == requested) { "prepared manifest changed occurrence identity" }
+            require(files.keys == requested.items.map { it.itemId }.toSet()) { "prepared staging must cover the exact manifest" }
+            state
+        }
+        val prepared = requested.items.map { meta ->
             checkCancelled()
-            val file = stagedFiles.getValue(meta.itemId)
+            val file = files.getValue(meta.itemId)
             val name = stagedName(file)
-            val key = CheckpointKey.from(manifest.lineageId, meta)
+            val key = CheckpointKey.from(requested.lineageId, meta)
             require(matchesStagedBytes(file, key, checkCancelled)) { "prepared bytes do not match the manifest" }
+            checkCancelled()
             FileChannel.open(file.toPath(), StandardOpenOption.WRITE).use { it.force(true) }
             Checkpoint(key, stagedName = name)
         }
+        checkCancelled()
         if (prepared.isNotEmpty()) FileChannel.open(stagingDir.toPath(), StandardOpenOption.READ).use { it.force(true) }
         checkCancelled()
-        if (active.prepared) {
-            require(state.checkpoints.map { it.key to it.stagedName }.toSet() == prepared.map { it.key to it.stagedName }.toSet()) {
-                "prepared staging identity changed"
+        synchronized(this) {
+            check(!closed && state === observed && state.active?.id == requested.lineageId) { "saved move changed during preparation" }
+            val active = requireActive(requested.lineageId)
+            check(state === observed && elapsed(active.lastAuthenticatedAtMillis) < STAGING_TTL_MS) { "saved move expired during preparation" }
+            if (active.prepared) {
+                require(state.checkpoints.map { it.key to it.stagedName }.toSet() == prepared.map { it.key to it.stagedName }.toSet()) {
+                    "prepared staging identity changed"
+                }
+                return
             }
-            return
+            require(state.checkpoints.all { it.phase == ReceiptPhase.PREPARED }) { "cannot replace in-progress checkpoints" }
+            // Only this bounded snapshot transaction holds the writer monitor; all payload
+            // hashing/fsync above occurs outside it and cannot delay cancel or active().
+            commit(state.copy(active = active.copy(manifest = requested, prepared = true), checkpoints = prepared))
         }
-        require(state.checkpoints.all { it.phase == ReceiptPhase.PREPARED }) { "cannot replace in-progress checkpoints" }
-        commit(state.copy(active = active.copy(manifest = manifest, prepared = true), checkpoints = prepared))
     }
 
     @Synchronized fun prepare(key: CheckpointKey, stagedFile: File? = null): Checkpoint {
@@ -288,19 +326,32 @@ class LineageRepository(
     }
 
     /** Exact-key prepared sender bytes can be recovered too. Every read re-hashes the entire file. */
-    @Synchronized fun stagedFile(key: CheckpointKey, checkCancelled: () -> Unit = {}): File? {
-        val record = checkpoint(key) ?: return null
-        val active = requireActive(key.lineageId)
-        if (elapsed(active.lastAuthenticatedAtMillis) >= STAGING_TTL_MS) return null
-        val file = record.stagedName?.let { File(stagingDir, it) } ?: return null
-        require(file.canonicalFile.parentFile == stagingDir.canonicalFile) { "invalid staged path" }
-        return file.takeIf { matchesStagedBytes(it, key, checkCancelled) }
-    }
+    fun stagedFile(key: CheckpointKey, checkCancelled: () -> Unit = {}): File? =
+        validateStagedFile(key, requireVerified = false, checkCancelled)
 
-    @Synchronized fun verifiedStaged(key: CheckpointKey): File? {
-        val record = checkpoint(key) ?: return null
-        if (record.phase == ReceiptPhase.PREPARED || record.phase == ReceiptPhase.FAILED) return null
-        return stagedFile(key)
+    fun verifiedStaged(key: CheckpointKey, checkCancelled: () -> Unit = {}): File? =
+        validateStagedFile(key, requireVerified = true, checkCancelled)
+
+    private fun validateStagedFile(key: CheckpointKey, requireVerified: Boolean, checkCancelled: () -> Unit): File? {
+        val (observed, file) = synchronized(this) {
+            val record = checkpoint(key) ?: return null
+            if (requireVerified && (record.phase == ReceiptPhase.PREPARED || record.phase == ReceiptPhase.FAILED)) return null
+            val active = requireActive(key.lineageId)
+            if (elapsed(active.lastAuthenticatedAtMillis) >= STAGING_TTL_MS) return null
+            val file = record.stagedName?.let { File(stagingDir, it) } ?: return null
+            state to file
+        }
+        require(file.canonicalFile.parentFile == stagingDir.canonicalFile) { "invalid staged path" }
+        val valid = matchesStagedBytes(file, key, checkCancelled)
+        checkCancelled()
+        return synchronized(this) {
+            // No stale validation result survives any intervening state commit or owner close.
+            if (closed || state !== observed || state.active?.id != key.lineageId) return null
+            purgeExpired()
+            if (state !== observed || state.active?.id != key.lineageId ||
+                elapsed(checkNotNull(state.active).lastAuthenticatedAtMillis) >= STAGING_TTL_MS) return null
+            file.takeIf { valid }
+        }
     }
 
     /** No provider evidence is available in PR 0a, so no APPLIED_DURABLE row skips apply. */
@@ -351,11 +402,21 @@ class LineageRepository(
     }
 
     @Synchronized override fun close() {
-        if (!closed) { closed = true; writerLock.release(); lockChannel.close() }
+        if (!closed) {
+            closed = true
+            try { writerLock.release() } finally {
+                try { lockChannel.close() } finally { releaseProcessOwnership() }
+            }
+        }
+    }
+
+    private fun releaseProcessOwnership() {
+        synchronized(ownedDirectories) { ownedDirectories.remove(ownershipPath) }
     }
 
     private fun elapsed(since: Long): Long = (nowMillis() - since).coerceAtLeast(0)
     private fun randomBytes(size: Int): ByteArray = ByteArray(size).also(random::nextBytes)
+    private fun copyManifest(manifest: TransferManifest): TransferManifest = manifest.copy(items = manifest.items.toList())
 
     private fun requireActive(lineageId: String? = null): ActiveRecord {
         lineageId?.let(ManifestValidation::requireIdentity)
@@ -382,16 +443,24 @@ class LineageRepository(
         checkCancelled()
         if (!file.isFile || file.length() != key.size) return false
         val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buffer = ByteArray(64 * 1024)
-            try {
-                while (true) {
-                    checkCancelled()
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    digest.update(buffer, 0, count)
-                }
-            } finally { buffer.fill(0) }
+        try {
+            file.inputStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                try {
+                    while (true) {
+                        checkCancelled()
+                        beforeStagedRead()
+                        checkCancelled()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        digest.update(buffer, 0, count)
+                    }
+                } finally { buffer.fill(0) }
+            }
+        } catch (_: IOException) {
+            // A concurrent cancel may unlink the file before open/read. Unavailable bytes
+            // cannot authorize resume; the final snapshot fence still protects all returns.
+            return false
         }
         return digest.digest().toHex() == key.sha256
     }
@@ -474,6 +543,10 @@ class LineageRepository(
     }
 
     companion object {
+        // Do not open/close a second descriptor for a file already locked in this JVM:
+        // some platforms release all process locks when any descriptor for that file closes.
+        // The OS lock separately fences writers in other processes.
+        private val ownedDirectories = mutableSetOf<String>()
         private const val SNAPSHOT_VERSION = 2
         const val LINEAGE_TTL_MS = 30L * 24 * 60 * 60 * 1000
         const val STAGING_TTL_MS = 24L * 60 * 60 * 1000

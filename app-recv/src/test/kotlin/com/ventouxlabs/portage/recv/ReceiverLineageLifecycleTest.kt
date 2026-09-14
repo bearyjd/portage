@@ -1,5 +1,6 @@
 package com.ventouxlabs.portage.recv
 
+import androidx.lifecycle.ViewModelStore
 import com.google.common.truth.Truth.assertThat
 import com.ventouxlabs.portage.lineage.CheckpointKey
 import com.ventouxlabs.portage.lineage.LineageRepository
@@ -26,6 +27,10 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -34,6 +39,10 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.io.InputStream
 import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ReceiverLineageLifecycleTest {
@@ -274,6 +283,128 @@ class ReceiverLineageLifecycleTest {
             assertThat(vm.state.value).isInstanceOf(ReceiverState.Reviewing::class.java)
             assertThat(store.credentialForResume()).isEqualTo(ByteArray(32) { 7 })
             assertThat(retry.sent.filterIsInstance<ProtocolMessage.LineageAck>()).hasSize(1)
+        }
+    }
+
+    @Test fun `new pairing cannot cancel an existing move before proving the saved bootstrap credential`() = runTest(dispatcher) {
+        LineageRepository(tmp.newFolder()).use { store ->
+            store.acceptInitial(lineageA, ByteArray(32) { 7 })
+            val original = store.active()
+            val channel = Channel(listOf(ProtocolMessage.Cancel(lineageA)))
+            val vm = vm(listOf(channel), store)
+            vm.startScanning(); vm.onQrScanned("new"); advanceUntilIdle()
+            assertThat(store.active()).isEqualTo(original)
+            assertThat(store.credentialForResume()).isEqualTo(ByteArray(32) { 7 })
+            assertThat(store.tombstones()).isEmpty()
+            assertThat(channel.sent.filterIsInstance<ProtocolMessage.CancelAck>()).isEmpty()
+            assertThat(vm.state.value).isInstanceOf(ReceiverState.Failed::class.java)
+        }
+    }
+
+    @Test fun `new ViewModel retries a busy saved store after the previous owner unwinds`() = runTest(dispatcher) {
+        val directory = tmp.newFolder()
+        val repository = LineageRepository(directory)
+        val finishProvider = CompletableDeferred<Unit>()
+        val first = vm(listOf(Channel(bootstrap(lineageA) + frames())), repository, ApplyRegistryFactory {
+            ApplyProviderRegistry(listOf(object : ApplyProvider {
+                override val kind = item.kind
+                override suspend fun apply(source: InputStream): ApplyOutcome = withContext(NonCancellable) {
+                    finishProvider.await()
+                    ApplyOutcome(ItemStatus.OK)
+                }
+            }))
+        })
+        val oldOwner = ViewModelStore().apply { put("receiver", first) }
+        first.startScanning(); first.onQrScanned("new"); runCurrent()
+        first.onConfirm(); runCurrent()
+        oldOwner.clear(); runCurrent()
+
+        var reopened: LineageRepository? = null
+        val second = ReceiverViewModel(
+            appVersion = "test", osFingerprint = "test", stagingDir = repository.stagingDir,
+            lineageRepositoryFactory = { LineageRepository(directory).also { reopened = it } },
+            ioDispatcher = dispatcher,
+        )
+        val newOwner = ViewModelStore().apply { put("receiver", second) }
+        runCurrent()
+        assertThat(second.state.value).isEqualTo(ReceiverState.OpeningSavedMove)
+        assertThat(reopened).isNull()
+        finishProvider.complete(Unit); runCurrent()
+        advanceTimeBy(100); runCurrent()
+        assertThat(second.state.value).isEqualTo(ReceiverState.Idle)
+        assertThat(reopened?.active()?.id).isEqualTo(lineageA)
+        assertThat(reopened?.checkpoint(CheckpointKey.from(lineageA, item))?.phase)
+            .isEqualTo(ReceiptPhase.UNKNOWN_INTERRUPTED)
+        second.startScanning()
+        assertThat(second.state.value).isEqualTo(ReceiverState.Scanning)
+        newOwner.clear(); runCurrent()
+    }
+
+    @Test fun `reset returns while resume validation is paused and cancels before another file read`() = runBlocking {
+        val paused = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val teardownComplete = CountDownLatch(1)
+        val pauseReads = AtomicBoolean(false)
+        val io = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        Dispatchers.setMain(ui)
+        var mainThread: Thread? = null
+        var teardownThread: Thread? = null
+        val directory = tmp.newFolder()
+        val repository = LineageRepository(directory, beforeStagedRead = {
+            if (pauseReads.get()) {
+                paused.countDown()
+                check(release.await(5, TimeUnit.SECONDS)) { "validation was not released" }
+            }
+        })
+        try {
+            repository.acceptInitial(lineageA, ByteArray(32) { 7 })
+            repository.saveManifest(manifest(lineageA))
+            repository.stagingDir.mkdirs()
+            val staged = File(repository.stagingDir, "${item.occurrenceId}.bin").apply { writeBytes(bytes) }
+            repository.transition(CheckpointKey.from(lineageA, item), ReceiptPhase.PREPARED,
+                ReceiptPhase.RECEIVED_VERIFIED, stagedFile = staged)
+            val channel = Channel(listOf(
+                ProtocolMessage.LineageResume(lineageA), ProtocolMessage.Manifest(manifest(lineageA)),
+            ) + frames(sendBytes = false))
+            val receiver = ReceiverViewModel(
+                pairingCodec = codec,
+                channelFactory = object : SecureChannel.Factory {
+                    override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = channel
+                    override suspend fun connectAsReceiver(payload: PairingPayload, resumeCredential: ByteArray?, lineageId: String?): SecureChannel = channel
+                    override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel = error("receiver only")
+                },
+                appVersion = "test", osFingerprint = "test", stagingDir = repository.stagingDir,
+                lineageRepository = repository, ioDispatcher = io,
+                abandonSessions = { teardownThread = Thread.currentThread(); teardownComplete.countDown() },
+            )
+            withContext(ui) {
+                mainThread = Thread.currentThread()
+                receiver.startScanning()
+                receiver.onQrScanned("resume")
+            }
+            withTimeout(5_000) { receiver.state.first { it is ReceiverState.Reviewing } }
+            pauseReads.set(true)
+            withContext(ui) { receiver.onConfirm() }
+            assertThat(paused.await(5, TimeUnit.SECONDS)).isTrue()
+            // The validation worker remains blocked: reset must not wait for its store/read.
+            val resetStarted = System.nanoTime()
+            withContext(ui) { receiver.reset() }
+            assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - resetStarted)).isLessThan(500)
+            assertThat(receiver.state.value).isEqualTo(ReceiverState.Idle)
+            assertThat(release.count).isEqualTo(1)
+            assertThat(teardownComplete.count).isEqualTo(1)
+            release.countDown()
+            assertThat(teardownComplete.await(5, TimeUnit.SECONDS)).isTrue()
+            assertThat(teardownThread).isNotEqualTo(mainThread)
+            assertThat(repository.active()).isNull()
+            assertThat(channel.sent.filterIsInstance<ProtocolMessage.Select>()).isEmpty()
+        } finally {
+            release.countDown()
+            Dispatchers.setMain(dispatcher)
+            ui.close()
+            io.close()
+            repository.close()
         }
     }
 

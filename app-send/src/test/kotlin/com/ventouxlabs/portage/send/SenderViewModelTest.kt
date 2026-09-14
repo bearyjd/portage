@@ -35,6 +35,9 @@ import com.ventouxlabs.portage.transport.TransportException
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.flow.first
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
@@ -53,6 +56,11 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.OutputStream
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.Executors
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 import java.security.SecureRandom
 
 private class BytesExport(
@@ -175,6 +183,27 @@ private class FakeKeepAlive : TransferKeepAlive {
     var stops = 0
     override fun start() { starts++ }
     override fun stop() { stops++ }
+}
+
+/** Protocol-layer fixture: a fresh receiver cannot complete the proof-of-possession handshake. */
+private class PossessionFactory(
+    private val receiver: LineageRepository,
+    private val channel: SecureChannel,
+) : SecureChannel.Factory {
+    var payload: PairingPayload? = null
+    override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = error("sender only")
+    override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel = error("credential overload required")
+    override suspend fun acceptAsSender(payload: PairingPayload, resumeCredential: ByteArray?, lineageId: String?): SecureChannel {
+        this.payload = payload
+        if (payload.mode != PairingMode.RESUME || receiver.active()?.id != lineageId || resumeCredential == null) {
+            throw TransportException("resume proof unavailable")
+        }
+        val expected = receiver.credentialForResume()
+        try {
+            if (!java.security.MessageDigest.isEqual(expected, resumeCredential)) throw TransportException("resume proof rejected")
+        } finally { expected.fill(0) }
+        return channel
+    }
 }
 
 class SenderViewModelTest {
@@ -543,7 +572,7 @@ class SenderViewModelTest {
     }
 
     @Test
-    fun `bootstrap restart retries same pending secret until matching acknowledgement`() = runTest(dispatcher) {
+    fun `pending bootstrap restart resumes only when original receiver persisted the credential`() = runTest(dispatcher) {
         for (crash in listOf("before-send", "before-peer-persist", "before-ack-processing")) {
             val directory = tmp.newFolder()
             val sender = LineageRepository(directory)
@@ -576,28 +605,66 @@ class SenderViewModelTest {
 
             val reopened = LineageRepository(directory)
             val retryChannel = happyChannel()
-            var retriedSecret: ByteArray? = null
-            retryChannel.afterSend = { message ->
-                if (message is ProtocolMessage.LineageInit) {
-                    retriedSecret = message.resumeCredential.copyOf()
-                    receiver.acceptInitial(message.lineageId, message.resumeCredential)
-                }
-            }
-            val factory = FakeFactory(retryChannel)
+            val factory = PossessionFactory(receiver, retryChannel)
             val retry = viewModel(factory, providers = emptyList(), repository = reopened)
             retry.onResumeTransfer()
             advanceUntilIdle()
-            assertThat(factory.acceptedPayload?.mode).isEqualTo(PairingMode.NEW)
-            assertThat(factory.resumeCredential).isNull()
-            assertThat(retriedSecret).isEqualTo(secret)
+            assertThat(factory.payload?.mode).isEqualTo(PairingMode.RESUME)
+            assertThat(retryChannel.sent.filterIsInstance<ProtocolMessage.LineageInit>()).isEmpty()
             assertThat(reopened.active()?.id).isEqualTo(active.id)
-            assertThat(reopened.active()?.credentialState).isEqualTo(CredentialState.ESTABLISHED)
-            assertThat(retry.state.value).isEqualTo(SenderState.Done(1, 0))
+            if (crash == "before-ack-processing") {
+                assertThat(reopened.active()?.credentialState).isEqualTo(CredentialState.ESTABLISHED)
+                assertThat(reopened.credentialForResume()).isEqualTo(secret)
+                assertThat(retry.state.value).isEqualTo(SenderState.Done(1, 0))
+                assertThat(retryChannel.sent.first()).isEqualTo(ProtocolMessage.LineageResume(active.id))
+            } else {
+                assertThat(reopened.active()?.credentialState).isEqualTo(CredentialState.PENDING)
+                assertThat(retryChannel.sent).isEmpty()
+                assertThat((retry.state.value as SenderState.Failed).canResume).isFalse()
+                assertThat((retry.state.value as SenderState.Failed).reason).contains("Start a new move")
+            }
             reopened.close()
             receiver.close()
             secret.fill(0)
-            retriedSecret?.fill(0)
         }
+    }
+
+    @Test
+    fun `second receiver with a fresh QR cannot obtain the first receivers pending credential`() = runTest(dispatcher) {
+        val sender = LineageRepository(tmp.newFolder())
+        val firstReceiver = LineageRepository(tmp.newFolder())
+        val secondReceiver = LineageRepository(tmp.newFolder())
+        val active = sender.startNewMove()
+        val staged = com.ventouxlabs.portage.send.transfer.ManifestBuilder(
+            listOf(BytesExport(ItemKind.CONTACTS_VCF, "vcard".toByteArray())),
+            sender.stagingDir, "sender", active.id, ioDispatcher = dispatcher,
+        ).build()
+        sender.savePreparedManifest(staged.manifest, staged.items.associate { it.meta.itemId to it.file })
+        val secret = sender.establishResumeCredential(active.id)
+        firstReceiver.acceptInitial(active.id, secret)
+
+        val attackerChannel = happyChannel()
+        val attackerFactory = PossessionFactory(secondReceiver, attackerChannel)
+        val attacked = viewModel(attackerFactory, providers = emptyList(), repository = sender)
+        attacked.onResumeTransfer()
+        advanceUntilIdle()
+        assertThat(attackerFactory.payload?.mode).isEqualTo(PairingMode.RESUME)
+        assertThat(attackerChannel.sent).isEmpty()
+        assertThat(secondReceiver.active()).isNull()
+        assertThat(sender.active()?.credentialState).isEqualTo(CredentialState.PENDING)
+
+        val originalChannel = happyChannel()
+        val originalFactory = PossessionFactory(firstReceiver, originalChannel)
+        val original = viewModel(originalFactory, providers = emptyList(), repository = sender)
+        original.onResumeTransfer()
+        advanceUntilIdle()
+        assertThat(original.state.value).isEqualTo(SenderState.Done(1, 0))
+        assertThat(originalChannel.sent.filterIsInstance<ProtocolMessage.LineageInit>()).isEmpty()
+        assertThat(sender.credentialForResume()).isEqualTo(secret)
+        sender.close()
+        firstReceiver.close()
+        secondReceiver.close()
+        secret.fill(0)
     }
 
     @Test
@@ -662,6 +729,52 @@ class SenderViewModelTest {
     }
 
     @Test
+    fun `cancel stops repository file validation before scheduling repository work off main`() = runTest(dispatcher) {
+        val validating = CountDownLatch(1)
+        val releaseRead = CountDownLatch(1)
+        val ioJob = AtomicReference<Job>()
+        val snapshotThreads = CopyOnWriteArrayList<String>()
+        val repository = LineageRepository(tmp.newFolder(),
+            beforeSnapshotReplace = { snapshotThreads += Thread.currentThread().name },
+            beforeStagedRead = {
+                validating.countDown()
+                check(releaseRead.await(5, TimeUnit.SECONDS)) { "test did not release validation" }
+            },
+        )
+        Executors.newSingleThreadExecutor { Thread(it, "sender-cancel-io") }.asCoroutineDispatcher().use { executor ->
+            val io = object : CoroutineDispatcher() {
+                override fun dispatch(context: CoroutineContext, block: Runnable) {
+                    ioJob.set(context[Job])
+                    executor.dispatch(context, block)
+                }
+            }
+            try {
+                val factory = FakeFactory(happyChannel())
+                val vm = viewModel(factory, repository = repository, transferIoDispatcher = io)
+                vm.onStartTransfer()
+                runCurrent()
+                assertThat(validating.await(5, TimeUnit.SECONDS)).isTrue()
+                val validationJob = checkNotNull(ioJob.get())
+                val writesBeforeCancel = snapshotThreads.size
+                vm.cancelTransfer()
+                // No scheduler advance or repository call is needed to cancel the hashing job.
+                assertThat(validationJob.isCancelled).isTrue()
+                assertThat(snapshotThreads).hasSize(writesBeforeCancel)
+                releaseRead.countDown()
+                val stopped = vm.state.first { it is SenderState.Failed } as SenderState.Failed
+                assertThat(stopped.reason).contains("not confirmed")
+                assertThat(repository.active()).isNull()
+                assertThat(snapshotThreads.drop(writesBeforeCancel).map { it.substringBefore(" @coroutine") }.toSet())
+                    .containsExactly("sender-cancel-io")
+                assertThat(factory.acceptedPayload).isNull()
+            } finally {
+                releaseRead.countDown()
+                repository.close()
+            }
+        }
+    }
+
+    @Test
     fun `connected cancel waits for matching peer acknowledgement`() = runTest(dispatcher) {
         val repository = LineageRepository(tmp.newFolder())
         val channel = happyChannel()
@@ -670,8 +783,6 @@ class SenderViewModelTest {
             if (message is ProtocolMessage.ItemEnd) {
                 channel.cancelReply = ProtocolMessage.CancelAck(checkNotNull(repository.active()).id)
                 vm.cancelTransfer()
-                assertThat(repository.active()).isNull()
-                assertThat(repository.tombstones().last().peerDeleted).isFalse()
             }
         }
         vm.onStartTransfer()

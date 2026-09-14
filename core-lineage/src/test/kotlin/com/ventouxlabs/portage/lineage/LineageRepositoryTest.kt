@@ -12,6 +12,11 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.atomic.AtomicBoolean
 
 class LineageRepositoryTest {
     @get:Rule val tmp = TemporaryFolder()
@@ -206,10 +211,11 @@ class LineageRepositoryTest {
         assertFalse(directoryError.stackTraceToString().contains(secret))
         val locked = tmp.newFolder()
         LineageRepository(locked, { now }).use {
-            val lockError = assertThrows(SnapshotLoadException::class.java) { LineageRepository(locked, { now }) }
+            val lockError = assertThrows(LineageBusyException::class.java) { LineageRepository(locked, { now }) }
             assertNull(lockError.cause)
             assertNull(it.active())
         }
+        LineageRepository(locked, { now }).use { assertNull(it.active()) }
     }
 
     @Test fun `pending bootstrap survives both delivery crash boundaries without generating a replacement`() {
@@ -367,6 +373,164 @@ class LineageRepositoryTest {
             assertFalse(store.reconcileInterrupted(first))
             assertEquals(reconciled, File(root, "lineage.json").readText())
             assertThrows(IllegalArgumentException::class.java) { store.reconcileInterrupted("bad") }
+        }
+    }
+
+    @Test fun `paused staged validation does not block active or cancellation and cannot return stale bytes`() {
+        for (verifiedOnly in listOf(false, true)) {
+            val enteredRead = CountDownLatch(1)
+            val releaseRead = CountDownLatch(1)
+            val pauseOnce = AtomicBoolean(true)
+            val workers = Executors.newFixedThreadPool(3)
+            val store = LineageRepository(tmp.newFolder(), { now }, beforeStagedRead = {
+                if (pauseOnce.compareAndSet(true, false)) {
+                    enteredRead.countDown()
+                    check(releaseRead.await(10, TimeUnit.SECONDS))
+                }
+            })
+            try {
+                val id = store.startNewMove().id
+                store.manifest(meta())
+                val key = CheckpointKey.from(id, meta())
+                store.stagingDir.mkdirs()
+                val file = File(store.stagingDir, "item.bin").apply { writeBytes(bytes) }
+                store.transition(key, ReceiptPhase.PREPARED, ReceiptPhase.RECEIVED_VERIFIED, file)
+                val result = workers.submit<File?> {
+                    if (verifiedOnly) store.verifiedStaged(key) else store.stagedFile(key)
+                }
+                assertTrue(enteredRead.await(2, TimeUnit.SECONDS))
+                assertEquals(id, workers.submit<ActiveLineage?> { store.active() }.get(2, TimeUnit.SECONDS)?.id)
+                workers.submit { store.cancel(id) }.get(2, TimeUnit.SECONDS)
+                assertNull(store.active())
+                // Validation is deliberately still paused here: cancellation did not wait for it.
+                assertEquals(1L, releaseRead.count)
+                releaseRead.countDown()
+                assertNull(result.get(2, TimeUnit.SECONDS))
+            } finally {
+                releaseRead.countDown()
+                workers.shutdownNow()
+                workers.awaitTermination(2, TimeUnit.SECONDS)
+                store.close()
+            }
+        }
+    }
+
+    @Test fun `paused preparation cannot commit after cancellation or a new move`() {
+        for (replaceMove in listOf(false, true)) {
+            val enteredRead = CountDownLatch(1)
+            val releaseRead = CountDownLatch(1)
+            val pauseOnce = AtomicBoolean(true)
+            val workers = Executors.newFixedThreadPool(2)
+            val store = LineageRepository(tmp.newFolder(), { now }, beforeStagedRead = {
+                if (pauseOnce.compareAndSet(true, false)) {
+                    enteredRead.countDown()
+                    check(releaseRead.await(10, TimeUnit.SECONDS))
+                }
+            })
+            try {
+                val id = store.startNewMove().id
+                val manifest = TransferManifest("phone", listOf(meta()), bytes.size.toLong(), id)
+                store.stagingDir.mkdirs()
+                val file = File(store.stagingDir, "item.bin").apply { writeBytes(bytes) }
+                val preparing = workers.submit { store.savePreparedManifest(manifest, mapOf(1 to file)) }
+                assertTrue(enteredRead.await(2, TimeUnit.SECONDS))
+                val replacement = workers.submit<ActiveLineage?> {
+                    if (replaceMove) store.startNewMove() else { store.cancel(id); null }
+                }.get(2, TimeUnit.SECONDS)
+                assertEquals(1L, releaseRead.count)
+                // Keep bytes available after cancellation to ensure the final snapshot fence,
+                // rather than a missing-file error, rejects the old preparation result.
+                file.writeBytes(bytes)
+                releaseRead.countDown()
+                val error = assertThrows(ExecutionException::class.java) { preparing.get(2, TimeUnit.SECONDS) }
+                assertTrue(error.cause is IllegalStateException)
+                assertEquals(replacement?.id, store.active()?.id)
+                assertNull(store.active()?.manifest)
+                assertFalse(store.active()?.prepared ?: false)
+            } finally {
+                releaseRead.countDown()
+                workers.shutdownNow()
+                workers.awaitTermination(2, TimeUnit.SECONDS)
+                store.close()
+            }
+        }
+    }
+
+    @Test fun `any intervening snapshot commit invalidates staged validation without blocking it`() {
+        val enteredRead = CountDownLatch(1)
+        val releaseRead = CountDownLatch(1)
+        val pauseOnce = AtomicBoolean(true)
+        val workers = Executors.newSingleThreadExecutor()
+        val store = LineageRepository(tmp.newFolder(), { now }, beforeStagedRead = {
+            if (pauseOnce.compareAndSet(true, false)) {
+                enteredRead.countDown()
+                check(releaseRead.await(10, TimeUnit.SECONDS))
+            }
+        })
+        try {
+            val id = store.startNewMove().id
+            store.establishResumeCredential(id)
+            store.manifest(meta())
+            val key = CheckpointKey.from(id, meta())
+            store.stagingDir.mkdirs()
+            val file = File(store.stagingDir, "item.bin").apply { writeBytes(bytes) }
+            store.transition(key, ReceiptPhase.PREPARED, ReceiptPhase.RECEIVED_VERIFIED, file)
+            val validating = workers.submit<File?> { store.verifiedStaged(key) }
+            assertTrue(enteredRead.await(2, TimeUnit.SECONDS))
+            store.authenticated(id)
+            releaseRead.countDown()
+            assertNull(validating.get(2, TimeUnit.SECONDS))
+            assertEquals(ReceiptPhase.RECEIVED_VERIFIED, store.checkpoint(key)?.phase)
+        } finally {
+            releaseRead.countDown()
+            workers.shutdownNow()
+            workers.awaitTermination(2, TimeUnit.SECONDS)
+            store.close()
+        }
+    }
+
+    @Test fun `verified staging cancellation callback runs after a paused read resumes`() {
+        val enteredRead = CountDownLatch(1)
+        val releaseRead = CountDownLatch(1)
+        val cancelled = AtomicBoolean(false)
+        val workers = Executors.newSingleThreadExecutor()
+        val store = LineageRepository(tmp.newFolder(), { now }, beforeStagedRead = {
+            enteredRead.countDown()
+            check(releaseRead.await(10, TimeUnit.SECONDS))
+        })
+        try {
+            val id = store.startNewMove().id
+            store.manifest(meta())
+            val key = CheckpointKey.from(id, meta())
+            store.stagingDir.mkdirs()
+            val file = File(store.stagingDir, "item.bin").apply { writeBytes(bytes) }
+            store.transition(key, ReceiptPhase.PREPARED, ReceiptPhase.RECEIVED_VERIFIED, file)
+            val validating = workers.submit<File?> {
+                store.verifiedStaged(key) { if (cancelled.get()) throw SimulatedCrash() }
+            }
+            assertTrue(enteredRead.await(2, TimeUnit.SECONDS))
+            cancelled.set(true)
+            releaseRead.countDown()
+            val error = assertThrows(ExecutionException::class.java) { validating.get(2, TimeUnit.SECONDS) }
+            assertTrue(error.cause is SimulatedCrash)
+            assertEquals(ReceiptPhase.RECEIVED_VERIFIED, store.checkpoint(key)?.phase)
+        } finally {
+            releaseRead.countDown()
+            workers.shutdownNow()
+            workers.awaitTermination(2, TimeUnit.SECONDS)
+            store.close()
+        }
+    }
+
+    @Test fun `caller manifest mutations cannot bypass the immutable snapshot fence`() {
+        LineageRepository(tmp.newFolder(), { now }).use { store ->
+            val id = store.startNewMove().id
+            val items = mutableListOf(meta(1), meta(2))
+            store.saveManifest(TransferManifest("phone", items, bytes.size * 2L, id))
+            items.clear()
+            assertEquals(2, store.active()?.manifest?.items?.size)
+            (checkNotNull(store.active()?.manifest).items as MutableList<*>).clear()
+            assertEquals(2, store.active()?.manifest?.items?.size)
         }
     }
 

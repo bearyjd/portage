@@ -24,6 +24,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.io.File
+import java.io.InputStream
 
 class TransferCancelledException(
     val peerDeletionConfirmed: Boolean,
@@ -52,7 +54,10 @@ internal fun interruptedResults(
  * Per-item failures do not abort the batch. Interruption preserves known failures and
  * untouched work; potentially applied outcomes become unknown.
  */
-class TransferEngine(private val chunkSize: Int = DEFAULT_CHUNK_BYTES) {
+class TransferEngine(
+    private val chunkSize: Int = DEFAULT_CHUNK_BYTES,
+    private val openPayload: (File) -> InputStream = { it.inputStream() },
+) {
 
     sealed interface Event {
         data class SelectReceived(val want: List<Int>) : Event
@@ -74,8 +79,9 @@ class TransferEngine(private val chunkSize: Int = DEFAULT_CHUNK_BYTES) {
         isCancellationRequested: () -> Boolean = { false },
         isCancelAlreadySent: () -> Boolean = { false },
         onAwaitingReply: (Boolean) -> Unit = {},
-        onPeerCancel: () -> Unit = {},
+        onPeerCancel: suspend () -> Unit = {},
         ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+        onValidatingPayload: (Boolean) -> Unit = {},
         onEvent: (Event) -> Unit,
     ): List<ItemResult> {
         ManifestValidation.requireValid(staged.manifest)
@@ -161,7 +167,8 @@ class TransferEngine(private val chunkSize: Int = DEFAULT_CHUNK_BYTES) {
         try {
             for (item in selected) {
                 checkCancelled()
-                sendItem(channel, item, item.meta.itemId in complete, ::checkCancelled, ioDispatcher) { event ->
+                sendItem(channel, item, item.meta.itemId in complete, ::checkCancelled, ioDispatcher,
+                    onValidatingPayload) { event ->
                     if (event is Event.ItemStarted) started += event.itemId
                     onEvent(event)
                 }
@@ -219,34 +226,43 @@ class TransferEngine(private val chunkSize: Int = DEFAULT_CHUNK_BYTES) {
         receivedWholeFile: Boolean,
         checkCancelled: suspend () -> Unit,
         ioDispatcher: CoroutineDispatcher,
+        onValidatingPayload: (Boolean) -> Unit,
         onEvent: (Event) -> Unit,
     ) {
         val meta = item.meta
-        withContext(ioDispatcher) {
-            val context = currentCoroutineContext()
-            context.ensureActive()
-            if (!item.file.isFile || item.file.length() != meta.size ||
-                item.file.inputStream().use { sha256Hex(it, context::ensureActive) } != meta.sha256
-            ) throw TransportException("Prepared bytes changed; start a new move")
+        try {
+            onValidatingPayload(true)
+            withContext(ioDispatcher) {
+                val context = currentCoroutineContext()
+                context.ensureActive()
+                if (!item.file.isFile || item.file.length() != meta.size ||
+                    item.file.inputStream().use { sha256Hex(it, context::ensureActive) } != meta.sha256
+                ) throw TransportException("Prepared bytes changed; start a new move")
+            }
+        } finally {
+            onValidatingPayload(false)
         }
         onEvent(Event.ItemStarted(meta.itemId))
         channel.send(ProtocolMessage.ItemBegin(meta.itemId, meta.kind, meta.size, chunkSize))
 
         var seq = 0
         var sent = 0L
-        if (!receivedWholeFile) withContext(ioDispatcher) { item.file.inputStream() }.use { input ->
-            val buffer = ByteArray(chunkSize)
-            while (true) {
-                checkCancelled()
-                val read = withContext(ioDispatcher) {
-                    currentCoroutineContext().ensureActive()
-                    input.read(buffer)
+        if (!receivedWholeFile) withContext(ioDispatcher) {
+            // Own the stream before crossing any cancellable dispatcher boundary.
+            // Cancellation immediately after open still unwinds this use/finally.
+            openPayload(item.file).use { input ->
+                val context = currentCoroutineContext()
+                val buffer = ByteArray(chunkSize)
+                while (true) {
+                    context.ensureActive()
+                    checkCancelled()
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    channel.send(ProtocolMessage.ItemData(meta.itemId, seq, buffer.copyOf(read)))
+                    seq++
+                    sent += read
+                    onEvent(Event.ItemProgressed(meta.itemId, sent, meta.size))
                 }
-                if (read < 0) break
-                channel.send(ProtocolMessage.ItemData(meta.itemId, seq, buffer.copyOf(read)))
-                seq++
-                sent += read
-                onEvent(Event.ItemProgressed(meta.itemId, sent, meta.size))
             }
         }
         if (receivedWholeFile) onEvent(Event.ItemProgressed(meta.itemId, meta.size, meta.size))

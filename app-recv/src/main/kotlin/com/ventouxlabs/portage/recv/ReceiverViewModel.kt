@@ -21,6 +21,7 @@ import com.ventouxlabs.portage.model.PairingMode
 import com.ventouxlabs.portage.model.ResumePoint
 import com.ventouxlabs.portage.lineage.CheckpointKey
 import com.ventouxlabs.portage.lineage.LineageRepository
+import com.ventouxlabs.portage.lineage.LineageBusyException
 import com.ventouxlabs.portage.providers.ApplyOutcome
 import com.ventouxlabs.portage.providers.ApplyProviderRegistry
 import com.ventouxlabs.portage.providers.apk.ApkContainerValidation
@@ -50,6 +51,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -136,13 +138,17 @@ class ReceiverViewModel(
     // dispatch only while the outer interceptor already IS Dispatchers.IO.
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     lineageRepository: LineageRepository? = null,
-    lineageRepositoryFactory: () -> LineageRepository = { LineageRepository(File(stagingDir, "lineage")) },
+    private val lineageRepositoryFactory: () -> LineageRepository = { LineageRepository(File(stagingDir, "lineage")) },
 ) : ViewModel() {
 
-    private val loadedLineageRepository = runCatching { lineageRepository ?: lineageRepositoryFactory() }
+    @Volatile private var loadedLineageRepository = runCatching { lineageRepository ?: lineageRepositoryFactory() }
     private val lineageRepository: LineageRepository get() = loadedLineageRepository.getOrThrow()
     private val _state = MutableStateFlow<ReceiverState>(
-        if (loadedLineageRepository.isSuccess) ReceiverState.Idle else ReceiverState.Failed(SAVED_MOVE_LOAD_FAILURE),
+        when {
+            loadedLineageRepository.isSuccess -> ReceiverState.Idle
+            loadedLineageRepository.exceptionOrNull() is LineageBusyException -> ReceiverState.OpeningSavedMove
+            else -> ReceiverState.Failed(SAVED_MOVE_LOAD_FAILURE)
+        },
     )
     val state: StateFlow<ReceiverState> = _state.asStateFlow()
 
@@ -300,6 +306,7 @@ class ReceiverViewModel(
     private var pairingJob: Job? = null
     private var transferJob: Job? = null
     private var teardownJob: Job? = null
+    private var repositoryJob: Job? = null
     @Volatile private var sessionEpoch = 0L
 
     /** True only after an authenticated CANCEL_ACK; an offline cancel remains local-only. */
@@ -319,9 +326,39 @@ class ReceiverViewModel(
 
     init {
         refreshSmsRoleStrand()
+        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) retryRepositoryAcquisition()
+    }
+
+    /** A previous ViewModel can retain the writer lock while its provider unwinds. */
+    private fun retryRepositoryAcquisition() {
+        if (repositoryJob?.isCompleted == false) return
+        _state.value = ReceiverState.OpeningSavedMove
+        repositoryJob = viewModelScope.launch {
+            repeat(50) {
+                withContext(ioDispatcher) {
+                    // Publish ownership before dispatching back, so clearing the VM during the
+                    // handoff still closes an acquired repository after joining this job.
+                    loadedLineageRepository = runCatching { lineageRepositoryFactory() }
+                }
+                if (loadedLineageRepository.isSuccess) {
+                    _state.value = ReceiverState.Idle
+                    return@launch
+                }
+                if (loadedLineageRepository.exceptionOrNull() !is LineageBusyException) {
+                    _state.value = ReceiverState.Failed(SAVED_MOVE_LOAD_FAILURE)
+                    return@launch
+                }
+                delay(100)
+            }
+            _state.value = ReceiverState.Failed("The previous move is still closing. Try again shortly.")
+        }
     }
 
     fun startScanning() {
+        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) {
+            retryRepositoryAcquisition()
+            return
+        }
         if (loadedLineageRepository.isFailure || !sessionStopped()) return
         if (_state.value is ReceiverState.Idle || _state.value is ReceiverState.Failed) {
             // Clear the role state on the way IN as well as on the way out (#122). reset() covers
@@ -338,13 +375,13 @@ class ReceiverViewModel(
         }
     }
 
-    private fun sessionStopped(): Boolean = listOf(pairingJob, transferJob, teardownJob, firstStreamMessage)
+    private fun sessionStopped(): Boolean = listOf(pairingJob, transferJob, teardownJob, firstStreamMessage, repositoryJob)
         .all { it == null || it.isCompleted }
 
     /** Reconnect after an uncertain final acknowledgement, retaining the original move and secret. */
     fun resumeSavedMove() {
         if (_state.value !is ReceiverState.Done || !sessionStopped()) return
-        if (runCatching { lineageRepository.active() }.getOrNull() == null) return
+        if (currentLineageId == null) return
         _state.value = ReceiverState.Idle
         startScanning()
     }
@@ -367,7 +404,7 @@ class ReceiverViewModel(
         val epoch = sessionEpoch
         pairingJob = viewModelScope.launch {
             try {
-                val existing = lineageRepository.active()
+                val existing = withContext(ioDispatcher) { lineageRepository.active() }
                 require(payload.mode != PairingMode.NEW || existing?.manifest == null) {
                     "A move is already saved. Resume it, or return home and start a new move."
                 }
@@ -390,7 +427,10 @@ class ReceiverViewModel(
                 }
                 channel = ch
                 ch.send(ProtocolMessage.Hello(appVersion, osFingerprint))
-                val lineageMessage = receiveBootstrap(ch, existing?.id, epoch) ?: run {
+                val lineageMessage = receiveBootstrap(
+                    ch, existing?.id, epoch,
+                    allowCancel = payload.mode != PairingMode.NEW || existing == null,
+                ) ?: run {
                     if (!cancellationRequested) fail("Sender did not establish the move.", epoch)
                     return@launch
                 }
@@ -398,7 +438,11 @@ class ReceiverViewModel(
                 if (epoch != sessionEpoch || cancellationRequested) return@launch
                 val authenticatedId = when {
                     payload.mode == PairingMode.NEW && lineageMessage is ProtocolMessage.LineageInit -> {
-                        try { lineageRepository.acceptInitial(lineageMessage.lineageId, lineageMessage.resumeCredential) }
+                        try {
+                            withContext(ioDispatcher) {
+                                lineageRepository.acceptInitial(lineageMessage.lineageId, lineageMessage.resumeCredential)
+                            }
+                        }
                         finally { lineageMessage.resumeCredential.fill(0) }
                         lineageMessage.lineageId
                     }
@@ -408,14 +452,14 @@ class ReceiverViewModel(
                     }
                     else -> error("Sender did not establish the expected lineage")
                 }
-                lineageRepository.authenticated(authenticatedId)
+                withContext(ioDispatcher) { lineageRepository.authenticated(authenticatedId) }
                 currentLineageId = authenticatedId
                 ch.send(ProtocolMessage.LineageAck(authenticatedId))
                 when (val msg = receiveBootstrap(ch, authenticatedId, epoch)) {
                     is ProtocolMessage.Manifest -> {
                         ManifestValidation.requireValid(msg.manifest)
                         require(msg.manifest.lineageId == authenticatedId) { "manifest lineage mismatch" }
-                        lineageRepository.saveManifest(msg.manifest)
+                        withContext(ioDispatcher) { lineageRepository.saveManifest(msg.manifest) }
                         ensureActive()
                         if (epoch != sessionEpoch || cancellationRequested) return@launch
                         _state.value = ReceiverState.Reviewing(
@@ -450,15 +494,21 @@ class ReceiverViewModel(
     }
 
     /** The same authenticated cancellation contract applies before and after the manifest. */
-    private suspend fun receiveBootstrap(ch: SecureChannel, lineageId: String?, epoch: Long): ProtocolMessage? {
+    private suspend fun receiveBootstrap(
+        ch: SecureChannel,
+        lineageId: String?,
+        epoch: Long,
+        allowCancel: Boolean = true,
+    ): ProtocolMessage? {
         while (true) {
             when (val message = ch.receive()) {
                 is ProtocolMessage.Ping -> Unit
                 is ProtocolMessage.Cancel -> {
+                    // A fresh NEW QR proves no continuity with a saved move. Only exact
+                    // LineageInit credential verification may unlock mutations to that move.
+                    require(allowCancel) { "saved move continuity has not been established" }
                     ManifestValidation.requireIdentity(message.lineageId)
                     require(lineageId == null || message.lineageId == lineageId) { "cancel lineage mismatch" }
-                    val activeId = lineageRepository.active()?.id
-                    require(activeId == null || activeId == message.lineageId) { "cancel lineage mismatch" }
                     // Remove Confirm synchronously before persistence or the possibly suspending ACK.
                     if (epoch == sessionEpoch) {
                         cancellationRequested = true
@@ -466,7 +516,11 @@ class ReceiverViewModel(
                     }
                     // Before NEW bootstrap there is no saved credential to revoke. After adoption
                     // the matching lineage must be durably revoked before acknowledgement.
-                    if (activeId != null) lineageRepository.cancel(message.lineageId)
+                    withContext(ioDispatcher) {
+                        val activeId = lineageRepository.active()?.id
+                        require(activeId == null || activeId == message.lineageId) { "cancel lineage mismatch" }
+                        if (activeId != null) lineageRepository.cancel(message.lineageId)
+                    }
                     if (epoch == sessionEpoch) {
                         _state.value = ReceiverState.Failed("The sender cancelled this move. Local move data was deleted.")
                     }
@@ -480,7 +534,7 @@ class ReceiverViewModel(
                 }
                 is ProtocolMessage.CancelAck -> {
                     require(cancellationRequested && message.lineageId == lineageId) { "unexpected cancel acknowledgement" }
-                    lineageRepository.markPeerDeleted(message.lineageId)
+                    withContext(ioDispatcher) { lineageRepository.markPeerDeleted(message.lineageId) }
                     if (epoch == sessionEpoch) _peerDeletionConfirmed.value = true
                     return null
                 }
@@ -509,7 +563,9 @@ class ReceiverViewModel(
         transferJob = viewModelScope.launch {
             try {
                 if (cancellationRequested || epoch != sessionEpoch) return@launch
-                selected.forEach { lineageRepository.checkpoint(CheckpointKey.from(lineageId, it)) }
+                withContext(ioDispatcher) {
+                    selected.forEach { lineageRepository.checkpoint(CheckpointKey.from(lineageId, it)) }
+                }
                 // Retry ledgers belong to this transfer, after the session owns confirmation.
                 applyRegistry.beginTransfer()
                 val connected = channel ?: error("no channel")
@@ -537,8 +593,12 @@ class ReceiverViewModel(
                 val results = withDataPhaseDeadline(ch, dataPhaseTimeoutMs) {
                     withSmsRoleIfNeeded(needsSmsRole) {
                         val resume = withContext(ioDispatcher) {
+                            val context = currentCoroutineContext()
                             selected.mapNotNull { meta ->
-                                lineageRepository.verifiedStaged(CheckpointKey.from(lineageId, meta))
+                                lineageRepository.verifiedStaged(CheckpointKey.from(lineageId, meta)) {
+                                    context.ensureActive()
+                                    if (cancellationRequested || epoch != sessionEpoch) throw CancellationException("move cancelled")
+                                }
                                     ?.let { ResumePoint(meta.itemId, meta.size) }
                             }
                         }
@@ -925,80 +985,81 @@ class ReceiverViewModel(
     }
 
     fun reset() {
+        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) {
+            retryRepositoryAcquisition()
+            return
+        }
         if (loadedLineageRepository.isFailure || teardownJob?.isCompleted == false) return
         val ch = channel
-        val activeId = lineageRepository.active()?.id
         val pairing = pairingJob
         val transfer = transferJob
         val first = firstStreamMessage
         val finished = _state.value is ReceiverState.Done
         val epoch = ++sessionEpoch
+        // Signal and cancel before touching the repository. A validation read may still be
+        // running on IO; its cancellation callback must be able to stop without waiting on Main.
         cancellationRequested = true
-        if (activeId != null) {
-            if (finished) lineageRepository.finish(activeId)
-            else lineageRepository.cancel(activeId)
-        }
+        pairing?.cancel()
         transfer?.cancel()
-        // Bootstrap owns the socket until its job ends. Cancel it if it has not yet handed
-        // ownership to the review reader; never race two receives on an authenticated stream.
-        if (first == null) pairing?.cancel()
+        first?.cancel()
         teardownJob = viewModelScope.launch {
             val watchdog = launch { delay(5_000); ch?.close() }
             try {
-                if (ch != null && activeId != null && !finished) {
-                    withTimeoutOrNull(5_000) {
-                        ch.send(ProtocolMessage.Cancel(activeId))
-                        pairing?.join()
-                        first?.join()
-                        transfer?.join()
-                        if (!lineageRepository.tombstones().any { it.lineageId == activeId && it.peerDeleted }) {
-                            while (true) {
-                                when (val ack = ch.receive()) {
-                                    is ProtocolMessage.CancelAck -> {
-                                        require(ack.lineageId == activeId) { "cancel acknowledgement lineage mismatch" }
-                                        lineageRepository.markPeerDeleted(activeId)
-                                        break
-                                    }
-                                    is ProtocolMessage.Cancel -> {
-                                        require(ack.lineageId == activeId) { "cancel lineage mismatch" }
-                                        lineageRepository.cancel(activeId)
-                                        ch.send(ProtocolMessage.CancelAck(activeId))
-                                    }
-                                    null -> break
-                                    else -> Unit
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-                // Local deletion remains recorded even when the peer cannot acknowledge.
-            } finally {
-                ch?.close()
-                watchdog.cancel()
-                pairing?.cancel()
-                first?.cancel()
-                transfer?.cancel()
-                // A provider can finish in a non-cancellable section. Block the next session
-                // until every owner has actually exited, including its checkpoint finally.
+                // The former receive owner must exit before this coroutine takes its socket.
                 pairing?.join()
                 first?.join()
                 transfer?.join()
-                if (epoch == sessionEpoch) {
-                    _peerDeletionConfirmed.value = lineageRepository.tombstones().any {
-                        it.lineageId == activeId && it.peerDeleted
+                val peerDeleted = withContext(ioDispatcher) {
+                    val activeId = lineageRepository.active()?.id
+                    if (activeId != null) {
+                        if (finished) lineageRepository.finish(activeId) else lineageRepository.cancel(activeId)
                     }
-                    clearDoneState()
+                    if (ch != null && activeId != null && !finished) {
+                        try {
+                            withTimeoutOrNull(5_000) {
+                                ch.send(ProtocolMessage.Cancel(activeId))
+                                while (true) {
+                                    when (val ack = ch.receive()) {
+                                        is ProtocolMessage.CancelAck -> {
+                                            require(ack.lineageId == activeId) { "cancel acknowledgement lineage mismatch" }
+                                            lineageRepository.markPeerDeleted(activeId)
+                                            break
+                                        }
+                                        is ProtocolMessage.Cancel -> {
+                                            require(ack.lineageId == activeId) { "cancel lineage mismatch" }
+                                            lineageRepository.cancel(activeId)
+                                            ch.send(ProtocolMessage.CancelAck(activeId))
+                                        }
+                                        null -> break
+                                        else -> Unit
+                                    }
+                                }
+                            }
+                        } catch (c: CancellationException) {
+                            throw c
+                        } catch (_: Exception) {
+                            // Local deletion is committed; a missing peer acknowledgement
+                            // leaves remote deletion unconfirmed.
+                        }
+                    }
+                    abandonSessions()
+                    lineageRepository.tombstones().any { it.lineageId == activeId && it.peerDeleted }
                 }
+                if (epoch == sessionEpoch) _peerDeletionConfirmed.value = peerDeleted
+            } catch (c: CancellationException) {
+                throw c
+            } catch (_: Exception) {
+                if (epoch == sessionEpoch) {
+                    _state.value = ReceiverState.Failed("Local move data could not be removed. Try again.")
+                }
+            } finally {
+                ch?.close()
+                watchdog.cancel()
+                if (epoch == sessionEpoch) clearDoneState()
             }
         }
         channel = null
         currentLineageId = null
-        // Abandon any sealed-but-uncommitted PackageInstaller sessions from this run before clearing
-        // the prompt list — a user who never tapped install and hits Home must not leave APK bytes
-        // lingering in uncommitted sessions (fix 5). Best-effort: abandonUncommittedSessions is
-        // wrapped in runCatching inside the adapter so this can never throw.
-        abandonSessions()
         clearDoneState()
         _state.value = ReceiverState.Idle
         // Returning Home is a chance to clear (or surface) a leftover default-SMS strand.
@@ -1055,15 +1116,13 @@ class ReceiverViewModel(
         sessionEpoch++
         cancellationRequested = true
         channel?.close()
-        val owners = listOfNotNull(pairingJob, transferJob, firstStreamMessage, teardownJob)
+        val owners = listOfNotNull(pairingJob, transferJob, firstStreamMessage, teardownJob, repositoryJob)
         owners.forEach { it.cancel() }
-        val repository = loadedLineageRepository.getOrNull()
         // Keep the single-writer lock until suspended providers and all cleanup have exited.
         // viewModelScope is already cancelled here, so the final join has its own cleanup scope.
-        if (owners.all { it.isCompleted }) repository?.close()
-        else CoroutineScope(ioDispatcher).launch {
+        CoroutineScope(ioDispatcher).launch {
             owners.forEach { it.join() }
-            repository?.close()
+            loadedLineageRepository.getOrNull()?.close()
         }
         super.onCleared()
     }
