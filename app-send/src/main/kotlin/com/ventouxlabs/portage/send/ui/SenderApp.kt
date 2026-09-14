@@ -111,6 +111,13 @@ private fun StateBody(
                 onClearAppSelection = viewModel::clearAppSelection,
             )
 
+        is SenderState.OpeningSavedMove ->
+            PendingScreen(
+                step = "01 · OPENING",
+                headline = "Finishing the previous session",
+                caption = "Waiting for saved move data to become available…",
+            )
+
         is SenderState.Preparing ->
             PendingScreen(
                 step = "01 · PACKING",
@@ -170,6 +177,7 @@ private fun SenderState.keepsScreenAwake(): Boolean =
 /** Stable transition key per state kind so data ticks don't retrigger the crossfade. */
 private fun SenderState.key(): String = when (this) {
     is SenderState.Home -> "home"
+    is SenderState.OpeningSavedMove -> "opening"
     is SenderState.Preparing -> "preparing"
     is SenderState.ShowingQr -> "qr"
     is SenderState.Linked -> "linked"

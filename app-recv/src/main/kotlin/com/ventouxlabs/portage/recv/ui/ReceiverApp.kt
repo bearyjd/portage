@@ -236,8 +236,10 @@ private fun StateBody(
 
         is ReceiverState.Failed ->
             FailedScreen(
-                reason = current.reason,
-                onRetry = viewModel::reset,
+                failure = current,
+                onRetry = viewModel::startScanning,
+                onResume = viewModel::resumeSavedMove,
+                onCancel = viewModel::reset,
                 modifier = Modifier.fillMaxSize(),
             )
     }

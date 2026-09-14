@@ -9,6 +9,8 @@
  */
 package com.ventouxlabs.portage.send
 
+import androidx.lifecycle.ViewModelStore
+import com.ventouxlabs.portage.lineage.LineageBusyException
 import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.model.ItemResult
 import com.ventouxlabs.portage.model.ItemStatus
@@ -44,6 +46,7 @@ import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -53,6 +56,7 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.withContext
 import org.junit.After
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -188,6 +192,47 @@ private class FakeKeepAlive : TransferKeepAlive {
     override fun stop() { stops++ }
 }
 
+/** Deterministically holds dispatched IO work until a lifecycle event has cancelled its caller. */
+private class PausableDispatcher(private val delegate: CoroutineDispatcher) : CoroutineDispatcher() {
+    private val queued = ArrayDeque<Pair<CoroutineContext, Runnable>>()
+    private var paused = false
+
+    @Synchronized fun pause() {
+        paused = true
+    }
+
+    fun resume() {
+        val pending = synchronized(this) {
+            paused = false
+            buildList {
+                while (queued.isNotEmpty()) add(queued.removeFirst())
+            }
+        }
+        pending.forEach { (context, block) -> delegate.dispatch(context, block) }
+    }
+
+    override fun dispatch(context: CoroutineContext, block: Runnable) {
+        val held = synchronized(this) {
+            if (paused) queued.addLast(context to block)
+            paused
+        }
+        if (!held) delegate.dispatch(context, block)
+    }
+}
+
+private class TaggedKeepAlive(
+    private val tag: String,
+    private val events: MutableList<String>,
+) : TransferKeepAlive {
+    override fun start() {
+        events += "start-$tag"
+    }
+
+    override fun stop() {
+        events += "stop-$tag"
+    }
+}
+
 /** Protocol-layer fixture: a fresh receiver cannot complete the proof-of-possession handshake. */
 private class PossessionFactory(
     private val receiver: LineageRepository,
@@ -242,6 +287,7 @@ class SenderViewModelTest {
         keepAlive: TransferKeepAlive = TransferKeepAlive.NoOp,
         repository: LineageRepository? = null,
         transferIoDispatcher: CoroutineDispatcher = dispatcher,
+        repositoryFactory: (() -> LineageRepository)? = null,
     ) = SenderViewModel(
         providers = providers,
         stagingDir = tmp.root,
@@ -260,6 +306,9 @@ class SenderViewModelTest {
         transferKeepAlive = keepAlive,
         lineageRepository = repository,
         transferIoDispatcher = transferIoDispatcher,
+        lineageRepositoryFactory = repositoryFactory ?: {
+            LineageRepository(File(tmp.root, "lineage"), random = SecureRandom())
+        },
     )
 
     private fun signalPick(
@@ -805,6 +854,103 @@ class SenderViewModelTest {
                 repository.close()
             }
         }
+    }
+
+    @Test
+    fun `ViewModel clear cannot cancel a queued durable local cancellation`() = runTest(dispatcher) {
+        val directory = tmp.newFolder()
+        val pausedIo = PausableDispatcher(dispatcher)
+        val opened = AtomicReference<LineageRepository>()
+        val factory = object : SecureChannel.Factory {
+            override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = error("sender only")
+            override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel = awaitCancellation()
+        }
+        val vm = viewModel(
+            factory,
+            transferIoDispatcher = pausedIo,
+            repositoryFactory = { LineageRepository(directory).also(opened::set) },
+        )
+        val owner = ViewModelStore().apply { put("sender", vm) }
+
+        vm.onStartTransfer()
+        runCurrent()
+        assertThat(vm.state.value).isInstanceOf(SenderState.ShowingQr::class.java)
+        assertThat(checkNotNull(opened.get()).active()).isNotNull()
+
+        pausedIo.pause()
+        vm.cancelTransfer()
+        owner.clear()
+        runCurrent()
+
+        // Neither the queued NonCancellable write nor final close has run yet. The old owner must
+        // retain the writer lock instead of allowing a replacement to observe live credentials.
+        assertThrows(LineageBusyException::class.java) { LineageRepository(directory) }
+
+        pausedIo.resume()
+        advanceUntilIdle()
+
+        LineageRepository(directory).use { reopened ->
+            assertThat(reopened.active()).isNull()
+            assertThat(reopened.tombstones()).hasSize(1)
+            assertThat(reopened.tombstones().single().peerDeleted).isFalse()
+        }
+    }
+
+    @Test
+    fun `replacement retries busy repository and starts only after old keepalive stops`() = runTest(dispatcher) {
+        val directory = tmp.newFolder()
+        val releaseOldListener = CompletableDeferred<Unit>()
+        var accepted = 0
+        val factory = object : SecureChannel.Factory {
+            override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = error("sender only")
+            override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel {
+                val owner = ++accepted
+                try {
+                    awaitCancellation()
+                } finally {
+                    if (owner == 1) withContext(NonCancellable) { releaseOldListener.await() }
+                }
+            }
+        }
+        val events = mutableListOf<String>()
+        val first = viewModel(
+            factory,
+            keepAlive = TaggedKeepAlive("old", events),
+            repositoryFactory = { LineageRepository(directory) },
+        )
+        val oldOwner = ViewModelStore().apply { put("sender", first) }
+        first.onStartTransfer()
+        runCurrent()
+        assertThat(events).containsExactly("start-old").inOrder()
+
+        oldOwner.clear()
+        runCurrent()
+        val second = viewModel(
+            factory,
+            keepAlive = TaggedKeepAlive("new", events),
+            repositoryFactory = { LineageRepository(directory) },
+        )
+        val newOwner = ViewModelStore().apply { put("sender", second) }
+        runCurrent()
+        assertThat(second.state.value).isEqualTo(SenderState.OpeningSavedMove)
+        assertThat(events).containsExactly("start-old").inOrder()
+
+        releaseOldListener.complete(Unit)
+        runCurrent()
+        assertThat(events).containsExactly("start-old", "stop-old").inOrder()
+        advanceTimeBy(100)
+        runCurrent()
+        val saved = second.state.value as SenderState.Failed
+        assertThat(saved.canResume).isTrue()
+
+        second.onResumeTransfer()
+        runCurrent()
+        assertThat(second.state.value).isInstanceOf(SenderState.ShowingQr::class.java)
+        assertThat(events).containsExactly("start-old", "stop-old", "start-new").inOrder()
+
+        newOwner.clear()
+        advanceUntilIdle()
+        assertThat(events).containsExactly("start-old", "stop-old", "start-new", "stop-new").inOrder()
     }
 
     @Test

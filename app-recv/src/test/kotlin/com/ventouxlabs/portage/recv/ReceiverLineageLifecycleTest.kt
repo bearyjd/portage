@@ -17,6 +17,8 @@ import com.ventouxlabs.portage.providers.ApplyProviderRegistry
 import com.ventouxlabs.portage.providers.bluetooth.RePairEntry
 import com.ventouxlabs.portage.transport.PairingCodec
 import com.ventouxlabs.portage.transport.SecureChannel
+import com.ventouxlabs.portage.transport.TransportException
+import com.ventouxlabs.portage.recv.ui.failureRecoveryMessage
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -240,6 +242,79 @@ class ReceiverLineageLifecycleTest {
             vm.reset(); advanceUntilIdle()
             assertThat(store.active()).isNull()
             assertThat(store.tombstones().single().reason).isEqualTo("finished")
+        }
+    }
+
+    @Test fun `failed final batch acknowledgement offers resume and preserves applied lineage until explicit cancellation`() = runTest(dispatcher) {
+        LineageRepository(tmp.newFolder()).use { store ->
+            fun failingAck(messages: List<ProtocolMessage>) = object : Channel(messages) {
+                override suspend fun send(message: ProtocolMessage) {
+                    if (message is ProtocolMessage.BatchAck) throw TransportException("final acknowledgement connection lost")
+                    super.send(message)
+                }
+            }
+            val initial = failingAck(bootstrap(lineageA) + frames())
+            val resumed = failingAck(listOf(
+                ProtocolMessage.LineageResume(lineageA), ProtocolMessage.Manifest(manifest(lineageA)),
+            ) + frames(sendBytes = false))
+            var applies = 0
+            val receiver = vm(listOf(initial, resumed), store, ApplyRegistryFactory {
+                ApplyProviderRegistry(listOf(object : ApplyProvider {
+                    override val kind = item.kind
+                    override suspend fun apply(source: InputStream): ApplyOutcome {
+                        assertThat(source.readBytes()).isEqualTo(bytes)
+                        applies++
+                        return ApplyOutcome(ItemStatus.OK)
+                    }
+                }))
+            })
+            receiver.startScanning(); receiver.onQrScanned("new"); runCurrent()
+            receiver.onConfirm(); advanceUntilIdle()
+            val failure = receiver.state.value as ReceiverState.Failed
+            assertThat(failure.canResumeSavedMove).isTrue()
+            assertThat(failure.mayHaveAppliedChanges).isTrue()
+            assertThat(failureRecoveryMessage(failure)).contains("may already have been applied")
+            assertThat(failureRecoveryMessage(failure)).doesNotContain("Nothing was changed")
+            val key = CheckpointKey.from(lineageA, item)
+            assertThat(store.checkpoint(key)?.phase).isEqualTo(ReceiptPhase.APPLIED_DURABLE)
+            assertThat(applies).isEqualTo(1)
+            val snapshot = File(store.stagingDir.parentFile, "lineage.json")
+            val savedBeforeResume = snapshot.readBytes()
+
+            receiver.resumeSavedMove()
+            assertThat(receiver.state.value).isEqualTo(ReceiverState.Scanning)
+            assertThat(store.active()?.id).isEqualTo(lineageA)
+            assertThat(store.credentialForResume()).isEqualTo(ByteArray(32) { 7 })
+            assertThat(store.checkpoint(key)?.phase).isEqualTo(ReceiptPhase.APPLIED_DURABLE)
+            assertThat(store.verifiedStaged(key)?.readBytes()).isEqualTo(bytes)
+            assertThat(snapshot.readBytes()).isEqualTo(savedBeforeResume)
+            assertThat(store.tombstones()).isEmpty()
+
+            receiver.onQrScanned("resume"); runCurrent()
+            receiver.onConfirm(); advanceUntilIdle()
+            assertThat((receiver.state.value as ReceiverState.Failed).canResumeSavedMove).isTrue()
+            assertThat(applies).isEqualTo(2)
+            assertThat(resumed.sent.filterIsInstance<ProtocolMessage.Select>().single().resume.single().offset).isEqualTo(item.size)
+            receiver.reset(); advanceUntilIdle() // only the explicit Cancel saved move action deletes
+            assertThat(store.active()).isNull()
+            assertThat(runCatching { store.credentialForResume() }.isFailure).isTrue()
+            assertThat(store.stagingDir.listFiles().orEmpty()).isEmpty()
+            assertThat(store.tombstones().single().reason).isEqualTo("cancelled")
+        }
+    }
+
+    @Test fun `failure before lineage establishment offers pairing retry without a saved resume action`() = runTest(dispatcher) {
+        LineageRepository(tmp.newFolder()).use { store ->
+            val receiver = vm(listOf(Channel(emptyList())), store)
+            receiver.startScanning(); receiver.onQrScanned("new"); advanceUntilIdle()
+            val failure = receiver.state.value as ReceiverState.Failed
+            assertThat(failure.canResumeSavedMove).isFalse()
+            assertThat(failure.mayHaveAppliedChanges).isFalse()
+            assertThat(failureRecoveryMessage(failure)).doesNotContain("may already have been applied")
+            receiver.startScanning()
+            assertThat(receiver.state.value).isEqualTo(ReceiverState.Scanning)
+            assertThat(store.active()).isNull()
+            assertThat(store.tombstones()).isEmpty()
         }
     }
 

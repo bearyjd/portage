@@ -13,6 +13,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ventouxlabs.portage.lineage.CheckpointKey
 import com.ventouxlabs.portage.lineage.CredentialState
+import com.ventouxlabs.portage.lineage.LineageBusyException
 import com.ventouxlabs.portage.lineage.LineageRepository
 import com.ventouxlabs.portage.model.ItemResult
 import com.ventouxlabs.portage.model.ItemStatus
@@ -47,9 +48,13 @@ import com.ventouxlabs.portage.transport.PairingCodecImpl
 import com.ventouxlabs.portage.transport.SecureChannel
 import com.ventouxlabs.portage.transport.withDataPhaseDeadline
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
@@ -108,9 +113,22 @@ class SenderViewModel(
     private val transferKeepAlive: TransferKeepAlive = TransferKeepAlive.NoOp,
     private val lineageRepository: LineageRepository? = null,
     private val transferIoDispatcher: CoroutineDispatcher = relayResolveDispatcher,
+    private val lineageRepositoryFactory: () -> LineageRepository = {
+        LineageRepository(File(stagingDir, "lineage"), random = random)
+    },
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow<SenderState>(SenderState.Home)
+    @Volatile private var loadedLineageRepository = runCatching {
+        lineageRepository ?: lineageRepositoryFactory()
+    }
+    private val repository: LineageRepository get() = loadedLineageRepository.getOrThrow()
+    private val _state = MutableStateFlow<SenderState>(
+        when {
+            loadedLineageRepository.isSuccess -> SenderState.Home
+            loadedLineageRepository.exceptionOrNull() is LineageBusyException -> SenderState.OpeningSavedMove
+            else -> SenderState.Failed(SAVED_MOVE_LOAD_FAILURE)
+        },
+    )
     val state: StateFlow<SenderState> = _state.asStateFlow()
 
     /**
@@ -155,10 +173,8 @@ class SenderViewModel(
     private var channel: SecureChannel? = null
     private var staged: StagedManifest? = null
     private var transferJob: Job? = null
-    private val repositoryDelegate = lazy {
-        lineageRepository ?: LineageRepository(File(stagingDir, "lineage"), random = random)
-    }
-    private val repository by repositoryDelegate
+    private var teardownJob: Job? = null
+    private var repositoryJob: Job? = null
     @Volatile private var cancellationRequested = false
     private var cancelling = false
     private var peerDeletionConfirmed = false
@@ -168,15 +184,8 @@ class SenderViewModel(
     private var activeLineageId: String? = null
 
     init {
-        runCatching { repository.active() }.fold(
-            onSuccess = { active ->
-                activeLineageId = active?.id
-                if (active != null) _state.value = SenderState.Failed(
-                    "An unfinished move is saved on this phone.", canResume = active.prepared,
-                )
-            },
-            onFailure = { _state.value = SenderState.Failed("Saved move could not be read: ${it.message}") },
-        )
+        if (loadedLineageRepository.isSuccess) showLoadedMoveState()
+        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) retryRepositoryAcquisition()
         inventorySource?.let { source ->
             _relayCandidates.value = runCatching { RelayAppDetector.detect(source) }.getOrDefault(emptyList())
         }
@@ -188,6 +197,43 @@ class SenderViewModel(
                 _availableApps.value = runCatching { source.installedUserApps() }.getOrDefault(emptyList())
             }
         }
+    }
+
+    /** A replaced ViewModel can retain the writer lock until its listener and keep-alive unwind. */
+    private fun retryRepositoryAcquisition() {
+        if (repositoryJob?.isCompleted == false) return
+        _state.value = SenderState.OpeningSavedMove
+        repositoryJob = viewModelScope.launch {
+            repeat(REPOSITORY_OPEN_ATTEMPTS) {
+                withContext(transferIoDispatcher) {
+                    // Publish ownership before returning to Main. onCleared() then sees and closes
+                    // an acquired repository even when lifecycle cancellation wins that handoff.
+                    loadedLineageRepository = runCatching { lineageRepositoryFactory() }
+                }
+                if (loadedLineageRepository.isSuccess) {
+                    showLoadedMoveState()
+                    return@launch
+                }
+                if (loadedLineageRepository.exceptionOrNull() !is LineageBusyException) {
+                    _state.value = SenderState.Failed(SAVED_MOVE_LOAD_FAILURE)
+                    return@launch
+                }
+                delay(REPOSITORY_OPEN_RETRY_MS)
+            }
+            _state.value = SenderState.Failed("The previous move is still closing. Try again shortly.")
+        }
+    }
+
+    private fun showLoadedMoveState() {
+        runCatching { repository.active() }.fold(
+            onSuccess = { active ->
+                activeLineageId = active?.id
+                _state.value = if (active == null) SenderState.Home else SenderState.Failed(
+                    "An unfinished move is saved on this phone.", canResume = active.prepared,
+                )
+            },
+            onFailure = { _state.value = SenderState.Failed(SAVED_MOVE_LOAD_FAILURE) },
+        )
     }
 
     /** Toggle one app's membership in the carry selection (ADR-006 Phase 1b). Default starts empty. */
@@ -280,8 +326,13 @@ class SenderViewModel(
     }
 
     private fun beginTransfer(resume: Boolean) {
+        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) {
+            retryRepositoryAcquisition()
+            return
+        }
+        if (loadedLineageRepository.isFailure || repositoryJob?.isCompleted == false) return
         // A cancelled job may still own a listener or be unwinding its keep-alive.
-        if (cancelling || transferJob?.isCompleted == false) return
+        if (cancelling || transferJob?.isCompleted == false || teardownJob?.isCompleted == false) return
         if (_state.value !is SenderState.Home && _state.value !is SenderState.Failed &&
             _state.value !is SenderState.Done) return
         cancellationRequested = false
@@ -516,6 +567,11 @@ class SenderViewModel(
     }
 
     fun reset() {
+        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) {
+            retryRepositoryAcquisition()
+            return
+        }
+        if (loadedLineageRepository.isFailure || repositoryJob?.isCompleted == false) return
         if (cancelling) return
         if (channel != null && _state.value !is SenderState.Done) {
             cancelTransfer()
@@ -545,6 +601,11 @@ class SenderViewModel(
 
     /** Revoke locally immediately, then allow a bounded authenticated peer-delete exchange. */
     fun cancelTransfer() {
+        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) {
+            retryRepositoryAcquisition()
+            return
+        }
+        if (loadedLineageRepository.isFailure || repositoryJob?.isCompleted == false) return
         if (cancelling) return
         // Fence callbacks and stop long local validation before touching the store. A
         // connected exchange keeps its sole reader until the bounded delete exchange ends.
@@ -556,10 +617,12 @@ class SenderViewModel(
         val stopLocalWork = cancelChannel == null || validatingFiles
         if (stopLocalWork) job?.cancel()
         val expectedId = activeLineageId
-        viewModelScope.launch {
+        teardownJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
             var failureReason: String? = null
             try {
-                val id = withContext(transferIoDispatcher) {
+                // This local revocation is the first suspended operation and cannot be cancelled by
+                // ViewModelStore.clear(). Peer acknowledgement and owner joins are deliberately later.
+                val id = withContext(NonCancellable + transferIoDispatcher) {
                     val active = repository.active()
                     val target = expectedId ?: active?.id
                     if (target != null && active?.id == target) repository.cancel(target)
@@ -585,6 +648,9 @@ class SenderViewModel(
                     }
                     Unit
                 }
+                if (cancelChannel == null) job?.join()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (failure: Exception) {
                 failureReason = "Saved move could not be cancelled: ${failure.message}"
             } finally {
@@ -694,7 +760,9 @@ class SenderViewModel(
     /** Fail-closed terminal transition: release the listener/channel, surface the reason. */
     private fun fail(reason: String) {
         closeChannel()
-        _state.value = SenderState.Failed(reason, canResume = runCatching { repository.active()?.prepared == true }.getOrDefault(false))
+        _state.value = SenderState.Failed(reason, canResume = loadedLineageRepository.getOrNull()?.let {
+            runCatching { it.active()?.prepared == true }.getOrDefault(false)
+        } ?: false)
     }
 
     private fun closeChannel() {
@@ -705,14 +773,28 @@ class SenderViewModel(
     private fun randomBytes(count: Int): ByteArray = ByteArray(count).also(random::nextBytes)
 
     override fun onCleared() {
+        cancellationRequested = true
+        cancelling = true
         closeChannel()
-        if (repositoryDelegate.isInitialized()) repository.close()
-        clearRelayPicks()
-        clearUserFiles()
+        val owners = listOfNotNull(transferJob, teardownJob, repositoryJob)
+        owners.forEach { it.cancel() }
+        // viewModelScope is cancelled as this callback returns. Retain repository ownership in a
+        // lifecycle-independent scope until every listener, stream, durable cancel, and keep-alive
+        // finally has exited, so a replacement cannot start before the old keep-alive stops.
+        CoroutineScope(transferIoDispatcher).launch {
+            owners.forEach { it.join() }
+            loadedLineageRepository.getOrNull()?.close()
+            clearRelayPicks()
+            clearUserFiles()
+        }
         super.onCleared()
     }
 
     private companion object {
+        const val REPOSITORY_OPEN_ATTEMPTS = 50
+        const val REPOSITORY_OPEN_RETRY_MS = 100L
+        const val SAVED_MOVE_LOAD_FAILURE = "Saved move could not be read. Close the app and reset its saved move data before trying again."
+
         /** Probe-and-release; acceptAsSender rebinds with SO_REUSEADDR so the race is benign. */
         fun findFreePort(): Int = ServerSocket(0).use { it.localPort }
     }

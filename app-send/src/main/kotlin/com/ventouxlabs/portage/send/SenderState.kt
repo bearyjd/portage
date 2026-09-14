@@ -30,6 +30,9 @@ sealed interface SenderState {
     /** Landing: device summary + permissions + "Start transfer". */
     data object Home : SenderState
 
+    /** A previous ViewModel is releasing the saved-move writer lock. */
+    data object OpeningSavedMove : SenderState
+
     /** Exporting available domains into staging and building the manifest. */
     data object Preparing : SenderState
 

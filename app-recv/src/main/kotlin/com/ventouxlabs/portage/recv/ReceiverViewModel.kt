@@ -19,9 +19,11 @@ import com.ventouxlabs.portage.model.ProtocolMessage
 import com.ventouxlabs.portage.model.ManifestValidation
 import com.ventouxlabs.portage.model.PairingMode
 import com.ventouxlabs.portage.model.ResumePoint
+import com.ventouxlabs.portage.model.ReceiptPhase
 import com.ventouxlabs.portage.lineage.CheckpointKey
 import com.ventouxlabs.portage.lineage.LineageRepository
 import com.ventouxlabs.portage.lineage.LineageBusyException
+import com.ventouxlabs.portage.lineage.CredentialState
 import com.ventouxlabs.portage.providers.ApplyOutcome
 import com.ventouxlabs.portage.providers.ApplyProviderRegistry
 import com.ventouxlabs.portage.providers.apk.ApkContainerValidation
@@ -382,7 +384,9 @@ class ReceiverViewModel(
 
     /** Reconnect after an uncertain final acknowledgement, retaining the original move and secret. */
     fun resumeSavedMove() {
-        if (_state.value !is ReceiverState.Done || !sessionStopped()) return
+        val current = _state.value
+        if (current !is ReceiverState.Done && (current !is ReceiverState.Failed || !current.canResumeSavedMove)) return
+        if (!sessionStopped()) return
         if (currentLineageId == null) return
         _state.value = ReceiverState.Idle
         startScanning()
@@ -1111,13 +1115,34 @@ class ReceiverViewModel(
         }
     }
 
-    /** Fail-closed terminal transition: close the live channel, then surface the reason. */
-    private fun fail(reason: String, epoch: Long = sessionEpoch) {
+    /** A failed acknowledgement cannot undo writes already performed by an apply provider. */
+    private suspend fun fail(reason: String, epoch: Long = sessionEpoch) {
         if (epoch != sessionEpoch) return
         channel?.close()
         channel = null
         if (cancellationRequested && _state.value is ReceiverState.Failed) return
-        _state.value = ReceiverState.Failed(reason)
+        val previous = _state.value
+        val priorChanges = previous is ReceiverState.Transferring ||
+            (previous as? ReceiverState.Failed)?.mayHaveAppliedChanges == true
+        val (savedLineageId, canResume, persistedChanges) = withContext(ioDispatcher) {
+            runCatching {
+                val active = lineageRepository.active()
+                val resumable = active?.credentialState == CredentialState.ESTABLISHED
+                val persistedChanges = active?.manifest?.items.orEmpty().any { meta ->
+                    val phase = lineageRepository.checkpoint(CheckpointKey.from(checkNotNull(active).id, meta))?.phase
+                    phase != null && phase != ReceiptPhase.PREPARED && phase != ReceiptPhase.RECEIVED_VERIFIED
+                }
+                Triple(active?.id, resumable, persistedChanges)
+            }.getOrDefault(Triple(null, false, false))
+        }
+        if (epoch != sessionEpoch) return
+        if (cancellationRequested && _state.value is ReceiverState.Failed) return
+        if (canResume) currentLineageId = savedLineageId
+        _state.value = ReceiverState.Failed(
+            reason = reason,
+            canResumeSavedMove = canResume,
+            mayHaveAppliedChanges = priorChanges || persistedChanges,
+        )
     }
 
     override fun onCleared() {
