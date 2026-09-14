@@ -24,6 +24,9 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.OutputStream
+import java.io.File
+import java.util.concurrent.Executors
+import kotlinx.coroutines.asCoroutineDispatcher
 
 private class ScriptedChannel(vararg incoming: ProtocolMessage?) : SecureChannel {
     private val queue = ArrayDeque(incoming.toList())
@@ -170,7 +173,7 @@ class TransferEngineTest {
         assertThat(channel.sent.filterIsInstance<ProtocolMessage.ItemData>()).isEmpty()
         staged.items.single().file.writeBytes(byteArrayOf(3, 2, 1))
         val changed = ScriptedChannel(hello, lineageAck, ProtocolMessage.Select(listOf(1)))
-        assertThat(TransferEngine().run(changed, staged, bootstrap) { }.single().phase).isEqualTo(ReceiptPhase.UNKNOWN_INTERRUPTED)
+        assertThat(TransferEngine().run(changed, staged, bootstrap) { }.single().phase).isEqualTo(ReceiptPhase.PREPARED)
         assertThat(changed.sent.filterIsInstance<ProtocolMessage.ItemBegin>()).isEmpty()
     }
 
@@ -197,6 +200,8 @@ class TransferEngineTest {
             }) { } }.exceptionOrNull()
         assertThat(deleted).isTrue()
         assertThat(thrown).isInstanceOf(TransferCancelledException::class.java)
+        assertThat((thrown as TransferCancelledException).peerDeletionConfirmed).isFalse()
+        assertThat(thrown.peerInitiated).isTrue()
         assertThat(channel.sent.last()).isEqualTo(ProtocolMessage.CancelAck(lineageId))
     }
 
@@ -206,5 +211,46 @@ class TransferEngineTest {
             ProtocolMessage.Ping, ProtocolMessage.Select(listOf(1)), receipt(1), ProtocolMessage.Ping,
             ProtocolMessage.BatchAck(listOf(result(1))))
         assertThat(TransferEngine().run(channel, staged, bootstrap) { }.single().status).isEqualTo(ItemStatus.OK)
+    }
+
+    @Test fun `missing or invalid final receipt preserves known failed items`() = runTest {
+        for (final in listOf(null, ProtocolMessage.BatchAck(listOf(result(1), result(1))))) {
+            val staged = stage(byteArrayOf(1), byteArrayOf(2))
+            val knownFailure = receipt(1, ItemStatus.WRITE_ERROR).result.copy(detail = "destination denied")
+            val channel = ScriptedChannel(hello, lineageAck, ProtocolMessage.Select(listOf(1, 2)),
+                ProtocolMessage.ItemAck(knownFailure), receipt(2), final)
+            val results = TransferEngine().run(channel, staged, bootstrap) { }
+            assertThat(results[0]).isEqualTo(knownFailure)
+            assertThat(results[1].phase).isEqualTo(ReceiptPhase.UNKNOWN_INTERRUPTED)
+        }
+    }
+
+    @Test fun `mid-batch interruption preserves failed verified and never-started truth separately`() = runTest {
+        val staged = stage(byteArrayOf(1), byteArrayOf(2), byteArrayOf(3), byteArrayOf(4))
+        val channel = ScriptedChannel(hello, lineageAck, ProtocolMessage.Select(listOf(1, 2, 3, 4)),
+            receipt(1, ItemStatus.WRITE_ERROR), receipt(2), null)
+        val results = TransferEngine().run(channel, staged, bootstrap) { }
+        assertThat(results.map { it.phase }).containsExactly(ReceiptPhase.FAILED,
+            ReceiptPhase.UNKNOWN_INTERRUPTED, ReceiptPhase.UNKNOWN_INTERRUPTED, ReceiptPhase.PREPARED).inOrder()
+        assertThat(results.last().status).isNotEqualTo(ItemStatus.OK)
+    }
+
+    @Test fun `payload validation executes on the injected file IO thread`() = runTest {
+        val staged = stage(byteArrayOf(1, 2, 3))
+        val threads = mutableListOf<String>()
+        val wrappedFile = object : File(staged.items.single().file.absolutePath) {
+            override fun length(): Long {
+                threads += Thread.currentThread().name
+                return super.length()
+            }
+        }
+        val checked = staged.copy(items = listOf(staged.items.single().copy(file = wrappedFile)))
+        val channel = ScriptedChannel(hello, lineageAck, ProtocolMessage.Select(listOf(1)),
+            receipt(1), ProtocolMessage.BatchAck(listOf(result(1))))
+        Executors.newSingleThreadExecutor { Thread(it, "sender-file-io") }.asCoroutineDispatcher().use { io ->
+            TransferEngine().run(channel, checked, bootstrap, ioDispatcher = io) { }
+        }
+        assertThat(threads).isNotEmpty()
+        assertThat(threads.toSet()).containsExactly("sender-file-io")
     }
 }

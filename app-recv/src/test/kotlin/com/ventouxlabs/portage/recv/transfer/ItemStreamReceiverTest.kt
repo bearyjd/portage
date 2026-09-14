@@ -830,6 +830,43 @@ class ItemStreamReceiverTest {
     // --- Mid-stream disk fault (ENOSPC) + default-seam + negative-size arm coverage (2026-06-20) ---
 
     @Test
+    fun `staging open flush and close faults drain acknowledge and continue the batch`() = runTest {
+        for (fault in listOf("open", "flush", "close")) {
+            val second = meta.copy(itemId = 2, occurrenceId = "2".repeat(32))
+            val channel = ScriptedChannel(*(
+                itemFrames(meta, payload) + itemFrames(second, payload) +
+                    ProtocolMessage.BatchEnd(listOf(1, 2), "done")
+                ).toTypedArray())
+            val applied = mutableListOf<Int>()
+            val results = ItemStreamReceiver(tmp.newFolder(), openSink = { file ->
+                if (file.name != "stage-1.bin") file.outputStream()
+                else {
+                    if (fault == "open") throw IOException("private storage path must not escape")
+                    object : java.io.FilterOutputStream(file.outputStream()) {
+                        override fun flush() {
+                            if (fault == "flush") throw IOException("flush failed")
+                            super.flush()
+                        }
+                        override fun close() {
+                            out.close()
+                            if (fault == "close") throw IOException("close failed")
+                        }
+                    }
+                }
+            }).run(channel, mapOf(1 to meta, 2 to second), { item, source ->
+                assertThat(source.readBytes()).isEqualTo(payload)
+                applied += item.itemId
+                ApplyOutcome(ItemStatus.OK)
+            }) { }
+            assertThat(results.map { it.status }).containsExactly(ItemStatus.WRITE_ERROR, ItemStatus.OK).inOrder()
+            assertThat(applied).containsExactly(2)
+            assertThat(channel.sent.filterIsInstance<ProtocolMessage.ItemAck>().map { it.result.status })
+                .containsExactly(ItemStatus.WRITE_ERROR, ItemStatus.OK).inOrder()
+            assertThat(channel.sent.last()).isEqualTo(ProtocolMessage.BatchAck(results))
+        }
+    }
+
+    @Test
     fun `a mid-stream staging-write fault is a per-item WRITE_ERROR and does not abort the batch`() = runTest {
         // The one disk-pressure path AC-16 can't pre-check: free space looked sufficient, but the
         // staging write fails mid-stream (e.g. ENOSPC). It must become a per-item WRITE_ERROR + drain,

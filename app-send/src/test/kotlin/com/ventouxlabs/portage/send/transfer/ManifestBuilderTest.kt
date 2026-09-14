@@ -18,6 +18,8 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.ByteArrayInputStream
 import java.io.OutputStream
+import java.util.concurrent.Executors
+import kotlinx.coroutines.asCoroutineDispatcher
 
 private class FakeExport(
     override val kind: ItemKind,
@@ -126,5 +128,27 @@ class ManifestBuilderTest {
         assertThat(staged.items.map { it.meta.occurrenceId }.toSet()).hasSize(2)
         assertThat(staged.items.map { it.file }.toSet()).hasSize(2)
         staged.items.forEach { assertThat(it.meta.occurrenceId).matches("[0-9a-f]{32}") }
+    }
+
+    @Test fun `provider reads and export staging execute on injected IO thread`() = runTest {
+        val threads = mutableListOf<String>()
+        val provider = object : ExportProvider {
+            override val kind = ItemKind.USER_FILE
+            override val displayName = "file"
+            override val group = "Files"
+            override suspend fun available(): Boolean {
+                threads += Thread.currentThread().name
+                return true
+            }
+            override suspend fun exportTo(sink: OutputStream) {
+                threads += Thread.currentThread().name
+                sink.write(ByteArray(32 * 1024) { 7 })
+            }
+        }
+        Executors.newSingleThreadExecutor { Thread(it, "sender-preparation-io") }.asCoroutineDispatcher().use { io ->
+            ManifestBuilder(listOf(provider), tmp.root, "sender", "a".repeat(32), ioDispatcher = io).build()
+        }
+        assertThat(threads).hasSize(2)
+        assertThat(threads.toSet()).containsExactly("sender-preparation-io")
     }
 }

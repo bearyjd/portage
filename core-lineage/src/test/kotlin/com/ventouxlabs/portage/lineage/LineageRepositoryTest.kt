@@ -52,6 +52,9 @@ class LineageRepositoryTest {
             secret = it.establishResumeCredential(id)
             assertEquals(32, secret.size)
             assertArrayEquals(secret, it.establishResumeCredential(id))
+            assertEquals(CredentialState.PENDING, it.active()?.credentialState)
+            assertThrows(IllegalStateException::class.java) { it.credentialForResume() }
+            it.confirmResumeCredential(id)
             assertThrows(IllegalArgumentException::class.java) { it.acceptInitial("f".repeat(32), ByteArray(32)) }
         }
         LineageRepository(root, { now }).use {
@@ -120,6 +123,7 @@ class LineageRepositoryTest {
         LineageRepository(root, { now }).use {
             val id = it.startNewMove().id
             it.establishResumeCredential(id)
+            it.confirmResumeCredential(id)
         }
         now += LineageRepository.LINEAGE_TTL_MS - 1
         LineageRepository(root, { now }).use { assertNotNull(it.active()); assertEquals(32, it.credentialForResume().size) }
@@ -176,4 +180,195 @@ class LineageRepositoryTest {
         val manifest = TransferManifest("phone", listOf(meta(1), meta(2, meta(1).occurrenceId)), bytes.size * 2L, "0".repeat(32))
         assertThrows(IllegalArgumentException::class.java) { ManifestValidation.requireIdentities(manifest) }
     }
+
+    @Test fun `snapshot parse and validation failures never expose secret content or causes`() {
+        val secret = "ab".repeat(32)
+        for (corrupt in listOf(
+            "{\"version\":2,\"active\":{\"credentialHex\":\"$secret\",\"bad\":",
+            "{\"version\":2,\"active\":\"$secret\",\"checkpoints\":[],\"tombstones\":[]}",
+            "{\"version\":2,\"active\":null,\"checkpoints\":[],\"tombstones\":[],\"$secret\":true}",
+        )) {
+            val root = tmp.newFolder()
+            File(root, "lineage.json").writeText(corrupt)
+            val error = assertThrows(SnapshotLoadException::class.java) { LineageRepository(root, { now }) }
+            assertEquals(SnapshotLoadException().message, error.message)
+            assertNull(error.cause)
+            assertTrue(error.suppressed.isEmpty())
+            assertFalse(error.stackTraceToString().contains(secret))
+        }
+        val unreadable = tmp.newFolder()
+        File(unreadable, "lineage.json").mkdir()
+        val error = assertThrows(SnapshotLoadException::class.java) { LineageRepository(unreadable, { now }) }
+        assertNull(error.cause)
+        val notDirectory = File(tmp.newFolder(), secret).apply { writeText("not a directory") }
+        val directoryError = assertThrows(SnapshotLoadException::class.java) { LineageRepository(notDirectory, { now }) }
+        assertNull(directoryError.cause)
+        assertFalse(directoryError.stackTraceToString().contains(secret))
+        val locked = tmp.newFolder()
+        LineageRepository(locked, { now }).use {
+            val lockError = assertThrows(SnapshotLoadException::class.java) { LineageRepository(locked, { now }) }
+            assertNull(lockError.cause)
+            assertNull(it.active())
+        }
+    }
+
+    @Test fun `pending bootstrap survives both delivery crash boundaries without generating a replacement`() {
+        val requests = mutableListOf<Int>()
+        val random = object : SecureRandom() {
+            override fun nextBytes(bytes: ByteArray) {
+                requests += bytes.size
+                bytes.fill(requests.size.toByte())
+            }
+        }
+        val senderRoot = tmp.newFolder()
+        val receiverRoot = tmp.newFolder()
+        lateinit var id: String
+        lateinit var secret: ByteArray
+        LineageRepository(senderRoot, { now }, random).use {
+            id = it.startNewMove().id
+            secret = it.establishResumeCredential(id)
+        }
+        // Sender died before delivering INIT. Reopen must offer NEW with these same pending bytes.
+        LineageRepository(senderRoot, { now }, random).use { sender ->
+            assertEquals(CredentialState.PENDING, sender.active()?.credentialState)
+            assertThrows(IllegalStateException::class.java) { sender.credentialForResume() }
+            assertArrayEquals(secret, sender.pendingBootstrapCredential(id))
+            assertArrayEquals(secret, sender.establishResumeCredential(id))
+            LineageRepository(receiverRoot, { now }).use { receiver -> receiver.acceptInitial(id, secret) }
+        }
+        // Receiver persisted INIT, but sender died before receiving ACK. Both restart; NEW resend is
+        // allowed only with the same lineage and credential, then the matching ACK confirms sender.
+        LineageRepository(senderRoot, { now }, random).use { sender ->
+            LineageRepository(receiverRoot, { now }).use { receiver ->
+                assertArrayEquals(secret, receiver.credentialForResume())
+                assertThrows(IllegalArgumentException::class.java) { receiver.acceptInitial(id, ByteArray(32)) }
+                assertThrows(IllegalArgumentException::class.java) { receiver.acceptInitial("f".repeat(32), secret) }
+                receiver.acceptInitial(id, sender.pendingBootstrapCredential(id))
+                sender.confirmResumeCredential(id)
+                assertArrayEquals(receiver.credentialForResume(), sender.credentialForResume())
+            }
+        }
+        LineageRepository(senderRoot, { now }, random).use {
+            assertEquals(CredentialState.ESTABLISHED, it.active()?.credentialState)
+            assertArrayEquals(secret, it.credentialForResume())
+            assertThrows(IllegalArgumentException::class.java) { it.establishResumeCredential(id) }
+            assertThrows(IllegalArgumentException::class.java) { it.pendingBootstrapCredential(id) }
+        }
+        assertEquals(listOf(16, 32), requests)
+    }
+
+    @Test fun `prepared manifest and every staged filename become visible in one atomic snapshot`() {
+        val root = tmp.newFolder()
+        lateinit var manifest: TransferManifest
+        LineageRepository(root, { now }).use { store ->
+            val id = store.startNewMove().id
+            val items = listOf(meta(1), meta(2))
+            manifest = TransferManifest("phone", items, items.sumOf { it.size }, id)
+            store.stagingDir.mkdirs()
+            val files = items.associate { it.itemId to File(store.stagingDir, "${it.occurrenceId}.bin").apply { writeBytes(bytes) } }
+            assertThrows(IllegalArgumentException::class.java) { store.savePreparedManifest(manifest, files - 2) }
+            assertNull(store.active()?.manifest)
+            assertFalse(checkNotNull(store.active()).prepared)
+            files.getValue(2).writeBytes(ByteArray(bytes.size))
+            assertThrows(IllegalArgumentException::class.java) { store.savePreparedManifest(manifest, files) }
+            assertNull(store.active()?.manifest)
+            files.getValue(2).writeBytes(bytes)
+            store.savePreparedManifest(manifest, files)
+            assertTrue(checkNotNull(store.active()).prepared)
+        }
+        LineageRepository(root, { now }).use { store ->
+            assertEquals(manifest, store.active()?.manifest)
+            assertTrue(checkNotNull(store.active()).prepared)
+            manifest.items.forEach { assertArrayEquals(bytes, store.stagedFile(CheckpointKey.from(manifest.lineageId, it))?.readBytes()) }
+        }
+    }
+
+    @Test fun `crashes around prepared snapshot replacement reopen as old or complete new state`() {
+        for (crashAfterReplace in listOf(false, true)) repeat(20) {
+            val root = tmp.newFolder()
+            var armed = false
+            val crash = { if (armed) throw SimulatedCrash() }
+            lateinit var manifest: TransferManifest
+            LineageRepository(root, { now }, beforeSnapshotReplace = if (crashAfterReplace) ({}) else crash,
+                afterSnapshotReplace = if (crashAfterReplace) crash else ({})).use { store ->
+                val id = store.startNewMove().id
+                val items = listOf(meta(1), meta(2), meta(3))
+                manifest = TransferManifest("phone", items, items.sumOf { it.size }, id)
+                store.stagingDir.mkdirs()
+                val files = items.associate { it.itemId to File(store.stagingDir, "${it.occurrenceId}.bin").apply { writeBytes(bytes) } }
+                armed = true
+                assertThrows(SimulatedCrash::class.java) { store.savePreparedManifest(manifest, files) }
+            }
+            LineageRepository(root, { now }).use { store ->
+                val active = checkNotNull(store.active())
+                assertEquals(crashAfterReplace, active.prepared)
+                if (crashAfterReplace) {
+                    assertEquals(manifest, active.manifest)
+                    manifest.items.forEach { assertNotNull(store.stagedFile(CheckpointKey.from(active.id, it))) }
+                } else {
+                    assertNull(active.manifest)
+                    manifest.items.forEach { assertNull(store.checkpoint(CheckpointKey.from(active.id, it))) }
+                }
+            }
+        }
+    }
+
+    @Test fun `cancelled preparation and incomplete metadata never advertise a prepared move`() {
+        val root = tmp.newFolder()
+        LineageRepository(root, { now }).use { store ->
+            val id = store.startNewMove().id
+            val manifest = store.manifest(meta(1), meta(2))
+            store.stagingDir.mkdirs()
+            val file = File(store.stagingDir, "one.bin").apply { writeBytes(bytes) }
+            store.prepare(CheckpointKey.from(id, meta(1)), file)
+            assertFalse(checkNotNull(store.active()).prepared)
+            val files = mapOf(1 to file, 2 to File(store.stagingDir, "two.bin").apply { writeBytes(bytes) })
+            var hashChecks = 0
+            assertThrows(SimulatedCrash::class.java) {
+                store.savePreparedManifest(manifest, files) { if (++hashChecks == 5) throw SimulatedCrash() }
+            }
+            assertFalse(checkNotNull(store.active()).prepared)
+        }
+        LineageRepository(root, { now }).use { assertFalse(checkNotNull(it.active()).prepared) }
+    }
+
+    @Test fun `a prepared snapshot missing one staged filename is rejected on reopen`() {
+        val root = tmp.newFolder()
+        LineageRepository(root, { now }).use { store ->
+            val id = store.startNewMove().id
+            val manifest = TransferManifest("phone", listOf(meta()), bytes.size.toLong(), id)
+            store.stagingDir.mkdirs()
+            val file = File(store.stagingDir, "item.bin").apply { writeBytes(bytes) }
+            store.savePreparedManifest(manifest, mapOf(1 to file))
+        }
+        val file = File(root, "lineage.json")
+        file.writeText(file.readText().replace("\"stagedName\":\"item.bin\"", "\"stagedName\":null"))
+        val error = assertThrows(SnapshotLoadException::class.java) { LineageRepository(root, { now }) }
+        assertNull(error.cause)
+    }
+
+    @Test fun `stale lineage reconciliation cannot change or expire a later move`() {
+        val root = tmp.newFolder()
+        LineageRepository(root, { now }).use { store ->
+            val first = store.startNewMove().id
+            val second = store.startNewMove().id
+            store.manifest(meta())
+            val key = CheckpointKey.from(second, meta())
+            store.transition(key, ReceiptPhase.PREPARED, ReceiptPhase.RECEIVED_VERIFIED)
+            store.transition(key, ReceiptPhase.RECEIVED_VERIFIED, ReceiptPhase.APPLYING)
+            val before = File(root, "lineage.json").readText()
+            assertFalse(store.reconcileInterrupted(first))
+            assertEquals(before, File(root, "lineage.json").readText())
+            assertEquals(ReceiptPhase.APPLYING, store.checkpoint(key)?.phase)
+            assertTrue(store.reconcileInterrupted(second))
+            assertEquals(ReceiptPhase.UNKNOWN_INTERRUPTED, store.checkpoint(key)?.phase)
+            val reconciled = File(root, "lineage.json").readText()
+            now += LineageRepository.LINEAGE_TTL_MS
+            assertFalse(store.reconcileInterrupted(first))
+            assertEquals(reconciled, File(root, "lineage.json").readText())
+            assertThrows(IllegalArgumentException::class.java) { store.reconcileInterrupted("bad") }
+        }
+    }
+
+    private class SimulatedCrash : RuntimeException("simulated process interruption")
 }

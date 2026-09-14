@@ -159,7 +159,6 @@ private class ReceiverViewModelFactory(
 ) : ViewModelProvider.Factory {
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        val lineageRepository = LineageRepository(File(context.noBackupFilesDir, "lineage"))
         // The active distribution flavor supplies every apply-time privilege seam (ADR-003 flavor
         // split): degoogle wires the self-contained ADB bridge + wizard; play returns no-op Tier-0
         // defaults with neither :adb-bridge nor :wizard compiled in. :app-recv/src/main holds no
@@ -267,8 +266,8 @@ private class ReceiverViewModelFactory(
         }
         @Suppress("UNCHECKED_CAST")
         return ReceiverViewModel(
-            stagingDir = lineageRepository.stagingDir,
-            lineageRepository = lineageRepository,
+            stagingDir = File(context.noBackupFilesDir, "lineage/staging"),
+            lineageRepositoryFactory = { LineageRepository(File(context.noBackupFilesDir, "lineage")) },
             smsRoleCoordinator = smsRoleCoordinator,
             applyRegistryFactory = registryFactory,
             // Abandon sealed-but-uncommitted sessions on return-home (fix 5b).

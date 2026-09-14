@@ -204,6 +204,7 @@ fun SendDoneScreen(
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
     unknown: Int = 0,
+    notSent: Int = 0,
     onResume: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
@@ -214,7 +215,7 @@ fun SendDoneScreen(
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = if (unknown > 0) "NEEDS REVIEW" else "DONE",
+            text = if (unknown > 0 || notSent > 0) "NEEDS REVIEW" else "DONE",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary,
         )
@@ -244,6 +245,12 @@ fun SendDoneScreen(
             Spacer(Modifier.height(s.sm))
             Text("$unknown outcomes were not confirmed. Review the new phone before resuming; some changes may already be applied.",
                 style = MaterialTheme.typography.bodyLarge)
+        }
+        if (notSent > 0) {
+            Spacer(Modifier.height(s.sm))
+            Text("$notSent were not sent in this attempt.", style = MaterialTheme.typography.bodyLarge)
+        }
+        if (unknown > 0 || notSent > 0) {
             onResume?.let {
                 Spacer(Modifier.height(s.md))
                 SwissPrimaryButton(text = "Resume saved move", onClick = it, fullWidth = true)

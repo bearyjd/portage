@@ -23,6 +23,8 @@ import com.ventouxlabs.portage.providers.apk.ApkContainerValidation
 import com.ventouxlabs.portage.transport.SecureChannel
 import com.ventouxlabs.portage.transport.TransportException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -146,9 +148,9 @@ class ItemStreamReceiver(
             if (lineageRepository == null) {
                 runCatching { stagingDir.listFiles()?.forEach { it.deleteRecursively() } }
             } else {
-                lineageRepository.reconcileInterrupted()
+                lineageRepository.reconcileInterrupted(checkNotNull(lineageId))
                 // Only exact verified files survive; interrupted partials restart from byte zero.
-                expected.values.forEach { meta ->
+                expected.values.filter { lineageRepository.active()?.id == lineageId }.forEach { meta ->
                     val key = CheckpointKey.from(checkNotNull(lineageId), meta)
                     if (runCatching { lineageRepository?.verifiedStaged(key) }.getOrNull() == null) {
                         File(stagingDir, "${meta.occurrenceId}.bin").delete()
@@ -237,7 +239,14 @@ class ItemStreamReceiver(
                 lineageRepository.transition(key, previous.phase, ReceiptPhase.PREPARED)
             }
         }
-        val sink: OutputStream? = if (failure == null && resumed == null) openSink(file) else null
+        val sink: OutputStream? = if (failure == null && resumed == null) {
+            try {
+                openSink(file)
+            } catch (_: IOException) {
+                failure = ItemResult(begin.itemId, ItemStatus.WRITE_ERROR, "staging file could not be opened")
+                null
+            }
+        } else null
         try {
             chunks@ while (true) {
                 val message = receiveSkippingPing(channel)
@@ -294,7 +303,13 @@ class ItemStreamReceiver(
                 (sink as? FileOutputStream)?.fd?.sync()
             } catch (_: IOException) {
                 failure = ItemResult(begin.itemId, ItemStatus.WRITE_ERROR, "staged bytes could not be persisted")
-            } finally { sink?.close() }
+            } finally {
+                try {
+                    sink?.close()
+                } catch (_: IOException) {
+                    failure = ItemResult(begin.itemId, ItemStatus.WRITE_ERROR, "staging file could not be closed")
+                }
+            }
         }
 
         val receipt = failure ?: verifyStaged(begin.itemId, meta, digest, endSha, received)
@@ -327,6 +342,8 @@ class ItemStreamReceiver(
         } finally {
             if (lineageRepository == null) runCatching { file.delete() }
         }
+        currentCoroutineContext().ensureActive()
+        check(!cancellationRequested()) { "move cancelled" }
         val phase = if (outcome.status == ItemStatus.OK) ReceiptPhase.APPLIED_DURABLE else ReceiptPhase.FAILED
         if (key != null) lineageRepository?.transition(key, ReceiptPhase.APPLYING, phase, detail = outcome.detail)
         return ItemResult(begin.itemId, outcome.status, outcome.detail, phase, checkNotNull(meta).occurrenceId)

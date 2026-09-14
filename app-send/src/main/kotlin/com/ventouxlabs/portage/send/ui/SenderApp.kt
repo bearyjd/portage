@@ -143,6 +143,7 @@ private fun StateBody(
                 sent = current.sent,
                 failed = current.failed,
                 unknown = current.unknown,
+                notSent = current.notSent,
                 onResume = viewModel::onResumeTransfer,
                 onDone = viewModel::reset,
                 modifier = Modifier.fillMaxSize(),

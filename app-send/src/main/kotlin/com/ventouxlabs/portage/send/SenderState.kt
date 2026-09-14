@@ -9,6 +9,8 @@
  */
 package com.ventouxlabs.portage.send
 
+import com.ventouxlabs.portage.model.ItemResult
+
 /** Where one requested item is in its stream→ack lifecycle on the sender. */
 enum class SendPhase { QUEUED, SENDING, ACKED, FAILED }
 
@@ -20,6 +22,7 @@ data class SendProgress(
     val bytesSent: Long = 0,
     val phase: SendPhase = SendPhase.QUEUED,
     val detail: String? = null,
+    val receipt: ItemResult? = null,
 )
 
 /** The sender's single screen state (portage-prp-prompt.md §7: "Transfer to new phone"). */
@@ -40,7 +43,7 @@ sealed interface SenderState {
     data class Sending(val items: List<SendProgress>) : SenderState
 
     /** Done summary from the receiver's acks. */
-    data class Done(val sent: Int, val failed: Int, val unknown: Int = 0) : SenderState
+    data class Done(val sent: Int, val failed: Int, val unknown: Int = 0, val notSent: Int = 0) : SenderState
 
     /** Fail-closed terminal state with a user-facing reason. */
     data class Failed(val reason: String, val canResume: Boolean = false) : SenderState

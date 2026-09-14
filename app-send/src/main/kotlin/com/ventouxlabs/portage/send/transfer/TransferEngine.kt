@@ -18,14 +18,39 @@ import com.ventouxlabs.portage.model.ReceiptPhase
 import com.ventouxlabs.portage.transport.SecureChannel
 import com.ventouxlabs.portage.transport.TransportException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import java.io.IOException
 
-class TransferCancelledException(val peerDeletionConfirmed: Boolean) : Exception("Move cancelled")
+class TransferCancelledException(
+    val peerDeletionConfirmed: Boolean,
+    val peerInitiated: Boolean = false,
+) : Exception("Move cancelled")
+
+/** Keep known failures and never-started work distinct from potentially applied work. */
+internal fun interruptedResults(
+    items: List<StagedItem>,
+    receipts: Map<Int, ItemResult>,
+    started: Set<Int>,
+): List<ItemResult> = items.map { item ->
+    val receipt = receipts[item.meta.itemId]
+    when {
+        receipt?.phase == ReceiptPhase.FAILED -> receipt
+        item.meta.itemId !in started -> ItemResult(item.meta.itemId, ItemStatus.SKIPPED,
+            "Not sent in this attempt.", ReceiptPhase.PREPARED, item.meta.occurrenceId)
+        else -> ItemResult(item.meta.itemId, ItemStatus.UNKNOWN_INTERRUPTED,
+            "Final application was not confirmed; resume this move to review it.",
+            ReceiptPhase.UNKNOWN_INTERRUPTED, item.meta.occurrenceId)
+    }
+}
 
 /**
  * Sender's authenticated lineage bootstrap, manifest selection, and phased receipt exchange.
- * Per-item failures do not abort the batch. Interruption after selection produces unknown
- * outcomes; bootstrap and selection violations fail before payload streaming.
+ * Per-item failures do not abort the batch. Interruption preserves known failures and
+ * untouched work; potentially applied outcomes become unknown.
  */
 class TransferEngine(private val chunkSize: Int = DEFAULT_CHUNK_BYTES) {
 
@@ -39,17 +64,18 @@ class TransferEngine(private val chunkSize: Int = DEFAULT_CHUNK_BYTES) {
     /**
      * Drive one whole transfer over an already-handshaken [channel]. Returns the final
      * per-item final results. Receipt acknowledgements never prove application; a missing
-     * or invalid final acknowledgement leaves every selected occurrence unknown.
+     * or invalid final acknowledgement leaves potentially applied occurrences unknown.
      */
     suspend fun run(
         channel: SecureChannel,
         staged: StagedManifest,
         lineageMessage: ProtocolMessage,
-        onLineageAcknowledged: () -> Unit = {},
+        onLineageAcknowledged: suspend () -> Unit = {},
         isCancellationRequested: () -> Boolean = { false },
         isCancelAlreadySent: () -> Boolean = { false },
         onAwaitingReply: (Boolean) -> Unit = {},
         onPeerCancel: () -> Unit = {},
+        ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
         onEvent: (Event) -> Unit,
     ): List<ItemResult> {
         ManifestValidation.requireValid(staged.manifest)
@@ -74,7 +100,7 @@ class TransferEngine(private val chunkSize: Int = DEFAULT_CHUNK_BYTES) {
                 if (message.lineageId != lineageId) throw TransportException("cancel lineage mismatch")
                 onPeerCancel()
                 channel.send(ProtocolMessage.CancelAck(lineageId))
-                throw TransferCancelledException(true)
+                throw TransferCancelledException(peerDeletionConfirmed = false, peerInitiated = true)
             }
             return message
         }
@@ -130,11 +156,15 @@ class TransferEngine(private val chunkSize: Int = DEFAULT_CHUNK_BYTES) {
 
         val sentIds = mutableListOf<Int>()
         val receipts = mutableMapOf<Int, ItemResult>()
+        val started = mutableSetOf<Int>()
         val selected = staged.items.filter { it.meta.itemId in select.want }
         try {
             for (item in selected) {
                 checkCancelled()
-                sendItem(channel, item, item.meta.itemId in complete, ::checkCancelled, onEvent)
+                sendItem(channel, item, item.meta.itemId in complete, ::checkCancelled, ioDispatcher) { event ->
+                    if (event is Event.ItemStarted) started += event.itemId
+                    onEvent(event)
+                }
                 sentIds += item.meta.itemId
 
                 val ackMsg = receive()
@@ -162,7 +192,7 @@ class TransferEngine(private val chunkSize: Int = DEFAULT_CHUNK_BYTES) {
                         (result.phase == ReceiptPhase.APPLIED_DURABLE &&
                             receipts[result.itemId]?.phase != ReceiptPhase.RECEIVED_VERIFIED)
                 }
-            ) return unknownResults(selected)
+            ) return interruptedResults(selected, receipts, started)
             return batchAck.results
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -170,7 +200,7 @@ class TransferEngine(private val chunkSize: Int = DEFAULT_CHUNK_BYTES) {
             throw cancelled
         } catch (failure: Exception) {
             if (failure !is TransportException && failure !is IOException) throw failure
-            return unknownResults(selected)
+            return interruptedResults(selected, receipts, started)
         }
     }
 
@@ -183,33 +213,35 @@ class TransferEngine(private val chunkSize: Int = DEFAULT_CHUNK_BYTES) {
         }
     }
 
-    private fun unknownResults(items: List<StagedItem>): List<ItemResult> = items.map {
-        ItemResult(it.meta.itemId, ItemStatus.UNKNOWN_INTERRUPTED,
-            "Final application was not confirmed; resume this move to review it.",
-            ReceiptPhase.UNKNOWN_INTERRUPTED, it.meta.occurrenceId)
-    }
-
     private suspend fun sendItem(
         channel: SecureChannel,
         item: StagedItem,
         receivedWholeFile: Boolean,
         checkCancelled: suspend () -> Unit,
+        ioDispatcher: CoroutineDispatcher,
         onEvent: (Event) -> Unit,
     ) {
         val meta = item.meta
-        if (!item.file.isFile || item.file.length() != meta.size ||
-            item.file.inputStream().use { sha256Hex(it) } != meta.sha256
-        ) throw TransportException("Prepared bytes changed; start a new move")
+        withContext(ioDispatcher) {
+            val context = currentCoroutineContext()
+            context.ensureActive()
+            if (!item.file.isFile || item.file.length() != meta.size ||
+                item.file.inputStream().use { sha256Hex(it, context::ensureActive) } != meta.sha256
+            ) throw TransportException("Prepared bytes changed; start a new move")
+        }
         onEvent(Event.ItemStarted(meta.itemId))
         channel.send(ProtocolMessage.ItemBegin(meta.itemId, meta.kind, meta.size, chunkSize))
 
         var seq = 0
         var sent = 0L
-        if (!receivedWholeFile) item.file.inputStream().use { input ->
+        if (!receivedWholeFile) withContext(ioDispatcher) { item.file.inputStream() }.use { input ->
             val buffer = ByteArray(chunkSize)
             while (true) {
                 checkCancelled()
-                val read = input.read(buffer)
+                val read = withContext(ioDispatcher) {
+                    currentCoroutineContext().ensureActive()
+                    input.read(buffer)
+                }
                 if (read < 0) break
                 channel.send(ProtocolMessage.ItemData(meta.itemId, seq, buffer.copyOf(read)))
                 seq++

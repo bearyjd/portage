@@ -15,6 +15,12 @@ import com.ventouxlabs.portage.model.TransferManifest
 import com.ventouxlabs.portage.providers.ExportProvider
 import java.io.File
 import java.security.SecureRandom
+import java.io.FilterOutputStream
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 
 /** One advertised item: its manifest metadata plus the staged payload on disk. */
 data class StagedItem(val meta: ItemMeta, val file: File)
@@ -47,16 +53,22 @@ class ManifestBuilder(
     private val newOccurrenceId: () -> String = {
         ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it.toInt() and 0xff) }
     },
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
 
-    suspend fun build(): StagedManifest {
+    suspend fun build(): StagedManifest = withContext(ioDispatcher) {
+        val context = currentCoroutineContext()
         ManifestValidation.requireIdentity(lineageId)
         stagingDir.mkdirs()
         val staged = mutableListOf<StagedItem>()
         var nextId = 1
 
         for (provider in providers) {
-            if (!runCatching { provider.available() }.getOrDefault(false)) continue
+            context.ensureActive()
+            val available = try { provider.available() } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) { false }
+            if (!available) continue
 
             val itemId = nextId
             val occurrenceId = newOccurrenceId()
@@ -65,7 +77,15 @@ class ManifestBuilder(
             val file = File(stagingDir, "$lineageId-$occurrenceId.bin")
             check(file.createNewFile()) { "staging occurrence already exists" }
             val exported = try {
-                file.outputStream().use { provider.exportTo(it) }
+                file.outputStream().use { output ->
+                    provider.exportTo(object : FilterOutputStream(output) {
+                        override fun write(value: Int) { context.ensureActive(); out.write(value) }
+                        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                            context.ensureActive()
+                            out.write(bytes, offset, length)
+                        }
+                    })
+                }
                 true
             } catch (t: Throwable) {
                 if (t is kotlinx.coroutines.CancellationException) throw t
@@ -76,7 +96,7 @@ class ManifestBuilder(
                 continue
             }
 
-            val sha256 = file.inputStream().use { sha256Hex(it) }
+            val sha256 = file.inputStream().use { sha256Hex(it, context::ensureActive) }
             staged += StagedItem(
                 meta = ItemMeta(
                     itemId = itemId,
@@ -92,7 +112,7 @@ class ManifestBuilder(
             nextId++
         }
 
-        return StagedManifest(
+        StagedManifest(
             manifest = TransferManifest(
                 senderName = senderName,
                 items = staged.map { it.meta },

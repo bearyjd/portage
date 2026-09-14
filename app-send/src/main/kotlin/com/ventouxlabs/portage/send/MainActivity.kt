@@ -22,6 +22,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import com.ventouxlabs.portage.providers.ExportProvider
 import com.ventouxlabs.portage.providers.bluetooth.AndroidBluetoothStore
 import com.ventouxlabs.portage.providers.bluetooth.BluetoothStore
@@ -88,6 +90,7 @@ class MainActivity : ComponentActivity() {
             WindowManager.LayoutParams.FLAG_SECURE,
         )
         // The lineage repository owns retained bytes and expiry across process restarts.
+        lifecycleScope.launch { runCatching { cleanupLegacyStaging(cacheDir, noBackupFilesDir) } }
         sweepOrphanedRelayGrantsOnce()
         val summary = deviceSummary()
         setContent {

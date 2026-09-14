@@ -199,6 +199,7 @@ private fun StateBody(
                 moved = current.moved,
                 skipped = current.skipped,
                 onDone = viewModel::reset,
+                onResume = viewModel::resumeSavedMove,
                 modifier = Modifier.fillMaxSize(),
                 installActions = current.installActions,
                 repairEntries = current.repairEntries,
