@@ -16,10 +16,15 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ventouxlabs.portage.providers.apk.InstalledApp
@@ -42,6 +47,11 @@ fun SenderApp(viewModel: SenderViewModel, summary: DeviceSummary) {
     val userFiles by viewModel.userFiles.collectAsStateWithLifecycle()
     val availableApps by viewModel.availableApps.collectAsStateWithLifecycle()
     val selectedAppPackages by viewModel.selectedAppPackages.collectAsStateWithLifecycle()
+    val destructiveGate = remember { SenderDestructiveActionGate() }
+
+    // A confirmation requested on one screen cannot fire after the transfer advances to another.
+    // Sending progress updates retain the same key, so they do not dismiss an open dialog.
+    LaunchedEffect(state.key()) { destructiveGate.dismiss() }
 
     // Belt for #85: keep the screen awake across the active network window (pairing → streaming) so
     // a foregrounded transfer doesn't hit a screen timeout. The foreground service is the real fix.
@@ -73,8 +83,22 @@ fun SenderApp(viewModel: SenderViewModel, summary: DeviceSummary) {
                     userFiles = userFiles,
                     availableApps = availableApps,
                     selectedAppPackages = selectedAppPackages,
+                    destructiveGate = destructiveGate,
                 )
             }
+        }
+        destructiveGate.pendingAction?.let { action ->
+            AlertDialog(
+                onDismissRequest = destructiveGate::dismiss,
+                title = { Text(action.title) },
+                text = { Text(DESTRUCTIVE_MOVE_WARNING) },
+                confirmButton = {
+                    TextButton(onClick = destructiveGate::confirm) { Text(action.confirmLabel) }
+                },
+                dismissButton = {
+                    TextButton(onClick = destructiveGate::dismiss) { Text("Keep saved move") }
+                },
+            )
         }
     }
 }
@@ -90,7 +114,13 @@ private fun StateBody(
     userFiles: List<PickedUserFile>,
     availableApps: List<InstalledApp>,
     selectedAppPackages: Set<String>,
+    destructiveGate: SenderDestructiveActionGate,
 ) {
+    fun runGuarded(intent: SenderDestructiveIntent, action: () -> Unit) {
+        val disclosure = destructiveActionFor(current, intent)
+        if (disclosure == null) action() else destructiveGate.request(disclosure, action)
+    }
+
     when (current) {
         is SenderState.Home ->
             HomeScreen(
@@ -130,7 +160,7 @@ private fun StateBody(
                 qrText = current.qrText,
                 itemCount = current.itemCount,
                 totalBytes = current.totalBytes,
-                onCancel = viewModel::reset,
+                onCancel = { runGuarded(SenderDestructiveIntent.CANCEL_ACTIVE, viewModel::reset) },
                 modifier = Modifier.fillMaxSize(),
             )
 
@@ -139,11 +169,19 @@ private fun StateBody(
                 step = "02 · PAIRED",
                 headline = "Linked",
                 caption = "Secure channel up. Waiting for the new phone's picks…",
-                onCancel = viewModel::cancelTransfer,
+                onCancel = {
+                    runGuarded(SenderDestructiveIntent.CANCEL_ACTIVE, viewModel::cancelTransfer)
+                },
             )
 
         is SenderState.Sending ->
-            SendingScreen(items = current.items, modifier = Modifier.fillMaxSize(), onCancel = viewModel::cancelTransfer)
+            SendingScreen(
+                items = current.items,
+                modifier = Modifier.fillMaxSize(),
+                onCancel = {
+                    runGuarded(SenderDestructiveIntent.CANCEL_ACTIVE, viewModel::cancelTransfer)
+                },
+            )
 
         is SenderState.Done ->
             SendDoneScreen(
@@ -152,16 +190,22 @@ private fun StateBody(
                 unknown = current.unknown,
                 notSent = current.notSent,
                 onResume = viewModel::onResumeTransfer,
-                onDone = viewModel::reset,
+                onDone = { runGuarded(SenderDestructiveIntent.COMPLETE, viewModel::reset) },
                 modifier = Modifier.fillMaxSize(),
             )
 
         is SenderState.Failed ->
             SendFailedScreen(
                 reason = current.reason,
-                onRetry = viewModel::onStartTransfer,
+                onRetry = {
+                    runGuarded(SenderDestructiveIntent.START_NEW, viewModel::onStartTransfer)
+                },
                 onResume = if (current.canResume) viewModel::onResumeTransfer else null,
-                onCancel = if (current.canResume) viewModel::cancelTransfer else null,
+                onCancel = if (current.hasSavedMove) {
+                    {
+                        runGuarded(SenderDestructiveIntent.CANCEL_SAVED, viewModel::cancelTransfer)
+                    }
+                } else null,
                 modifier = Modifier.fillMaxSize(),
             )
     }

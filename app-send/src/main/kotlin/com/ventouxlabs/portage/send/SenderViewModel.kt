@@ -11,6 +11,7 @@ package com.ventouxlabs.portage.send
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ventouxlabs.portage.lineage.ActiveLineage
 import com.ventouxlabs.portage.lineage.CheckpointKey
 import com.ventouxlabs.portage.lineage.CredentialState
 import com.ventouxlabs.portage.lineage.LineageBusyException
@@ -118,15 +119,15 @@ class SenderViewModel(
     },
 ) : ViewModel() {
 
-    @Volatile private var loadedLineageRepository = runCatching {
-        lineageRepository ?: lineageRepositoryFactory()
-    }
-    private val repository: LineageRepository get() = loadedLineageRepository.getOrThrow()
+    // Production repository construction can parse/reconcile/fsync a large saved move. Keep that
+    // entirely off Main. Tests may inject an already-open repository, which is safe to publish now.
+    @Volatile private var loadedLineageRepository: Result<LineageRepository>? =
+        lineageRepository?.let { Result.success(it) }
+    private val repository: LineageRepository get() = checkNotNull(loadedLineageRepository).getOrThrow()
     private val _state = MutableStateFlow<SenderState>(
         when {
-            loadedLineageRepository.isSuccess -> SenderState.Home
-            loadedLineageRepository.exceptionOrNull() is LineageBusyException -> SenderState.OpeningSavedMove
-            else -> SenderState.Failed(SAVED_MOVE_LOAD_FAILURE)
+            loadedLineageRepository?.isSuccess == true -> SenderState.Home
+            else -> SenderState.OpeningSavedMove
         },
     )
     val state: StateFlow<SenderState> = _state.asStateFlow()
@@ -184,8 +185,8 @@ class SenderViewModel(
     private var activeLineageId: String? = null
 
     init {
-        if (loadedLineageRepository.isSuccess) showLoadedMoveState()
-        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) retryRepositoryAcquisition()
+        if (loadedLineageRepository?.isSuccess == true) showLoadedMoveState()
+        else retryRepositoryAcquisition()
         inventorySource?.let { source ->
             _relayCandidates.value = runCatching { RelayAppDetector.detect(source) }.getOrDefault(emptyList())
         }
@@ -199,22 +200,33 @@ class SenderViewModel(
         }
     }
 
-    /** A replaced ViewModel can retain the writer lock until its listener and keep-alive unwind. */
+    /** Open off Main; a replaced ViewModel may retain the writer lock while its owners unwind. */
     private fun retryRepositoryAcquisition() {
         if (repositoryJob?.isCompleted == false) return
         _state.value = SenderState.OpeningSavedMove
         repositoryJob = viewModelScope.launch {
             repeat(REPOSITORY_OPEN_ATTEMPTS) {
+                var activeAfterOpen: ActiveLineage? = null
                 withContext(transferIoDispatcher) {
                     // Publish ownership before returning to Main. onCleared() then sees and closes
                     // an acquired repository even when lifecycle cancellation wins that handoff.
-                    loadedLineageRepository = runCatching { lineageRepositoryFactory() }
+                    val opened = runCatching { lineageRepositoryFactory() }
+                    loadedLineageRepository = opened
+                    opened.getOrNull()?.let { store ->
+                        runCatching { store.active() }.fold(
+                            onSuccess = { activeAfterOpen = it },
+                            onFailure = { failure ->
+                                store.close()
+                                loadedLineageRepository = Result.failure(failure)
+                            },
+                        )
+                    }
                 }
-                if (loadedLineageRepository.isSuccess) {
-                    showLoadedMoveState()
+                if (loadedLineageRepository?.isSuccess == true) {
+                    publishLoadedMoveState(activeAfterOpen)
                     return@launch
                 }
-                if (loadedLineageRepository.exceptionOrNull() !is LineageBusyException) {
+                if (loadedLineageRepository?.exceptionOrNull() !is LineageBusyException) {
                     _state.value = SenderState.Failed(SAVED_MOVE_LOAD_FAILURE)
                     return@launch
                 }
@@ -226,13 +238,21 @@ class SenderViewModel(
 
     private fun showLoadedMoveState() {
         runCatching { repository.active() }.fold(
-            onSuccess = { active ->
-                activeLineageId = active?.id
-                _state.value = if (active == null) SenderState.Home else SenderState.Failed(
-                    "An unfinished move is saved on this phone.", canResume = active.prepared,
-                )
+            onSuccess = ::publishLoadedMoveState,
+            onFailure = { failure ->
+                loadedLineageRepository?.getOrNull()?.close()
+                loadedLineageRepository = Result.failure(failure)
+                _state.value = SenderState.Failed(SAVED_MOVE_LOAD_FAILURE)
             },
-            onFailure = { _state.value = SenderState.Failed(SAVED_MOVE_LOAD_FAILURE) },
+        )
+    }
+
+    private fun publishLoadedMoveState(active: ActiveLineage?) {
+        activeLineageId = active?.id
+        _state.value = if (active == null) SenderState.Home else SenderState.Failed(
+            "An unfinished move is saved on this phone.",
+            canResume = active.prepared,
+            hasSavedMove = true,
         )
     }
 
@@ -326,11 +346,12 @@ class SenderViewModel(
     }
 
     private fun beginTransfer(resume: Boolean) {
-        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) {
+        if (loadedLineageRepository == null ||
+            loadedLineageRepository?.exceptionOrNull() is LineageBusyException) {
             retryRepositoryAcquisition()
             return
         }
-        if (loadedLineageRepository.isFailure || repositoryJob?.isCompleted == false) return
+        if (loadedLineageRepository?.isFailure != false || repositoryJob?.isCompleted == false) return
         // A cancelled job may still own a listener or be unwinding its keep-alive.
         if (cancelling || transferJob?.isCompleted == false || teardownJob?.isCompleted == false) return
         if (_state.value !is SenderState.Home && _state.value !is SenderState.Failed &&
@@ -514,6 +535,7 @@ class SenderViewModel(
                         _state.value = SenderState.Failed(
                             "The original phone could not resume this move securely. Start a new move on both phones.",
                             canResume = false,
+                            hasSavedMove = true,
                         )
                     } else fail(t.message ?: "Transfer failed")
                 }
@@ -567,11 +589,12 @@ class SenderViewModel(
     }
 
     fun reset() {
-        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) {
+        if (loadedLineageRepository == null ||
+            loadedLineageRepository?.exceptionOrNull() is LineageBusyException) {
             retryRepositoryAcquisition()
             return
         }
-        if (loadedLineageRepository.isFailure || repositoryJob?.isCompleted == false) return
+        if (loadedLineageRepository?.isFailure != false || repositoryJob?.isCompleted == false) return
         if (cancelling) return
         if (channel != null && _state.value !is SenderState.Done) {
             cancelTransfer()
@@ -601,11 +624,12 @@ class SenderViewModel(
 
     /** Revoke locally immediately, then allow a bounded authenticated peer-delete exchange. */
     fun cancelTransfer() {
-        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) {
+        if (loadedLineageRepository == null ||
+            loadedLineageRepository?.exceptionOrNull() is LineageBusyException) {
             retryRepositoryAcquisition()
             return
         }
-        if (loadedLineageRepository.isFailure || repositoryJob?.isCompleted == false) return
+        if (loadedLineageRepository?.isFailure != false || repositoryJob?.isCompleted == false) return
         if (cancelling) return
         // Fence callbacks and stop long local validation before touching the store. A
         // connected exchange keeps its sole reader until the bounded delete exchange ends.
@@ -760,9 +784,11 @@ class SenderViewModel(
     /** Fail-closed terminal transition: release the listener/channel, surface the reason. */
     private fun fail(reason: String) {
         closeChannel()
-        _state.value = SenderState.Failed(reason, canResume = loadedLineageRepository.getOrNull()?.let {
-            runCatching { it.active()?.prepared == true }.getOrDefault(false)
-        } ?: false)
+        val active = loadedLineageRepository?.getOrNull()?.let {
+            runCatching { it.active() }.getOrNull()
+        }
+        _state.value = SenderState.Failed(reason, canResume = active?.prepared == true,
+            hasSavedMove = active != null)
     }
 
     private fun closeChannel() {
@@ -783,7 +809,7 @@ class SenderViewModel(
         // finally has exited, so a replacement cannot start before the old keep-alive stops.
         CoroutineScope(transferIoDispatcher).launch {
             owners.forEach { it.join() }
-            loadedLineageRepository.getOrNull()?.close()
+            loadedLineageRepository?.getOrNull()?.close()
             clearRelayPicks()
             clearUserFiles()
         }

@@ -230,6 +230,7 @@ class ApkDoneSurfacingTest {
 
     /** Drive scan → review → toggle the APK item ON (it's Tier-1, opt-in) → confirm → done. */
     private fun TestScopeRun(vm: ReceiverViewModel, advance: () -> Unit): ReceiverState.Done {
+        advance() // Finish asynchronous saved-move opening before starting the transfer.
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advance()

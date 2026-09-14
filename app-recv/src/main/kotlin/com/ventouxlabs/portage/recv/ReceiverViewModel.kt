@@ -145,14 +145,13 @@ class ReceiverViewModel(
     private val lineageRepositoryFactory: () -> LineageRepository = { LineageRepository(File(stagingDir, "lineage")) },
 ) : ViewModel() {
 
-    @Volatile private var loadedLineageRepository = runCatching { lineageRepository ?: lineageRepositoryFactory() }
-    private val lineageRepository: LineageRepository get() = loadedLineageRepository.getOrThrow()
+    // Only an already-open injected store is immediately usable. Opening a production store can
+    // reconcile/fsync checkpoints and purge expired staging, so it must never run in construction.
+    @Volatile private var loadedLineageRepository: Result<LineageRepository>? =
+        lineageRepository?.let { Result.success(it) }
+    private val lineageRepository: LineageRepository get() = checkNotNull(loadedLineageRepository).getOrThrow()
     private val _state = MutableStateFlow<ReceiverState>(
-        when {
-            loadedLineageRepository.isSuccess -> ReceiverState.Idle
-            loadedLineageRepository.exceptionOrNull() is LineageBusyException -> ReceiverState.OpeningSavedMove
-            else -> ReceiverState.Failed(SAVED_MOVE_LOAD_FAILURE)
-        },
+        if (loadedLineageRepository != null) ReceiverState.Idle else ReceiverState.OpeningSavedMove,
     )
     val state: StateFlow<ReceiverState> = _state.asStateFlow()
 
@@ -330,10 +329,10 @@ class ReceiverViewModel(
 
     init {
         refreshSmsRoleStrand()
-        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) retryRepositoryAcquisition()
+        if (loadedLineageRepository == null) retryRepositoryAcquisition()
     }
 
-    /** A previous ViewModel can retain the writer lock while its provider unwinds. */
+    /** Initial IO acquisition also retries a previous ViewModel's still-unwinding writer lock. */
     private fun retryRepositoryAcquisition() {
         if (repositoryJob?.isCompleted == false) return
         _state.value = ReceiverState.OpeningSavedMove
@@ -344,11 +343,11 @@ class ReceiverViewModel(
                     // handoff still closes an acquired repository after joining this job.
                     loadedLineageRepository = runCatching { lineageRepositoryFactory() }
                 }
-                if (loadedLineageRepository.isSuccess) {
+                if (loadedLineageRepository?.isSuccess == true) {
                     _state.value = ReceiverState.Idle
                     return@launch
                 }
-                if (loadedLineageRepository.exceptionOrNull() !is LineageBusyException) {
+                if (loadedLineageRepository?.exceptionOrNull() !is LineageBusyException) {
                     _state.value = ReceiverState.Failed(SAVED_MOVE_LOAD_FAILURE)
                     return@launch
                 }
@@ -359,11 +358,11 @@ class ReceiverViewModel(
     }
 
     fun startScanning() {
-        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) {
+        if (loadedLineageRepository?.exceptionOrNull() is LineageBusyException) {
             retryRepositoryAcquisition()
             return
         }
-        if (loadedLineageRepository.isFailure || !sessionStopped()) return
+        if (loadedLineageRepository?.isSuccess != true || !sessionStopped()) return
         if (_state.value is ReceiverState.Idle || _state.value is ReceiverState.Failed) {
             // Clear the role state on the way IN as well as on the way out (#122). reset() covers
             // the Done → Home exit, but Failed → Scanning re-enters without passing through it, so
@@ -991,11 +990,13 @@ class ReceiverViewModel(
     }
 
     fun reset() {
-        if (loadedLineageRepository.exceptionOrNull() is LineageBusyException) {
+        if (loadedLineageRepository?.exceptionOrNull() is LineageBusyException) {
             retryRepositoryAcquisition()
             return
         }
-        if (loadedLineageRepository.isFailure || teardownJob?.isCompleted == false) return
+        if (loadedLineageRepository?.isSuccess != true || repositoryJob?.isCompleted == false ||
+            teardownJob?.isCompleted == false
+        ) return
         val ch = channel
         val pairing = pairingJob
         val transfer = transferJob
@@ -1155,7 +1156,7 @@ class ReceiverViewModel(
         // viewModelScope is already cancelled here, so the final join has its own cleanup scope.
         CoroutineScope(ioDispatcher).launch {
             owners.forEach { it.join() }
-            loadedLineageRepository.getOrNull()?.close()
+            loadedLineageRepository?.getOrNull()?.close()
         }
         super.onCleared()
     }

@@ -49,5 +49,9 @@ sealed interface SenderState {
     data class Done(val sent: Int, val failed: Int, val unknown: Int = 0, val notSent: Int = 0) : SenderState
 
     /** Fail-closed terminal state with a user-facing reason. */
-    data class Failed(val reason: String, val canResume: Boolean = false) : SenderState
+    data class Failed(
+        val reason: String,
+        val canResume: Boolean = false,
+        val hasSavedMove: Boolean = canResume,
+    ) : SenderState
 }

@@ -253,7 +253,7 @@ class ReceiverViewModelTest {
         smsRoleCoordinator = coordinator,
         applyRegistryFactory = ApplyRegistryFactory { _ -> ApplyProviderRegistry(listOf(sms)) },
         ioDispatcher = dispatcher,
-    )
+    ).also { dispatcher.scheduler.runCurrent() }
 
     @Before
     fun setUp() {
@@ -283,7 +283,7 @@ class ReceiverViewModelTest {
         // StandardTestDispatcher the rest of the suite runs on, so the item stream stays on
         // virtual time — otherwise the deadline tests would race real wall-clock.
         ioDispatcher = dispatcher,
-    )
+    ).also { dispatcher.scheduler.runCurrent() }
 
     @Test
     fun `scan to reviewing happy path sends HELLO and builds the checklist`() = runTest(dispatcher) {
@@ -458,7 +458,7 @@ class ReceiverViewModelTest {
                 ApplyProviderRegistry(listOf(recordingContacts, FakeApply(ItemKind.CALL_LOG)))
             },
             ioDispatcher = io,
-        )
+        ).also { dispatcher.scheduler.runCurrent() }
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -507,7 +507,7 @@ class ReceiverViewModelTest {
             smsRoleCoordinator = coordinator,
             applyRegistryFactory = ApplyRegistryFactory { _ -> ApplyProviderRegistry(listOf(sms)) },
             ioDispatcher = io,
-        )
+        ).also { dispatcher.scheduler.runCurrent() }
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -604,7 +604,7 @@ class ReceiverViewModelTest {
             dataPhaseTimeoutMs = 1_000L,
             transferKeepAlive = keepAlive,
             ioDispatcher = dispatcher,
-        )
+        ).also { dispatcher.scheduler.runCurrent() }
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -670,7 +670,7 @@ class ReceiverViewModelTest {
             osFingerprint = "test-fingerprint",
             stagingDir = tmp.root,
             ioDispatcher = dispatcher,
-        )
+        ).also { dispatcher.scheduler.runCurrent() }
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -715,7 +715,7 @@ class ReceiverViewModelTest {
             stagingDir = tmp.root,
             transferKeepAlive = keepAlive,
             ioDispatcher = io,
-        )
+        ).also { dispatcher.scheduler.runCurrent() }
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -765,7 +765,7 @@ class ReceiverViewModelTest {
             stagingDir = tmp.root,
             applyRegistryFactory = ApplyRegistryFactory { _ -> ApplyProviderRegistry(listOf(contacts)) },
             ioDispatcher = io,
-        )
+        ).also { dispatcher.scheduler.runCurrent() }
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -964,7 +964,7 @@ class ReceiverViewModelTest {
                 ApplyProviderRegistry(listOf(AppInventoryApplyProvider(source, sinks.onInstallActions)))
             },
             ioDispatcher = dispatcher,
-        )
+        ).also { dispatcher.scheduler.runCurrent() }
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -1022,7 +1022,7 @@ class ReceiverViewModelTest {
                 ApplyProviderRegistry(listOf(BtPairingsApplyProvider(sinks.onRepairEntries)))
             },
             ioDispatcher = dispatcher,
-        )
+        ).also { dispatcher.scheduler.runCurrent() }
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
@@ -1100,7 +1100,7 @@ class ReceiverViewModelTest {
                 )
             },
             ioDispatcher = dispatcher,
-        )
+        ).also { dispatcher.scheduler.runCurrent() }
         vm.startScanning()
         vm.onQrScanned("good-qr")
         advanceUntilIdle()

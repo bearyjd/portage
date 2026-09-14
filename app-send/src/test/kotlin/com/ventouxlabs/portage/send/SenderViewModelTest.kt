@@ -288,28 +288,34 @@ class SenderViewModelTest {
         repository: LineageRepository? = null,
         transferIoDispatcher: CoroutineDispatcher = dispatcher,
         repositoryFactory: (() -> LineageRepository)? = null,
-    ) = SenderViewModel(
-        providers = providers,
-        stagingDir = tmp.root,
-        senderName = "old phone",
-        channelFactory = factory,
-        pairingCodec = PairingCodecImpl(),
-        random = SecureRandom(),
-        addressHints = { hints },
-        portFinder = { 40123 },
-        nowEpochSeconds = { 1_000 },
-        inventorySource = inventorySource,
-        installedAppSource = installedAppSource,
-        // Resolve relay picks on the SAME test dispatcher so advanceUntilIdle() drives the off-main
-        // resolution deterministically (in production this is Dispatchers.IO, off the UI thread).
-        relayResolveDispatcher = dispatcher,
-        transferKeepAlive = keepAlive,
-        lineageRepository = repository,
-        transferIoDispatcher = transferIoDispatcher,
-        lineageRepositoryFactory = repositoryFactory ?: {
-            LineageRepository(File(tmp.root, "lineage"), random = SecureRandom())
-        },
-    )
+    ): SenderViewModel {
+        val vm = SenderViewModel(
+            providers = providers,
+            stagingDir = tmp.root,
+            senderName = "old phone",
+            channelFactory = factory,
+            pairingCodec = PairingCodecImpl(),
+            random = SecureRandom(),
+            addressHints = { hints },
+            portFinder = { 40123 },
+            nowEpochSeconds = { 1_000 },
+            inventorySource = inventorySource,
+            installedAppSource = installedAppSource,
+            // Resolve relay picks on the SAME test dispatcher so advanceUntilIdle() drives the off-main
+            // resolution deterministically (in production this is Dispatchers.IO, off the UI thread).
+            relayResolveDispatcher = dispatcher,
+            transferKeepAlive = keepAlive,
+            lineageRepository = repository,
+            transferIoDispatcher = transferIoDispatcher,
+            lineageRepositoryFactory = repositoryFactory ?: {
+                LineageRepository(File(tmp.root, "lineage"), random = SecureRandom())
+            },
+        )
+        // Most legacy tests exercise transfer behavior, not cold-open scheduling. Preserve their
+        // ready precondition; dedicated tests below keep the initial dispatcher paused.
+        if (repository == null && repositoryFactory == null) dispatcher.scheduler.runCurrent()
+        return vm
+    }
 
     private fun signalPick(
         pickId: Long = 1L,
@@ -414,6 +420,7 @@ class SenderViewModelTest {
             relayResolveDispatcher = dispatcher,
         )
 
+        runCurrent() // finish the asynchronous saved-move open before accepting user actions
         vm.onStartTransfer()
         advanceUntilIdle() // virtual time advances past the 1 s budget → timeout fires
 
@@ -486,6 +493,77 @@ class SenderViewModelTest {
 
         assertThat(vm.state.value).isEqualTo(SenderState.Home)
         assertThat(File(tmp.root, "lineage/staging").listFiles().orEmpty()).isEmpty()
+    }
+
+    @Test
+    fun `constructor defers repository open and ignores actions until IO publishes it`() = runTest(dispatcher) {
+        val directory = tmp.newFolder()
+        val pausedIo = PausableDispatcher(dispatcher).also { it.pause() }
+        var factoryCalls = 0
+        val network = FakeFactory(happyChannel())
+        val vm = SenderViewModel(
+            providers = listOf(BytesExport(ItemKind.CONTACTS_VCF, "vcard".toByteArray())),
+            stagingDir = tmp.root,
+            senderName = "old phone",
+            channelFactory = network,
+            addressHints = { listOf("192.168.1.2") },
+            portFinder = { 40123 },
+            relayResolveDispatcher = dispatcher,
+            transferIoDispatcher = pausedIo,
+            lineageRepositoryFactory = {
+                factoryCalls++
+                LineageRepository(directory)
+            },
+        )
+        val owner = ViewModelStore().apply { put("sender", vm) }
+
+        assertThat(factoryCalls).isEqualTo(0)
+        assertThat(vm.state.value).isEqualTo(SenderState.OpeningSavedMove)
+        vm.onStartTransfer()
+        runCurrent()
+        assertThat(factoryCalls).isEqualTo(0)
+        assertThat(network.acceptedPayload).isNull()
+
+        pausedIo.resume()
+        advanceUntilIdle()
+        assertThat(factoryCalls).isEqualTo(1)
+        assertThat(vm.state.value).isEqualTo(SenderState.Home)
+        assertThat(network.acceptedPayload).isNull()
+
+        owner.clear()
+        advanceUntilIdle()
+    }
+
+    @Test
+    fun `clear during repository factory handoff closes the newly published owner`() = runTest(dispatcher) {
+        val directory = tmp.newFolder()
+        lateinit var owner: ViewModelStore
+        var factoryCalls = 0
+        val vm = SenderViewModel(
+            providers = emptyList(),
+            stagingDir = tmp.root,
+            senderName = "old phone",
+            channelFactory = FakeFactory(happyChannel()),
+            relayResolveDispatcher = dispatcher,
+            transferIoDispatcher = dispatcher,
+            lineageRepositoryFactory = {
+                factoryCalls++
+                LineageRepository(directory).also {
+                    // Deterministically clear after the expensive constructor owns the lock but
+                    // before withContext publishes its result back to the repository job.
+                    owner.clear()
+                }
+            },
+        )
+        owner = ViewModelStore().apply { put("sender", vm) }
+
+        assertThat(vm.state.value).isEqualTo(SenderState.OpeningSavedMove)
+        assertThat(factoryCalls).isEqualTo(0)
+        advanceUntilIdle()
+        assertThat(factoryCalls).isEqualTo(1)
+
+        // The independent onCleared join observes the published result and releases its lock.
+        LineageRepository(directory).use { assertThat(it.active()).isNull() }
     }
 
     // ---- transfer keep-alive (#85): foreground-service lifecycle around the data phase ----
@@ -872,6 +950,7 @@ class SenderViewModelTest {
         )
         val owner = ViewModelStore().apply { put("sender", vm) }
 
+        runCurrent()
         vm.onStartTransfer()
         runCurrent()
         assertThat(vm.state.value).isInstanceOf(SenderState.ShowingQr::class.java)
@@ -919,6 +998,7 @@ class SenderViewModelTest {
             repositoryFactory = { LineageRepository(directory) },
         )
         val oldOwner = ViewModelStore().apply { put("sender", first) }
+        runCurrent()
         first.onStartTransfer()
         runCurrent()
         assertThat(events).containsExactly("start-old").inOrder()
@@ -1088,6 +1168,7 @@ class SenderViewModelTest {
             transferKeepAlive = keepAlive,
         )
 
+        runCurrent() // finish the asynchronous saved-move open before accepting user actions
         vm.onStartTransfer()
         advanceUntilIdle()
 

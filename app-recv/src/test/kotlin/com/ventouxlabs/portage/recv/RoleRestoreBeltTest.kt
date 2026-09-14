@@ -157,6 +157,7 @@ class RoleRestoreBeltTest {
      * is two independent consents, and this helper exercises both.
      */
     private fun ReceiverViewModel.runTransfer(itemId: Int?, advance: () -> Unit) {
+        advance() // Finish asynchronous saved-move opening before starting the transfer.
         startScanning()
         onQrScanned("good-qr")
         advance()

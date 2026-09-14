@@ -548,6 +548,79 @@ class ReceiverLineageLifecycleTest {
         }
     }
 
+    @Test fun `initial saved move factory runs off Main and fences actions until ready`() {
+        assertFactoryAcquisition(clearBeforeReady = false)
+    }
+
+    @Test fun `clearing during initial saved move acquisition closes the acquired writer`() {
+        assertFactoryAcquisition(clearBeforeReady = true)
+    }
+
+    private fun assertFactoryAcquisition(clearBeforeReady: Boolean) = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val io = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val directory = tmp.newFolder()
+        val owner = ViewModelStore()
+        val caller = Thread.currentThread()
+        var factoryThread: Thread? = null
+        try {
+            val receiver = ReceiverViewModel(
+                stagingDir = File(directory, "staging"), appVersion = "test", osFingerprint = "test",
+                lineageRepositoryFactory = {
+                    factoryThread = Thread.currentThread()
+                    entered.countDown()
+                    check(release.await(5, TimeUnit.SECONDS)) { "repository open was not released" }
+                    LineageRepository(directory)
+                },
+                ioDispatcher = io,
+            ).also { owner.put("receiver", it) }
+            // Main has not run the acquisition job. Construction itself must not invoke the factory.
+            assertThat(entered.count).isEqualTo(1)
+            assertThat(receiver.state.value).isEqualTo(ReceiverState.OpeningSavedMove)
+            dispatcher.scheduler.runCurrent()
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue()
+            assertThat(factoryThread).isNotEqualTo(caller)
+            receiver.startScanning()
+            receiver.reset()
+            receiver.onQrScanned("new")
+            dispatcher.scheduler.runCurrent()
+            assertThat(receiver.state.value).isEqualTo(ReceiverState.OpeningSavedMove)
+            assertThat(release.count).isEqualTo(1)
+
+            if (clearBeforeReady) owner.clear()
+            release.countDown()
+            // The single IO worker finishes/publishes acquisition before this barrier runs.
+            withContext(io) { }
+            dispatcher.scheduler.runCurrent()
+            if (clearBeforeReady) {
+                assertThat(receiver.state.value).isEqualTo(ReceiverState.OpeningSavedMove)
+            } else {
+                assertThat(receiver.state.value).isEqualTo(ReceiverState.Idle)
+                receiver.startScanning()
+                assertThat(receiver.state.value).isEqualTo(ReceiverState.Scanning)
+            }
+        } finally {
+            release.countDown()
+            owner.clear()
+            // Drain the owner AND cleanup before @After resets Main. Reopening also proves a
+            // repository returned after cancellation did not leak its process writer lock.
+            withContext(io) { }
+            withTimeout(5_000) {
+                while (true) {
+                    dispatcher.scheduler.runCurrent()
+                    try {
+                        withContext(io) { LineageRepository(directory).close() }
+                        break
+                    } catch (_: LineageBusyException) {
+                        delay(1)
+                    }
+                }
+            }
+            io.close()
+        }
+    }
+
     @Test fun `corrupt saved move startup reports bounded generic error without exposing snapshot`() {
         val directory = tmp.newFolder()
         val secret = "secret-contact-and-credential-value"
@@ -556,6 +629,8 @@ class ReceiverLineageLifecycleTest {
             stagingDir = File(directory, "staging"), appVersion = "test", osFingerprint = "test",
             lineageRepositoryFactory = { LineageRepository(directory) }, ioDispatcher = dispatcher,
         )
+        assertThat(vm.state.value).isEqualTo(ReceiverState.OpeningSavedMove)
+        dispatcher.scheduler.runCurrent()
         val failure = vm.state.value as ReceiverState.Failed
         assertThat(failure.reason.length).isLessThan(180)
         assertThat(failure.reason).doesNotContain(secret)
