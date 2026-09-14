@@ -55,4 +55,3 @@ This plan implements the `PR 0a` unit approved in `turnkey-migration-audit-2026-
 - Provider mutation and checkpoint persistence cannot be one transaction. The design records `APPLYING` first and reports ambiguity honestly as `UNKNOWN_INTERRUPTED`.
 - Whole-file atomic snapshots require a single writer and bounded data. The store enforces its format/version and item bounds; future multi-process access must migrate the repository boundary to SQLite.
 - Persisted secrets are sensitive. They are app-private, no-backup, zeroed in memory where ownership permits, time-bounded, and removed on terminal lifecycle actions.
-
