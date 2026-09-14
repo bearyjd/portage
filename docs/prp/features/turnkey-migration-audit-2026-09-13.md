@@ -86,9 +86,17 @@ Priorities mean: **P0** correctness or data-integrity risk; **P1** reliability o
 
    Recommendation: use persistent, bounded idempotency receipts keyed by a source dataset and canonical record fingerprint, or reliable target-provider identities. Test apply, disconnect, begin again, and replay for every side-effecting provider.
 
+5. **Wallpaper export is not proven—and is likely unavailable—on the supported Android baseline.**
+
+   `AndroidWallpaperStore.read()` calls `WallpaperManager.getWallpaperFile()` and converts every exception to `null`. Android restricts direct access to current wallpaper data on recent releases, while Portage targets SDK 36 and requests only `SET_WALLPAPER`. On the current GrapheneOS baseline, both wallpaper providers can therefore silently appear unavailable.
+
+   Evidence: `providers/.../wallpaper/AndroidWallpaperStore.kt:39`, `gradle/libs.versions.toml:11-13`, Android `WallpaperManager.getWallpaperFile`: https://developer.android.com/reference/android/app/WallpaperManager#getWallpaperFile(int)
+
+   Recommendation: hardware-prove a permitted source acquisition path or remove wallpaper transfer from supported capability claims. Do not request broad storage or privileged wallpaper-read permissions. A user-selected source image is an acceptable explicit fallback but is not equivalent to reading the active wallpaper.
+
 ### P1 — Reliability and turnkey experience
 
-5. **The app-backup relay does not provide a usable handoff.**
+6. **The app-backup relay does not provide a usable handoff.**
 
    Relay output is written below Portage's app-specific external directory, then the target app is simply launched. The target normally cannot discover or read that file.
 
@@ -96,7 +104,7 @@ Priorities mean: **P0** correctness or data-integrity risk; **P1** reliability o
 
    Recommendation: publish through `MediaStore.Downloads`, or issue a `FileProvider` content URI in an explicit import/share intent with temporary read access. Always retain a visible file/share fallback.
 
-6. **Relay framing can accept a truncated backup.**
+7. **Relay framing can accept a truncated backup.**
 
    If a selected relay file changes length, the staged outer item may hash correctly while the receiver copies only the stale declared blob length and reports success.
 
@@ -104,7 +112,7 @@ Priorities mean: **P0** correctness or data-integrity risk; **P1** reliability o
 
    Recommendation: reuse the exact-length and EOF invariant already implemented for user files.
 
-7. **MMS insertion is not failure-atomic.**
+8. **MMS insertion is not failure-atomic.**
 
    The parent row is inserted before addresses and parts. Failure in a child returns failure but leaves the parent and any prior children behind.
 
@@ -112,7 +120,7 @@ Priorities mean: **P0** correctness or data-integrity risk; **P1** reliability o
 
    Recommendation: use a provider batch when supported; otherwise compensate by deleting the new message on any child failure or exception.
 
-8. **Resume is present in the schema but unused.**
+9. **Resume is present in the schema but unused.**
 
    `Select.resume` and `ResumePoint` exist, but the receiver does not send checkpoints and the sender ignores them and opens each file at byte zero.
 
@@ -120,7 +128,7 @@ Priorities mean: **P0** correctness or data-integrity risk; **P1** reliability o
 
    Recommendation: first persist completed-item checkpoints. Add byte-offset resume only after offsets can be safely bound to item identity, declared size, content hash, and session origin.
 
-9. **Post-transfer work is process-ephemeral.**
+10. **Post-transfer work is process-ephemeral.**
 
    APK prompts, Bluetooth re-pairing, relay imports, permission restoration, and default roles are held mainly in ViewModel state. Process death during Settings or installer handoffs can erase the remaining work.
 
@@ -128,7 +136,7 @@ Priorities mean: **P0** correctness or data-integrity risk; **P1** reliability o
 
    Recommendation: store a privacy-minimized migration receipt and action ledger with pending, complete, failed, retry, and dismissed states.
 
-10. **Reset races with the receiver coroutine.**
+11. **Reset races with the receiver coroutine.**
 
     The receiver does not retain its transfer job. Closing the channel during reset can produce a late failure or apply callback that overwrites Idle or mutates a newer session.
 
@@ -136,7 +144,7 @@ Priorities mean: **P0** correctness or data-integrity risk; **P1** reliability o
 
     Recommendation: own and cancel the transfer job and guard every state publication with a monotonically increasing session epoch.
 
-11. **Only the first advertised IP address is attempted.**
+12. **Only the first advertised IP address is attempted.**
 
     The QR payload carries ordered address hints, but every retry targets `firstOrNull()`.
 
@@ -144,7 +152,7 @@ Priorities mean: **P0** correctness or data-integrity risk; **P1** reliability o
 
     Recommendation: try all sanitized hints within one cumulative deadline, using a bounded stagger where useful.
 
-12. **Protocol identity checks are incomplete.**
+13. **Protocol identity checks are incomplete.**
 
     A duplicate authenticated `ITEM_BEGIN` can apply the same selected item repeatedly, while sender acknowledgements are not strictly validated against the current and uniquely sent item IDs.
 
@@ -152,7 +160,7 @@ Priorities mean: **P0** correctness or data-integrity risk; **P1** reliability o
 
     Recommendation: reject duplicate begins; validate item and batch acknowledgement identity, uniqueness, and membership before accepting completion.
 
-13. **Large valid payloads are repeatedly materialized in memory.**
+14. **Large valid payloads are repeatedly materialized in memory.**
 
     Contacts, calendars, JSONL records, and wallpaper frames can exist as raw lines, transformed lines, decoded objects, and byte arrays concurrently.
 
@@ -160,21 +168,13 @@ Priorities mean: **P0** correctness or data-integrity risk; **P1** reliability o
 
     Recommendation: stream parsing and apply, bound individual records and lines, and test near-limit inputs with a constrained heap.
 
-14. **Calendar identity is flattened.**
+15. **Calendar identity is flattened.**
 
     Export omits source-calendar identity and import chooses the first writable calendar. Work, personal, local, and cloud events can be mixed or synced unexpectedly.
 
     Evidence: `AndroidCalendarStore.kt:31,58`.
 
     Recommendation: transfer calendar descriptors, default to a dedicated local Portage calendar, and allow explicit source-to-target mapping. Surface all skipped/malformed event counts.
-
-15. **APK silent-upgrade replacement semantics need proof.**
-
-    The upgrade path intentionally accepts a newer incoming version, while the generated install-create command does not visibly request replacement.
-
-    Evidence: `LocalAdbBridge.kt:193`.
-
-    Recommendation: verify on hardware, add replacement semantics if required, and pin the full command in tests while preserving the no-downgrade rule.
 
 16. **The setup journey exposes readiness too late.**
 
@@ -198,9 +198,11 @@ Priorities mean: **P0** correctness or data-integrity risk; **P1** reliability o
 
     Recommendation: execute ADR-007 after recovery primitives are stable, preserving the compile-time privilege firewall and flavor gates.
 
+The APK upgrade path is not an audit defect: AOSP package-manager parsing enables replacement by default and accepts `-r` as a compatibility no-op. Keep an upgrade/no-downgrade regression test, but do not add a flag to solve a nonexistent platform problem: https://android.googlesource.com/platform/frameworks/base/+/8e8460b4b3ea4ee7069ac43b8f6cd0d7ab4084ba/services/core/java/com/android/server/pm/PackageManagerShellCommand.java
+
 ### P2 — Hardening and quality
 
-19. **Wallpaper mirror behavior contradicts its implementation.**
+19. **Wallpaper mirror behavior contradicts its implementation when wallpaper bytes are available.**
 
     A source whose lock wallpaper mirrors Home emits only the Home item, but import writes only `FLAG_SYSTEM`; an old target lock wallpaper can remain.
 
@@ -239,25 +241,27 @@ An ordinary Portage installation cannot reliably read or recreate an arbitrary l
 - Android `LauncherApps`: https://developer.android.com/reference/android/content/pm/LauncherApps
 - Android app sandbox: https://source.android.com/docs/security/app-sandbox
 
-Portage will therefore use a two-path strategy.
+Portage will therefore evaluate a two-path strategy, with Home Map remaining independently useful if launcher-owned restore cannot be productized.
 
 ### Path A — Launcher-owned restoration
 
-When the source and target use a compatible launcher, try the launcher's own backup/restore route first. AOSP Launcher3 declares a backup agent and includes its grid databases in its backup scheme:
+When the source and target use a compatible launcher, first determine whether a launcher-owned backup/restore route is actually available. AOSP Launcher3 declares a backup agent and includes its grid databases in its backup scheme, but those facts do not expose a selective restore API to Portage:
 
 - Launcher3 manifest: https://android.googlesource.com/platform/packages/apps/Launcher3/+/refs/heads/main/AndroidManifest-common.xml
 - Launcher3 backup scheme: https://android.googlesource.com/platform/packages/apps/Launcher3/+/master/res/xml/backupscheme.xml
 
-The first launcher deliverable is a two-device GrapheneOS hardware spike covering:
+The first launcher deliverable is a feasibility gate, not a committed Portage feature. A two-device GrapheneOS hardware spike must cover:
 
 - pages, dock, folders, and widgets;
 - missing applications;
 - matching and differing grid sizes;
 - launcher/version compatibility;
+- who initiates and controls restore and when it is available;
+- whether launcher-only restore exists without replaying data Portage already applied;
 - readback rather than command-exit success; and
 - reboot persistence.
 
-Portage must not copy or patch the raw launcher database. If launcher/Seedvault restoration is unavailable or unverified, the flow falls through immediately to Home Map.
+Portage must not copy or patch the raw launcher database. If selective restore cannot be invoked safely, document Launcher3/Seedvault restore as an external pre-migration prerequisite rather than a Portage product path. In every unavailable or unverified case, use Home Map.
 
 ### Path B — Home Map
 
@@ -268,13 +272,13 @@ Home Map is a first-class, privacy-preserving reconstruction guide.
 3. Keep source images in app-private storage and exclude them from backup.
 4. Record launcher package/version, display size, density, safe-area insets, orientation/posture, page order, dock, folder labels, and user-correctable app matches.
 5. Wait until relevant APKs are installed and the preferred Home role is restored.
-6. Normalize the reference to the target safe area and generate a desaturated, 20–30% opacity ghost image.
-7. Temporarily apply it as the Home wallpaper. Android permits wallpaper updates, but launcher-controlled crop and presentation remain best-effort: https://developer.android.com/reference/android/app/WallpaperManager
-8. Present page-by-page checklists for installed/missing apps, folders, dock entries, and widget placeholders.
-9. Persist reconstruction progress and a recovery marker.
-10. On Finish, Cancel, crash recovery, or the next launch, restore the real wallpaper and purge all guide images.
+6. Normalize references to the target safe area and present a full-screen, page-by-page guide. This is the safe default because it does not mutate wallpaper state.
+7. Present checklists for installed/missing apps, folders, dock entries, and widget placeholders.
+8. Offer a desaturated, 20–30% opacity ghost wallpaper only when Portage already owns and has verified the intended final static wallpaper artifact. A live wallpaper or target-only wallpaper is not reconstructible from a screenshot.
+9. Before any wallpaper mutation, atomically persist the final artifact and recovery journal, verify both, and use the explicit system-surface setter with `allowBackup=false`. Android permits wallpaper updates, but launcher-controlled crop and presentation remain best-effort: https://developer.android.com/reference/android/app/WallpaperManager
+10. Restore the final wallpaper with readback evidence before purging the journal and guide images. If these preconditions cannot be met, keep the experience entirely in-app.
 
-Android exposes one wallpaper surface while the launcher controls paging, offsets, and parallax. The ghost wallpaper is therefore strongest for the main page; secondary pages and folders should also have a full-screen reference inside Portage.
+Android exposes one wallpaper surface while the launcher controls paging, offsets, and parallax. Even when its safety preconditions are met, the optional ghost wallpaper is strongest for the main page; secondary pages and folders use the in-app reference.
 
 A permanent overlay is not the default: it needs special access, increases trust and touch-safety concerns, and remains launcher-dependent: https://developer.android.com/reference/android/provider/Settings#canDrawOverlays(android.content.Context)
 
@@ -290,7 +294,15 @@ Each implementation PR is independently reviewed, CI-green, and mergeable before
 
 **Gate:** rotating in Preparing, QR, Transferring, or Done cannot delete active resources; large staging work never runs on Main.
 
-### PR 1 — Truthful partial outcomes
+### PR 1 — Wallpaper capability truth
+
+- Hardware-test source acquisition on the supported GrapheneOS baseline.
+- Either implement a permitted explicit acquisition path or truthfully gate/remove the unsupported offering.
+- Add active-static, mirrored-lock, live-wallpaper, unavailable, and user-selected fallback cases.
+
+**Gate:** Portage never advertises automatic wallpaper transfer unless it can acquire the bytes through a permitted, verified path; unavailable and live cases are explicit rather than silently omitted.
+
+### PR 2 — Truthful partial outcomes
 
 - Preserve per-item receipts throughout a transfer.
 - Replace false rollback copy.
@@ -298,7 +310,7 @@ Each implementation PR is independently reviewed, CI-green, and mergeable before
 
 **Gate:** every terminal screen accounts for successfully applied, skipped, failed, and unattempted work without claiming rollback.
 
-### PR 2 — Idempotent provider retries
+### PR 3 — Idempotent provider retries
 
 - Add persistent bounded replay protection for side-effecting providers.
 - Make MMS apply failure-atomic.
@@ -306,7 +318,7 @@ Each implementation PR is independently reviewed, CI-green, and mergeable before
 
 **Gate:** replay after a lost acknowledgement creates no duplicate or orphan SMS, MMS, call-log, or calendar record.
 
-### PR 3 — Reliable backup relay
+### PR 4 — Reliable backup relay
 
 - Correct destination visibility and import/share handoff.
 - Enforce exact-length and EOF framing.
@@ -314,7 +326,7 @@ Each implementation PR is independently reviewed, CI-green, and mergeable before
 
 **Gate:** a target or user-visible file recipient can open the exact transferred bytes; truncation is rejected.
 
-### PR 4 — Durable "Finish your move"
+### PR 5 — Durable "Finish your move"
 
 - Persist the migration/action ledger.
 - Record installer and other follow-up outcomes.
@@ -322,7 +334,7 @@ Each implementation PR is independently reviewed, CI-green, and mergeable before
 
 **Gate:** process death, Settings round-trips, installer cancellation, and receiver reset preserve or safely terminate all remaining work.
 
-### PR 5 — Transport resilience
+### PR 6 — Transport resilience
 
 - Try all advertised network addresses.
 - Reject duplicate item begins and invalid acknowledgements.
@@ -331,7 +343,7 @@ Each implementation PR is independently reviewed, CI-green, and mergeable before
 
 **Gate:** interrupted transfers resume at the strongest safely verified boundary; protocol duplicates cannot cause repeated apply; near-limit inputs remain within the memory budget.
 
-### PR 6 — Unified, preflight-driven application
+### PR 7 — Unified, preflight-driven application
 
 - Execute ADR-007's one-app migration.
 - Add the exhaustive item/flavor capability registry.
@@ -340,22 +352,23 @@ Each implementation PR is independently reviewed, CI-green, and mergeable before
 
 **Gate:** one artifact supports Send/Receive without exposing unavailable flavor capabilities or weakening the sender privilege boundary.
 
-### PR 7 — Launcher restore hardware spike
+### PR 8 — Launcher restore hardware spike
 
 - Test compatible Launcher3/Seedvault restoration on two GrapheneOS devices.
-- Record supported cases, failure modes, and readback evidence.
+- Verify the exact initiator, selective scope, timing, interaction with Portage-restored data, failure modes, and readback evidence.
 
-**Gate:** proceed to product integration only for cases verified after reboot; otherwise document immediate fallback to Home Map.
+**Gate:** proceed to product integration only if a safe, selective, user-comprehensible flow is verified after reboot; otherwise classify it as an external prerequisite and use Home Map.
 
-### PR 8 — Home Map
+### PR 9 — Home Map
 
 - Add typed, app-private capture/transfer.
-- Add geometry calibration and ghost wallpaper.
-- Add page/folder/widget checklists and crash-safe wallpaper restoration.
+- Add geometry calibration and a safe in-app reference.
+- Add page/folder/widget checklists.
+- Permit optional ghost wallpaper only when a verified final static artifact and durable recovery journal exist before mutation.
 
-**Gate:** a user can reconstruct a representative multi-page layout, recover the real wallpaper after every exit path, and leave no guide images behind.
+**Gate:** a user can reconstruct a representative multi-page layout without wallpaper mutation; the optional ghost path is unavailable unless its recovery preconditions pass, restores with readback evidence, and leaves no guide images behind.
 
-### PR 9 — Release confidence
+### PR 10 — Release confidence
 
 - Add model goldens, all-kind loopback, Compose lifecycle, constrained-heap, static-analysis, and hardware gates.
 - Resolve stale runbooks and coroutine opt-in warnings.
@@ -383,4 +396,3 @@ The audit's clean configured test run produced:
 - no Android lint, detekt, or ktlint gate in the current CI test job.
 
 This baseline does not replace two-phone hardware acceptance. Full hardware sign-off remains required for provider side effects, launcher/default-role persistence, installer behavior, process death, and end-to-end reconstruction.
-
