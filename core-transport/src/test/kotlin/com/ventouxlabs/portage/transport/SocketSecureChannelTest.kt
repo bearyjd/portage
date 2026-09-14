@@ -16,9 +16,13 @@ import com.ventouxlabs.portage.model.ProtocolMessage
 import com.ventouxlabs.portage.model.TransferManifest
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Test
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -55,6 +59,74 @@ class SocketSecureChannelTest {
         port = port,
         expiresAtEpochSeconds = Long.MAX_VALUE / 2,
     )
+
+    @Test(timeout = 10_000L)
+    fun `cancelling accept releases listener promptly with no peer or a stalled handshake`() = runBlocking {
+        for (stallHandshake in listOf(false, true)) {
+            val accepting = CompletableDeferred<Unit>()
+            val accepted = CompletableDeferred<Unit>()
+            val server = object : ServerSocket() {
+                override fun accept(): Socket {
+                    accepting.complete(Unit)
+                    return super.accept().also { accepted.complete(Unit) }
+                }
+            }
+            val port = freePort()
+            val qr = payload(port)
+            val factory = NoiseSecureChannelFactory(
+                handshakeTimeoutMs = 120_000L,
+                acceptDeadlineMs = 120_000L,
+                serverSocketFactory = { server },
+            )
+            val accept = async(Dispatchers.IO) { factory.acceptAsSender(qr) }
+            var peer: Socket? = null
+            try {
+                withTimeout(2_000L) { accepting.await() }
+                if (stallHandshake) {
+                    peer = Socket("127.0.0.1", port)
+                    withTimeout(2_000L) { accepted.await() }
+                }
+
+                accept.cancel()
+                withTimeout(2_000L) { accept.join() }
+
+                assertThat(accept.isCancelled).isTrue()
+                assertThat(server.isClosed).isTrue()
+                assertThat(qr.psk.all { it == 0.toByte() }).isTrue()
+                // Completion means the native listener is gone, not merely a cancelled Job.
+                ServerSocket().use { replacement ->
+                    replacement.reuseAddress = true
+                    replacement.bind(InetSocketAddress(port))
+                }
+                peer?.let {
+                    it.soTimeout = 2_000
+                    assertThat(it.getInputStream().read()).isEqualTo(-1)
+                }
+            } finally {
+                server.close()
+                peer?.close()
+                accept.cancel()
+            }
+        }
+    }
+
+    @Test(timeout = 10_000L)
+    fun `cancelling immediately after listener creation closes it before bind`() = runBlocking {
+        val server = ServerSocket()
+        val qr = payload(freePort())
+        lateinit var accept: Deferred<SecureChannel>
+        val factory = NoiseSecureChannelFactory(serverSocketFactory = {
+            accept.cancel()
+            server
+        })
+        accept = async(Dispatchers.IO, start = CoroutineStart.LAZY) { factory.acceptAsSender(qr) }
+        accept.start()
+        withTimeout(2_000L) { accept.join() }
+        assertThat(accept.isCancelled).isTrue()
+        assertThat(server.isClosed).isTrue()
+        assertThat(server.isBound).isFalse()
+        assertThat(qr.psk.all { it == 0.toByte() }).isTrue()
+    }
 
     @Test(timeout = 30_000L)
     fun `loopback establishes channel, round-trips, and wipes the PSK`() = runBlocking {

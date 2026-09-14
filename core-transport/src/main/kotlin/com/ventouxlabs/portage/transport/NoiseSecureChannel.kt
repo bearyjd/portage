@@ -15,8 +15,14 @@ import com.ventouxlabs.portage.model.ProtocolMessage
 import com.southernstorm.noise.protocol.CipherStatePair
 import com.southernstorm.noise.protocol.HandshakeState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -46,6 +52,7 @@ class NoiseSecureChannelFactory(
     private val handshakeTimeoutMs: Long = HANDSHAKE_TIMEOUT_MS,
     private val acceptDeadlineMs: Long = ACCEPT_DEADLINE_MS,
     private val dataTimeoutMs: Long = DATA_TIMEOUT_MS,
+    private val serverSocketFactory: () -> ServerSocket = { ServerSocket() },
 ) : SecureChannel.Factory {
 
     override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel =
@@ -79,7 +86,16 @@ class NoiseSecureChannelFactory(
         resumeCredential: ByteArray?,
         lineageId: String?,
     ): SecureChannel = withHandshakeMaterial(payload, resumeCredential, lineageId) { material ->
-        val server = ServerSocket()
+        val server = serverSocketFactory()
+        // Start registration before accept can block. This child belongs to the IO
+        // ownership scope, which cannot complete until the listener has been closed.
+        val cancellationCloser = launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                awaitCancellation()
+            } finally {
+                runCatching { server.close() }
+            }
+        }
         // One cumulative wall-clock budget for the whole listener (THREAT_MODEL #7/#11):
         // failed/stalled suitors cannot reset it, so the listener can't be held forever.
         val deadlineNanos = System.nanoTime() + acceptDeadlineMs * 1_000_000L
@@ -90,6 +106,7 @@ class NoiseSecureChannelFactory(
             // suitor closes and the next is accepted (anti-lockout), but every accept()
             // draws from the SAME shrinking budget.
             while (true) {
+                currentCoroutineContext().ensureActive()
                 val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000L
                 if (remainingMs <= 0) throw TransportException("no peer completed the handshake within the deadline")
                 server.soTimeout = remainingMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
@@ -99,6 +116,7 @@ class NoiseSecureChannelFactory(
                 } catch (e: SocketTimeoutException) {
                     throw TransportException("no peer completed the handshake within the deadline", e)
                 } catch (e: IOException) {
+                    currentCoroutineContext().ensureActive()
                     throw TransportException("listener accept failed", e)
                 }
                 var keys: CipherStatePair? = null
@@ -134,6 +152,7 @@ class NoiseSecureChannelFactory(
             @Suppress("UNREACHABLE_CODE")
             throw TransportException("listener exited unexpectedly")
         } finally {
+            cancellationCloser.cancel()
             runCatching { server.close() }
         }
     }
@@ -143,7 +162,7 @@ class NoiseSecureChannelFactory(
         payload: PairingPayload,
         resumeCredential: ByteArray?,
         lineageId: String?,
-        action: suspend (HandshakeMaterial) -> SecureChannel,
+        action: suspend CoroutineScope.(HandshakeMaterial) -> SecureChannel,
     ): SecureChannel {
         var completed: SecureChannel? = null
         try {
@@ -157,6 +176,7 @@ class NoiseSecureChannelFactory(
             }
         } catch (t: Throwable) {
             runCatching { completed?.close() }
+            currentCoroutineContext().ensureActive()
             throw t
         } finally {
             // Includes validation failure, dial failure and cancellation before entering IO.
@@ -225,9 +245,16 @@ class NoiseSecureChannelFactory(
         var splitKeys: CipherStatePair? = null
         try {
             return coroutineScope {
-                val watchdog = launch {
-                    delay(timeoutMs)
-                    runCatching { socket.close() }
+                val owner = currentCoroutineContext()
+                val watchdog = launch(start = CoroutineStart.UNDISPATCHED) {
+                    try {
+                        delay(timeoutMs)
+                        runCatching { socket.close() }
+                    } finally {
+                        // Cancelling the owner must unblock a native handshake read too.
+                        // Normal watchdog cancellation after success leaves the socket open.
+                        if (!owner.isActive) runCatching { socket.close() }
+                    }
                 }
                 try {
                     NoiseChannel.handshake(transport, role, material.psk, material.prologue).also { splitKeys = it }
@@ -238,6 +265,7 @@ class NoiseSecureChannelFactory(
         } catch (t: Throwable) {
             // Cancellation at coroutineScope's exit must not discard an already-completed split.
             splitKeys?.destroy()
+            currentCoroutineContext().ensureActive()
             throw t
         }
     }

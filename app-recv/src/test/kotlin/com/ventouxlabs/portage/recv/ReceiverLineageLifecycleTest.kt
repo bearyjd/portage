@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModelStore
 import com.google.common.truth.Truth.assertThat
 import com.ventouxlabs.portage.lineage.CheckpointKey
 import com.ventouxlabs.portage.lineage.LineageRepository
+import com.ventouxlabs.portage.lineage.LineageBusyException
 import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.model.PairingMode
@@ -20,6 +21,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -31,6 +33,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.delay
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -47,7 +50,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ReceiverLineageLifecycleTest {
     @get:Rule val tmp = TemporaryFolder()
-    private val dispatcher = StandardTestDispatcher()
+    // Constructing the test fixture must not consult Main before @Before installs it.
+    private val dispatcher = StandardTestDispatcher(TestCoroutineScheduler())
     private val bytes = "restored contacts".toByteArray()
     private val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
     private val item = testItemMeta(1, ItemKind.CONTACTS_VCF, bytes.size.toLong(), hash, "Contacts", "People")
@@ -147,7 +151,7 @@ class ReceiverLineageLifecycleTest {
         }
     }
 
-    @Test fun `reset waits for suspended provider A before lineage B can begin`() = runTest(dispatcher) {
+    @Test fun `reset revokes saved lineage immediately while a suspended provider still fences the next move`() = runTest(dispatcher) {
         LineageRepository(tmp.newFolder()).use { store ->
             val a = Channel(bootstrap(lineageA) + frames())
             val b = Channel(bootstrap(lineageB) + frames())
@@ -171,6 +175,14 @@ class ReceiverLineageLifecycleTest {
             vm.onConfirm(); runCurrent()
             assertThat(store.checkpoint(CheckpointKey.from(lineageA, item))?.phase).isEqualTo(ReceiptPhase.APPLYING)
             vm.reset(); runCurrent()
+            assertThat(finishA.isCompleted).isFalse()
+            assertThat(store.active()).isNull()
+            assertThat(runCatching { store.credentialForResume() }.isFailure).isTrue()
+            assertThat(store.tombstones().single().lineageId).isEqualTo(lineageA)
+            assertThat(store.stagingDir.listFiles().orEmpty()).isEmpty()
+            val snapshot = File(store.stagingDir.parentFile, "lineage.json").readText()
+            assertThat(snapshot).contains("\"active\":null")
+            assertThat(snapshot).doesNotContain("07".repeat(32))
             vm.startScanning(); vm.onQrScanned("new"); runCurrent()
             assertThat(vm.state.value).isEqualTo(ReceiverState.Idle)
             assertThat(b.sent).isEmpty()
@@ -350,6 +362,7 @@ class ReceiverLineageLifecycleTest {
         Dispatchers.setMain(ui)
         var mainThread: Thread? = null
         var teardownThread: Thread? = null
+        var runningReceiver: ReceiverViewModel? = null
         val directory = tmp.newFolder()
         val repository = LineageRepository(directory, beforeStagedRead = {
             if (pauseReads.get()) {
@@ -377,7 +390,7 @@ class ReceiverLineageLifecycleTest {
                 appVersion = "test", osFingerprint = "test", stagingDir = repository.stagingDir,
                 lineageRepository = repository, ioDispatcher = io,
                 abandonSessions = { teardownThread = Thread.currentThread(); teardownComplete.countDown() },
-            )
+            ).also { runningReceiver = it }
             withContext(ui) {
                 mainThread = Thread.currentThread()
                 receiver.startScanning()
@@ -399,8 +412,35 @@ class ReceiverLineageLifecycleTest {
             assertThat(teardownThread).isNotEqualTo(mainThread)
             assertThat(repository.active()).isNull()
             assertThat(channel.sent.filterIsInstance<ProtocolMessage.Select>()).isEmpty()
+            // abandonSessions runs before the teardown job returns to Main. Wait for the
+            // actual session fence to clear before replacing Main or closing its dispatcher.
+            withTimeout(5_000) {
+                while (true) {
+                    val stopped = withContext(ui) {
+                        receiver.startScanning()
+                        receiver.state.value is ReceiverState.Scanning
+                    }
+                    if (stopped) break
+                    delay(1)
+                }
+            }
         } finally {
             release.countDown()
+            withContext(ui) {
+                runningReceiver?.let { ViewModelStore().apply { put("receiver", it) }.clear() }
+            }
+            // onCleared joins every owner before releasing the writer lock. Reacquiring it
+            // proves that no ViewModel work can dispatch to Main after this test resets Main.
+            withTimeout(5_000) {
+                while (true) {
+                    try {
+                        withContext(io) { LineageRepository(directory).close() }
+                        break
+                    } catch (_: LineageBusyException) {
+                        delay(1)
+                    }
+                }
+            }
             Dispatchers.setMain(dispatcher)
             ui.close()
             io.close()
@@ -433,7 +473,7 @@ class ReceiverLineageLifecycleTest {
         }
     }
 
-    @Test fun `corrupt saved move startup reports bounded generic error without exposing snapshot`() = runTest(dispatcher) {
+    @Test fun `corrupt saved move startup reports bounded generic error without exposing snapshot`() {
         val directory = tmp.newFolder()
         val secret = "secret-contact-and-credential-value"
         File(directory, "lineage.json").writeText("{broken:$secret}")

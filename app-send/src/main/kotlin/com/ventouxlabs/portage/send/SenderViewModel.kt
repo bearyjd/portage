@@ -280,7 +280,8 @@ class SenderViewModel(
     }
 
     private fun beginTransfer(resume: Boolean) {
-        if (cancelling || transferJob?.isActive == true) return
+        // A cancelled job may still own a listener or be unwinding its keep-alive.
+        if (cancelling || transferJob?.isCompleted == false) return
         if (_state.value !is SenderState.Home && _state.value !is SenderState.Failed &&
             _state.value !is SenderState.Done) return
         cancellationRequested = false
@@ -290,6 +291,7 @@ class SenderViewModel(
         transferJob = viewModelScope.launch {
             var resumeCredential: ByteArray? = null
             var pendingResumeAttempt = false
+            var keepAliveStarted = false
             try {
                 val active = if (resume) checkNotNull(repository.active()) { "No saved move to resume" }
                     else repository.startNewMove()
@@ -362,6 +364,7 @@ class SenderViewModel(
                 // runs exactly once, after the prepare guards above; the stop() in the finally below
                 // is the idempotent half that always runs on EVERY exit (done / fail / timeout / reset).
                 transferKeepAlive.start()
+                keepAliveStarted = true
                 val ch = channelFactory.acceptAsSender(payload, resumeCredential, active.id.takeIf { mode == PairingMode.RESUME })
                     .let(::SerializedSendChannel)
                     .also { channel = it }
@@ -383,6 +386,7 @@ class SenderViewModel(
                             onLineageAcknowledged = {
                                 withContext(transferIoDispatcher) {
                                     repository.confirmResumeCredential(active.id)
+                                    pendingResumeAttempt = false
                                     repository.authenticated(active.id)
                                 }
                             },
@@ -465,7 +469,7 @@ class SenderViewModel(
             } finally {
                 // Always release the keep-alive — done, fail, timeout, or a reset() cancellation
                 // unwinding through here. Idempotent: a no-op if start() was never reached.
-                transferKeepAlive.stop()
+                if (keepAliveStarted) transferKeepAlive.stop()
                 resumeCredential?.fill(0)
             }
         }
@@ -512,12 +516,13 @@ class SenderViewModel(
     }
 
     fun reset() {
+        if (cancelling) return
         if (channel != null && _state.value !is SenderState.Done) {
             cancelTransfer()
             return
         }
+        cancellationRequested = true
         transferJob?.cancel()
-        transferJob = null
         closeChannel()
         try {
             repository.active()?.let {
@@ -585,7 +590,8 @@ class SenderViewModel(
             } finally {
                 closeChannel()
                 job?.cancel()
-                transferJob = null
+                // Retain the cancelled owner until completion: isActive becomes false
+                // before a blocking accept/read and its keep-alive finally have unwound.
                 staged = null
                 clearRelayPicks()
                 clearUserFiles()

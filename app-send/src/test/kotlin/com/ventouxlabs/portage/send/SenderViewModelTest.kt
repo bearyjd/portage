@@ -36,6 +36,8 @@ import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.first
 import kotlin.coroutines.CoroutineContext
@@ -49,6 +51,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.yield
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -668,6 +671,36 @@ class SenderViewModelTest {
     }
 
     @Test
+    fun `pending resume remains resumable after acknowledged promotion and later manifest failure`() = runTest(dispatcher) {
+        val sender = LineageRepository(tmp.newFolder())
+        val receiver = LineageRepository(tmp.newFolder())
+        val active = sender.startNewMove()
+        val staged = com.ventouxlabs.portage.send.transfer.ManifestBuilder(
+            listOf(BytesExport(ItemKind.CONTACTS_VCF, "vcard".toByteArray())),
+            sender.stagingDir, "sender", active.id, ioDispatcher = dispatcher,
+        ).build()
+        sender.savePreparedManifest(staged.manifest, staged.items.associate { it.meta.itemId to it.file })
+        val secret = sender.establishResumeCredential(active.id)
+        receiver.acceptInitial(active.id, secret)
+        val channel = happyChannel().apply {
+            afterSend = { if (it is ProtocolMessage.Manifest) throw TransportException("manifest send failed") }
+        }
+        val vm = viewModel(PossessionFactory(receiver, channel), providers = emptyList(), repository = sender)
+
+        vm.onResumeTransfer()
+        advanceUntilIdle()
+
+        assertThat(sender.active()?.credentialState).isEqualTo(CredentialState.ESTABLISHED)
+        assertThat(sender.active()?.prepared).isTrue()
+        assertThat(sender.active()?.id).isEqualTo(active.id)
+        assertThat((vm.state.value as SenderState.Failed).canResume).isTrue()
+        assertThat((vm.state.value as SenderState.Failed).reason).contains("manifest send failed")
+        sender.close()
+        receiver.close()
+        secret.fill(0)
+    }
+
+    @Test
     fun `incoming peer cancel never records peer deletion without its acknowledgement`() = runTest(dispatcher) {
         val repository = LineageRepository(tmp.newFolder())
         val incoming = Channel<ProtocolMessage>(Channel.UNLIMITED)
@@ -836,6 +869,61 @@ class SenderViewModelTest {
     }
 
     @Test
+    fun `QR cancel and reset fence replacement until old listener and keepalive are released`() = runTest(dispatcher) {
+        for (reset in listOf(false, true)) {
+            val repository = LineageRepository(tmp.newFolder())
+            val releaseOldListener = CompletableDeferred<Unit>()
+            var accepted = 0
+            var released = 0
+            val factory = object : SecureChannel.Factory {
+                override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = error("sender only")
+                override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel {
+                    val owner = ++accepted
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        // Model a cancelled accept that has not yet released native ownership.
+                        if (owner == 1) withContext(NonCancellable) { releaseOldListener.await() }
+                        released++
+                    }
+                }
+            }
+            val keepAlive = FakeKeepAlive()
+            val vm = viewModel(factory, keepAlive = keepAlive, repository = repository)
+            vm.onStartTransfer()
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(SenderState.ShowingQr::class.java)
+            assertThat(accepted).isEqualTo(1)
+
+            if (reset) vm.reset() else vm.cancelTransfer()
+            runCurrent()
+            vm.onStartTransfer()
+            runCurrent()
+            assertThat(accepted).isEqualTo(1)
+            assertThat(released).isEqualTo(0)
+            assertThat(keepAlive.starts).isEqualTo(1)
+            assertThat(keepAlive.stops).isEqualTo(0)
+
+            releaseOldListener.complete(Unit)
+            runCurrent()
+            assertThat(released).isEqualTo(1)
+            assertThat(keepAlive.stops).isEqualTo(1)
+            vm.onStartTransfer()
+            runCurrent()
+            assertThat(accepted).isEqualTo(2)
+            assertThat(keepAlive.starts).isEqualTo(2)
+            assertThat(keepAlive.stops).isEqualTo(1)
+            assertThat(vm.state.value).isInstanceOf(SenderState.ShowingQr::class.java)
+
+            vm.reset()
+            runCurrent()
+            assertThat(released).isEqualTo(2)
+            assertThat(keepAlive.stops).isEqualTo(2)
+            repository.close()
+        }
+    }
+
+    @Test
     fun `keep-alive is released when the data phase times out`() = runTest(dispatcher) {
         // Same slow-drip setup as the aggregate-cap test: handshake + HELLO, then never SELECT.
         val keepAlive = FakeKeepAlive()
@@ -874,6 +962,7 @@ class SenderViewModelTest {
 
         assertThat(vm.state.value).isInstanceOf(SenderState.Failed::class.java)
         assertThat(keepAlive.starts).isEqualTo(0)
+        assertThat(keepAlive.stops).isEqualTo(0)
     }
 
     // ---- app-backup relay (PRP-06): detection + user-driven staging into the manifest ----

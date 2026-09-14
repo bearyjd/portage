@@ -61,6 +61,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -1002,18 +1004,24 @@ class ReceiverViewModel(
         pairing?.cancel()
         transfer?.cancel()
         first?.cancel()
-        teardownJob = viewModelScope.launch {
+        teardownJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
             val watchdog = launch { delay(5_000); ch?.close() }
             try {
+                // Local revocation cannot depend on a provider or socket reader cooperating.
+                // Enter this block before reset returns and let the durable write finish even
+                // if the ViewModel is cleared while its owners are still unwinding.
+                val activeId = withContext(NonCancellable + ioDispatcher) {
+                    lineageRepository.active()?.id.also { id ->
+                        if (id != null) {
+                            if (finished) lineageRepository.finish(id) else lineageRepository.cancel(id)
+                        }
+                    }
+                }
                 // The former receive owner must exit before this coroutine takes its socket.
                 pairing?.join()
                 first?.join()
                 transfer?.join()
                 val peerDeleted = withContext(ioDispatcher) {
-                    val activeId = lineageRepository.active()?.id
-                    if (activeId != null) {
-                        if (finished) lineageRepository.finish(activeId) else lineageRepository.cancel(activeId)
-                    }
                     if (ch != null && activeId != null && !finished) {
                         try {
                             withTimeoutOrNull(5_000) {
