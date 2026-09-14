@@ -27,6 +27,27 @@ class CborMessageCodecTest {
     private val codec = CborMessageCodec()
 
     @Test
+    fun `v6 lineage and cancel messages have fixed CBOR wire vectors`() {
+        val lineage = "00112233445566778899aabbccddeeff"
+        val lineageField = "696c696e6561676549647820" +
+            "3030313132323333343435353636373738383939616162626363646465656666"
+        val vectors = listOf(
+            ProtocolMessage.LineageInit(lineage, ByteArray(32) { it.toByte() }) to
+                ("0abf" + lineageField + "70726573756d6543726564656e7469616c5820" +
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1fff"),
+            ProtocolMessage.LineageResume(lineage) to "0bbf${lineageField}ff",
+            ProtocolMessage.LineageAck(lineage) to "0cbf${lineageField}ff",
+            ProtocolMessage.Cancel(lineage) to "0dbf${lineageField}ff",
+            ProtocolMessage.CancelAck(lineage) to "0ebf${lineageField}ff",
+        )
+        for ((message, hex) in vectors) {
+            val expected = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            assertThat(codec.encode(message)).isEqualTo(expected)
+            assertThat(codec.decode(expected)).isEqualTo(message)
+        }
+    }
+
+    @Test
     fun `a full 60 KiB ItemData chunk encodes under the message cap and round-trips`() {
         // Worst case for the old encoding: every byte >= 0x20 (printable ASCII / vCard text), so each
         // would have cost 2 bytes as a CBOR integer. 60 KiB = TransferEngine.DEFAULT_CHUNK_BYTES.

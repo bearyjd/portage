@@ -101,6 +101,8 @@ data class ItemMeta(
     val sha256: String,
     val displayName: String,
     val group: String,
+    val occurrenceId: String = "",
+    val wireSchemaVersion: Int = 1,
 )
 
 /** The sender's advertised inventory. Receiver selects a subset from this. */
@@ -109,4 +111,5 @@ data class TransferManifest(
     val senderName: String,
     val items: List<ItemMeta>,
     val totalBytes: Long,
+    val lineageId: String = "",
 )

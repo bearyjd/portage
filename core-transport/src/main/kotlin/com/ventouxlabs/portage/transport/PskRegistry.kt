@@ -10,6 +10,7 @@
 package com.ventouxlabs.portage.transport
 
 import java.util.Collections
+import com.ventouxlabs.portage.model.PairingPayload
 
 /**
  * Enforces "one completed handshake per session id" (THREAT_MODEL.md #4 replay, #7
@@ -23,7 +24,10 @@ class PskRegistry {
     private val consumed: MutableSet<String> = Collections.synchronizedSet(HashSet())
 
     /** Returns true if this [sid] was not previously consumed (caller wins); false otherwise. */
-    fun tryConsume(sid: ByteArray): Boolean = consumed.add(sid.toHex())
+    fun tryConsume(sid: ByteArray): Boolean {
+        require(sid.size == PairingPayload.SID_BYTES) { "sid must be 16 bytes" }
+        return consumed.add(sid.toHex())
+    }
 
     private fun ByteArray.toHex(): String = buildString(size * 2) {
         for (b in this@toHex) {

@@ -10,6 +10,7 @@
 package com.ventouxlabs.portage.transport
 
 import com.ventouxlabs.portage.model.PairingPayload
+import com.ventouxlabs.portage.model.PairingMode
 import com.ventouxlabs.portage.model.ProtocolMessage
 import com.southernstorm.noise.protocol.CipherStatePair
 import com.southernstorm.noise.protocol.HandshakeState
@@ -33,21 +34,19 @@ object NoiseChannel {
     const val MAX_FRAME_BYTES = 65535
 
     /**
-     * Prologue mixed into the transcript (PROTOCOL.md §2): binds protocol version + session
-     * id so a spliced or cross-session handshake cannot complete. Both sides MUST match.
-     * Version is a single byte on the wire; reject anything that wouldn't round-trip so two
-     * versions can't silently collide (would weaken downgrade resistance, THREAT_MODEL #6).
+     * Binds version, mode, SID, direction and (for RESUME) locally stored lineage.
+     * Exact byte encoding is specified in [ResumeKeyDerivation]. Both sides MUST match.
      */
-    fun prologue(version: Int, sid: ByteArray): ByteArray {
-        require(version in 0..255) { "version $version out of single-byte prologue range" }
-        return "portage".toByteArray(Charsets.US_ASCII) +
-            byteArrayOf(version.toByte()) +
-            sid +
-            "recv->send".toByteArray(Charsets.US_ASCII)
-    }
+    fun prologue(
+        version: Int,
+        sid: ByteArray,
+        mode: PairingMode = PairingMode.NEW,
+        lineageId: String? = null,
+    ): ByteArray = ResumeKeyDerivation.context("portage-noise-prologue", version, mode, sid, lineageId)
 
     /** [role] is [HandshakeState.INITIATOR] (receiver) or [HandshakeState.RESPONDER] (sender). */
     fun handshake(transport: FrameTransport, role: Int, psk: ByteArray, prologue: ByteArray): CipherStatePair {
+        require(psk.size == PairingPayload.PSK_BYTES) { "Noise PSK must be 32 bytes" }
         val hs = HandshakeState(PROTOCOL_NAME, role)
         try {
             hs.setPreSharedKey(psk, 0, psk.size)
@@ -101,9 +100,14 @@ class NoiseSession(
 
     fun send(message: ProtocolMessage) {
         val plain = codec.encode(message)
-        val out = ByteArray(plain.size + keys.sender.macLength)
-        val n = keys.sender.encryptWithAd(null, plain, 0, out, 0, plain.size)
-        transport.writeFrame(if (n == out.size) out else out.copyOf(n))
+        try {
+            val out = ByteArray(plain.size + keys.sender.macLength)
+            val n = keys.sender.encryptWithAd(null, plain, 0, out, 0, plain.size)
+            transport.writeFrame(if (n == out.size) out else out.copyOf(n))
+        } finally {
+            // LINEAGE_INIT plaintext contains the long-lived resume credential.
+            plain.fill(0)
+        }
     }
 
     /** Returns the next message, or null at clean end-of-stream. */
@@ -117,21 +121,26 @@ class NoiseSession(
             throw TransportException("frame exceeds ${NoiseChannel.MAX_FRAME_BYTES}B cap")
         }
         val out = ByteArray(frame.size)
-        val n = try {
-            keys.receiver.decryptWithAd(null, frame, 0, out, 0, frame.size)
-        } catch (e: GeneralSecurityException) {
-            throw TransportException("frame authentication failed", e)
-        }
+        var plain: ByteArray? = null
         // Fail-closed (SecureChannel contract): an authenticated-but-malicious peer can encrypt a
         // plaintext the codec rejects — empty, an unknown type byte, an over-cap body, or malformed
         // CBOR (THREAT_MODEL #10). Map any decode failure to TransportException so callers never see a
         // raw IllegalArgumentException/SerializationException, which they don't treat as fatal.
         return try {
-            codec.decode(out.copyOf(n))
+            val n = try {
+                keys.receiver.decryptWithAd(null, frame, 0, out, 0, frame.size)
+            } catch (e: GeneralSecurityException) {
+                throw TransportException("frame authentication failed", e)
+            }
+            plain = out.copyOf(n)
+            codec.decode(plain)
         } catch (e: TransportException) {
             throw e
         } catch (e: Exception) {
             throw TransportException("malformed application frame", e)
+        } finally {
+            plain?.fill(0)
+            out.fill(0)
         }
     }
 

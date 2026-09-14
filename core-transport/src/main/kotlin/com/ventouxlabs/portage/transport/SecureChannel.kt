@@ -10,6 +10,7 @@
 package com.ventouxlabs.portage.transport
 
 import com.ventouxlabs.portage.model.PairingPayload
+import com.ventouxlabs.portage.model.PairingMode
 import com.ventouxlabs.portage.model.ProtocolMessage
 
 /**
@@ -37,10 +38,43 @@ interface SecureChannel : AutoCloseable {
         suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel
 
         /**
+         * RESUME additionally requires the locally stored 32-byte credential and canonical lineage.
+         * NEW requires both optional arguments to be absent. Implementations copy borrowed resume
+         * credentials and wipe their copies plus [payload]'s QR PSK on every exit, including failure.
+         * The caller retains ownership of its stored credential and must not mutate it during this call.
+         * A legacy factory cannot accept a resume request through this overload.
+         */
+        suspend fun connectAsReceiver(
+            payload: PairingPayload,
+            resumeCredential: ByteArray?,
+            lineageId: String? = null,
+        ): SecureChannel {
+            requireNewOnly(payload, resumeCredential, lineageId)
+            return connectAsReceiver(payload)
+        }
+
+        /**
          * Sender side: listen, accept exactly ONE completed handshake for this session,
          * then mark the PSK consumed (replay/second-suitor lockout, THREAT_MODEL.md #4/#7).
          */
         suspend fun acceptAsSender(payload: PairingPayload): SecureChannel
+
+        /** Sender equivalent of the credential-aware [connectAsReceiver] overload. */
+        suspend fun acceptAsSender(
+            payload: PairingPayload,
+            resumeCredential: ByteArray?,
+            lineageId: String? = null,
+        ): SecureChannel {
+            requireNewOnly(payload, resumeCredential, lineageId)
+            return acceptAsSender(payload)
+        }
+
+        private fun requireNewOnly(payload: PairingPayload, credential: ByteArray?, lineageId: String?) {
+            if (payload.mode != PairingMode.NEW || credential != null || lineageId != null) {
+                payload.wipe()
+                throw TransportException("factory does not support resume credentials")
+            }
+        }
     }
 }
 

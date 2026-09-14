@@ -10,6 +10,7 @@
 package com.ventouxlabs.portage.transport
 
 import com.ventouxlabs.portage.model.PairingPayload
+import com.ventouxlabs.portage.model.PairingMode
 import com.ventouxlabs.portage.model.ProtocolMessage
 import com.southernstorm.noise.protocol.CipherStatePair
 import com.southernstorm.noise.protocol.HandshakeState
@@ -47,27 +48,37 @@ class NoiseSecureChannelFactory(
     private val dataTimeoutMs: Long = DATA_TIMEOUT_MS,
 ) : SecureChannel.Factory {
 
-    override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = withContext(Dispatchers.IO) {
+    override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel =
+        connectAsReceiver(payload, null, null)
+
+    override suspend fun connectAsReceiver(
+        payload: PairingPayload,
+        resumeCredential: ByteArray?,
+        lineageId: String?,
+    ): SecureChannel = withHandshakeMaterial(payload, resumeCredential, lineageId) { material ->
         val socket = connectWithRetry(payload)
-        val transport = SocketFrameTransport(socket)
+        var keys: CipherStatePair? = null
         try {
-            val prologue = NoiseChannel.prologue(payload.version, payload.sid)
-            val keys = handshakeWithDeadline(transport, socket, HandshakeState.INITIATOR, payload, prologue)
-            // Handshake done: the peer is PSK-authenticated, so lift the tight handshake deadline
-            // to the generous data-phase budget. Post-handshake reads wait on the OTHER side's
-            // human-paced actions (manifest review, the "Modify system settings" grant round-trip,
-            // item acks); the 10s handshake soTimeout would abandon a live transfer mid-review.
+            val transport = SocketFrameTransport(socket)
+            keys = handshakeWithDeadline(transport, socket, HandshakeState.INITIATOR, material)
+            // Human-paced review and apply happen only after peer authentication.
             socket.soTimeout = dataTimeoutMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
             NoiseSecureChannel(NoiseSession(transport, keys))
         } catch (t: Throwable) {
-            transport.close()
+            keys?.destroy()
+            runCatching { socket.close() }
             throw t
-        } finally {
-            payload.wipe()
         }
     }
 
-    override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel = withContext(Dispatchers.IO) {
+    override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel =
+        acceptAsSender(payload, null, null)
+
+    override suspend fun acceptAsSender(
+        payload: PairingPayload,
+        resumeCredential: ByteArray?,
+        lineageId: String?,
+    ): SecureChannel = withHandshakeMaterial(payload, resumeCredential, lineageId) { material ->
         val server = ServerSocket()
         // One cumulative wall-clock budget for the whole listener (THREAT_MODEL #7/#11):
         // failed/stalled suitors cannot reset it, so the listener can't be held forever.
@@ -75,8 +86,6 @@ class NoiseSecureChannelFactory(
         try {
             server.reuseAddress = true
             server.bind(InetSocketAddress(payload.port))
-            val prologue = NoiseChannel.prologue(payload.version, payload.sid)
-
             // Accept until ONE handshake completes, within the total budget. A bad first
             // suitor closes and the next is accepted (anti-lockout), but every accept()
             // draws from the SAME shrinking budget.
@@ -92,32 +101,112 @@ class NoiseSecureChannelFactory(
                 } catch (e: IOException) {
                     throw TransportException("listener accept failed", e)
                 }
-                socket.soTimeout = handshakeTimeoutMs.toInt() // before wrapping the streams
-                val transport = SocketFrameTransport(socket)
-
-                val keys: CipherStatePair? = try {
-                    handshakeWithDeadline(transport, socket, HandshakeState.RESPONDER, payload, prologue)
-                } catch (e: TransportException) {
-                    transport.close(); null // failed suitor — keep listening within budget
-                }
-                if (keys != null) {
-                    if (pskRegistry.tryConsume(payload.sid)) {
+                var keys: CipherStatePair? = null
+                var transferred = false
+                try {
+                    val budgetMs = minOf(handshakeTimeoutMs, (deadlineNanos - System.nanoTime()) / 1_000_000L)
+                    if (budgetMs <= 0) throw TransportException("listener deadline expired")
+                    socket.soTimeout = budgetMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
+                    val transport = SocketFrameTransport(socket)
+                    keys = try {
+                        handshakeWithDeadline(transport, socket, HandshakeState.RESPONDER, material, budgetMs)
+                    } catch (_: TransportException) {
+                        continue // failed suitor — keep listening within the original budget
+                    }
+                    if (pskRegistry.tryConsume(material.sid)) {
                         // Authenticated: lift the handshake deadline to the data-phase budget. The
                         // sender's next read blocks until the receiver's human-paced SELECT (manifest
                         // review + the "Modify system settings" grant round-trip) — the 10s handshake
                         // soTimeout would fail the transfer the moment review outlasts it.
                         socket.soTimeout = dataTimeoutMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
-                        return@withContext NoiseSecureChannel(NoiseSession(transport, keys))
+                        val channel = NoiseSecureChannel(NoiseSession(transport, keys))
+                        transferred = true
+                        return@withHandshakeMaterial channel
                     }
-                    transport.close()
                     throw TransportException("session already consumed")
+                } finally {
+                    if (!transferred) {
+                        keys?.destroy()
+                        runCatching { socket.close() }
+                    }
                 }
             }
             @Suppress("UNREACHABLE_CODE")
             throw TransportException("listener exited unexpectedly")
         } finally {
             runCatching { server.close() }
+        }
+    }
+
+    /** Keeps cleanup outside withContext too: dispatch cancellation can precede entry or discard a result. */
+    private suspend fun withHandshakeMaterial(
+        payload: PairingPayload,
+        resumeCredential: ByteArray?,
+        lineageId: String?,
+        action: suspend (HandshakeMaterial) -> SecureChannel,
+    ): SecureChannel {
+        var completed: SecureChannel? = null
+        try {
+            return withContext(Dispatchers.IO) {
+                val material = prepareMaterial(payload, resumeCredential, lineageId)
+                try {
+                    action(material).also { completed = it }
+                } finally {
+                    material.close()
+                }
+            }
+        } catch (t: Throwable) {
+            runCatching { completed?.close() }
+            throw t
+        } finally {
+            // Includes validation failure, dial failure and cancellation before entering IO.
             payload.wipe()
+        }
+    }
+
+    private class HandshakeMaterial(val psk: ByteArray, val prologue: ByteArray, val sid: ByteArray) : AutoCloseable {
+        override fun close() {
+            psk.fill(0)
+            prologue.fill(0)
+            sid.fill(0)
+        }
+    }
+
+    private fun prepareMaterial(
+        payload: PairingPayload,
+        resumeCredential: ByteArray?,
+        lineageId: String?,
+    ): HandshakeMaterial {
+        var psk: ByteArray? = null
+        var prologue: ByteArray? = null
+        var sid: ByteArray? = null
+        try {
+            require(payload.version == PairingPayload.PROTOCOL_VERSION) { "unsupported protocol version" }
+            require(payload.psk.size == PairingPayload.PSK_BYTES) { "QR PSK must be 32 bytes" }
+            require(payload.sid.size == PairingPayload.SID_BYTES) { "sid must be 16 bytes" }
+            when (payload.mode) {
+                PairingMode.NEW -> require(resumeCredential == null && lineageId == null) {
+                    "NEW cannot supply resume credentials or stored lineage"
+                }
+                PairingMode.RESUME -> require(resumeCredential?.size == ResumeKeyDerivation.CREDENTIAL_BYTES) {
+                    "RESUME requires a stored 32-byte resume credential"
+                }
+            }
+            sid = payload.sid.copyOf()
+            prologue = NoiseChannel.prologue(payload.version, sid, payload.mode, lineageId)
+            psk = when (payload.mode) {
+                PairingMode.NEW -> payload.psk.copyOf()
+                PairingMode.RESUME -> ResumeKeyDerivation.derive(
+                    payload.psk, requireNotNull(resumeCredential), payload.version, sid, requireNotNull(lineageId),
+                )
+            }
+            return HandshakeMaterial(psk, prologue, sid)
+        } catch (t: Throwable) {
+            psk?.fill(0)
+            prologue?.fill(0)
+            sid?.fill(0)
+            if (t is IllegalArgumentException) throw TransportException("invalid handshake context", t)
+            throw t
         }
     }
 
@@ -130,17 +219,26 @@ class NoiseSecureChannelFactory(
         transport: SocketFrameTransport,
         socket: Socket,
         role: Int,
-        payload: PairingPayload,
-        prologue: ByteArray,
-    ): CipherStatePair = coroutineScope {
-        val watchdog = launch {
-            delay(handshakeTimeoutMs)
-            runCatching { socket.close() }
-        }
+        material: HandshakeMaterial,
+        timeoutMs: Long = handshakeTimeoutMs,
+    ): CipherStatePair {
+        var splitKeys: CipherStatePair? = null
         try {
-            NoiseChannel.handshake(transport, role, payload.psk, prologue)
-        } finally {
-            watchdog.cancel()
+            return coroutineScope {
+                val watchdog = launch {
+                    delay(timeoutMs)
+                    runCatching { socket.close() }
+                }
+                try {
+                    NoiseChannel.handshake(transport, role, material.psk, material.prologue).also { splitKeys = it }
+                } finally {
+                    watchdog.cancel()
+                }
+            }
+        } catch (t: Throwable) {
+            // Cancellation at coroutineScope's exit must not discard an already-completed split.
+            splitKeys?.destroy()
+            throw t
         }
     }
 
@@ -148,15 +246,21 @@ class NoiseSecureChannelFactory(
         val host = payload.ip.firstOrNull() ?: throw TransportException("no address in pairing payload")
         var last: Exception? = null
         for (attempt in 0 until CONNECT_RETRIES) {
+            val socket = Socket()
+            var connected = false
             try {
-                return Socket().apply {
+                socket.apply {
                     connect(InetSocketAddress(host, payload.port), CONNECT_TIMEOUT_MS)
-                    soTimeout = handshakeTimeoutMs.toInt()
+                    soTimeout = handshakeTimeoutMs.coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
                 }
+                connected = true
+                return socket
             } catch (e: IOException) {
                 last = e
-                delay(CONNECT_RETRY_DELAY_MS)
+            } finally {
+                if (!connected) runCatching { socket.close() }
             }
+            delay(CONNECT_RETRY_DELAY_MS)
         }
         throw TransportException("could not connect to $host:${payload.port}", last)
     }
