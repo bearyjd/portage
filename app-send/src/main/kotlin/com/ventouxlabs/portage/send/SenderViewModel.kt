@@ -280,6 +280,22 @@ class SenderViewModel(
         ReceiptPhase.FAILED -> storedItemStatus(detail)?.isRetryable == true
     }
 
+    /** Move one authenticated, selected replay occurrence back through legal durable phases. */
+    private fun restartCheckpointForReplay(key: CheckpointKey) {
+        var checkpoint = checkNotNull(repository.checkpoint(key))
+        if (checkpoint.phase == ReceiptPhase.RECEIVED_VERIFIED ||
+            checkpoint.phase == ReceiptPhase.APPLYING) {
+            checkpoint = repository.transition(
+                key,
+                checkpoint.phase,
+                ReceiptPhase.UNKNOWN_INTERRUPTED,
+            )
+        }
+        if (checkpoint.phase != ReceiptPhase.PREPARED) {
+            repository.transition(key, checkpoint.phase, ReceiptPhase.PREPARED)
+        }
+    }
+
     /** Toggle one app's membership in the carry selection (ADR-006 Phase 1b). Default starts empty. */
     fun toggleApp(packageName: String) {
         val current = _selectedAppPackages.value
@@ -409,11 +425,6 @@ class SenderViewModel(
                             val file = checkNotNull(repository.stagedFile(key, context::ensureActive)) {
                                 "Saved bytes are missing or changed; start a new move"
                             }
-                            val checkpoint = checkNotNull(repository.checkpoint(key))
-                            if (checkpoint.phase == ReceiptPhase.UNKNOWN_INTERRUPTED ||
-                                (checkpoint.phase == ReceiptPhase.FAILED && checkpoint.canRetry())) {
-                                repository.transition(key, checkpoint.phase, ReceiptPhase.PREPARED)
-                            }
                             StagedItem(meta, file)
                         })
                     } else {
@@ -488,6 +499,17 @@ class SenderViewModel(
                                 withContext(transferIoDispatcher) {
                                     repository.confirmResumeCredential(active.id)
                                     repository.authenticated(active.id)
+                                }
+                            },
+                            onSelectionReceived = { selected ->
+                                if (resume) withContext(transferIoDispatcher) {
+                                    val context = currentCoroutineContext()
+                                    selected.forEach { itemId ->
+                                        context.ensureActive()
+                                        val meta = checkNotNull(built.itemById(itemId)).meta
+                                        val key = CheckpointKey.from(active.id, meta)
+                                        restartCheckpointForReplay(key)
+                                    }
                                 }
                             },
                             isCancellationRequested = { cancellationRequested },

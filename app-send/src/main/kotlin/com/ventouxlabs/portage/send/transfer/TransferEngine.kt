@@ -76,6 +76,7 @@ class TransferEngine(
         staged: StagedManifest,
         lineageMessage: ProtocolMessage,
         onLineageAcknowledged: suspend () -> Unit = {},
+        onSelectionReceived: suspend (List<Int>) -> Unit = {},
         isCancellationRequested: () -> Boolean = { false },
         isCancelAlreadySent: () -> Boolean = { false },
         onAwaitingReply: (Boolean) -> Unit = {},
@@ -158,6 +159,11 @@ class TransferEngine(
         if (complete.isNotEmpty() && lineageMessage !is ProtocolMessage.LineageResume) {
             throw TransportException("verified resume requires the existing lineage credential")
         }
+        checkCancelled()
+        // This is the first authenticated point at which the sender knows exactly which durable
+        // occurrences the receiver will replay. Let the owner normalize those checkpoints before
+        // ItemBegin or any receipt can cross the channel.
+        onSelectionReceived(select.want)
         onEvent(Event.SelectReceived(select.want))
 
         val sentIds = mutableListOf<Int>()

@@ -419,53 +419,87 @@ class SenderViewModelTest {
     }
 
     @Test
-    fun `mixed resume resets retryable failure but preserves terminal checkpoint`() = runTest(dispatcher) {
-        val directory = tmp.newFolder()
-        val repository = LineageRepository(directory)
-        val retryable = ItemResult(1, ItemStatus.WRITE_ERROR, "temporary write failure")
-        val terminal = ItemResult(2, ItemStatus.OVERSIZE, "over receiver limit")
-        val channel = ScriptedChannel(
+    fun `mixed resume normalizes every selected replay before receipts and leaves unselected truth`() = runTest(dispatcher) {
+        val repository = LineageRepository(tmp.newFolder())
+        val applied = ItemResult(1, ItemStatus.OK)
+        val retryable = ItemResult(2, ItemStatus.WRITE_ERROR, "temporary write failure")
+        val unselected = ItemResult(3, ItemStatus.OVERSIZE, "over receiver limit")
+        val firstChannel = ScriptedChannel(
+            ProtocolMessage.Hello("0.1.0", "recv"),
+            ProtocolMessage.Select(want = listOf(1, 2, 3)),
+            ProtocolMessage.ItemAck(applied),
+            ProtocolMessage.ItemAck(retryable),
+            ProtocolMessage.ItemAck(unselected),
+            ProtocolMessage.BatchAck(listOf(applied, retryable, unselected)),
+        )
+        val replayChannel = ScriptedChannel(
             ProtocolMessage.Hello("0.1.0", "recv"),
             ProtocolMessage.Select(want = listOf(1, 2)),
-            ProtocolMessage.ItemAck(retryable),
-            ProtocolMessage.ItemAck(terminal),
-            ProtocolMessage.BatchAck(listOf(retryable, terminal)),
+            ProtocolMessage.ItemAck(ItemResult(1, ItemStatus.OK)),
+            ProtocolMessage.ItemAck(ItemResult(2, ItemStatus.OK)),
+            ProtocolMessage.BatchAck(listOf(
+                ItemResult(1, ItemStatus.OK),
+                ItemResult(2, ItemStatus.OK),
+            )),
         )
-        val original = viewModel(
-            FakeFactory(channel),
+        var normalizationObservedBeforeStream = false
+        replayChannel.afterSend = { message ->
+            if (message is ProtocolMessage.ItemBegin && !normalizationObservedBeforeStream) {
+                val active = checkNotNull(repository.active())
+                val phases = checkNotNull(active.manifest).items.associate { meta ->
+                    meta.itemId to repository.checkpoint(
+                        com.ventouxlabs.portage.lineage.CheckpointKey.from(active.id, meta),
+                    )?.phase
+                }
+                assertThat(phases[1]).isEqualTo(ReceiptPhase.PREPARED)
+                assertThat(phases[2]).isEqualTo(ReceiptPhase.PREPARED)
+                assertThat(phases[3]).isEqualTo(ReceiptPhase.FAILED)
+                normalizationObservedBeforeStream = true
+            }
+        }
+        val channels = ArrayDeque(listOf<SecureChannel>(firstChannel, replayChannel))
+        val factory = object : SecureChannel.Factory {
+            override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel = error("sender only")
+            override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel = channels.removeFirst()
+            override suspend fun acceptAsSender(
+                payload: PairingPayload,
+                resumeCredential: ByteArray?,
+                lineageId: String?,
+            ): SecureChannel = acceptAsSender(payload)
+        }
+        val vm = viewModel(
+            factory,
             providers = listOf(
                 BytesExport(ItemKind.CONTACTS_VCF, "vcard".toByteArray()),
                 BytesExport(ItemKind.CALL_LOG, "calls".toByteArray()),
+                BytesExport(ItemKind.SETTINGS, "settings".toByteArray()),
             ),
             repository = repository,
         )
 
-        original.onStartTransfer()
+        vm.onStartTransfer()
         advanceUntilIdle()
-        assertThat(original.state.value).isEqualTo(
-            SenderState.Done(sent = 0, failed = 1, retryableFailed = 1),
+        assertThat(vm.state.value).isEqualTo(
+            SenderState.Done(sent = 1, failed = 1, retryableFailed = 1),
         )
-        repository.close()
-
-        val reopened = LineageRepository(directory)
-        val restored = viewModel(
-            FakeFactory(acceptError = TransportException("temporary disconnect")),
-            providers = emptyList(),
-            repository = reopened,
-        )
-        restored.onResumeTransfer()
+        vm.onResumeTransfer()
         advanceUntilIdle()
 
-        val active = checkNotNull(reopened.active())
-        val phases = checkNotNull(active.manifest).items.associate { meta ->
-            meta.itemId to reopened.checkpoint(
+        assertThat(vm.state.value).isEqualTo(SenderState.Done(sent = 2, failed = 0))
+        assertThat(normalizationObservedBeforeStream).isTrue()
+        assertThat(replayChannel.sent.filterIsInstance<ProtocolMessage.ItemBegin>().map { it.itemId })
+            .containsExactly(1, 2).inOrder()
+        val active = checkNotNull(repository.active())
+        val checkpoints = checkNotNull(active.manifest).items.associate { meta ->
+            meta.itemId to repository.checkpoint(
                 com.ventouxlabs.portage.lineage.CheckpointKey.from(active.id, meta),
-            )?.phase
+            )
         }
-        assertThat(phases[1]).isEqualTo(ReceiptPhase.PREPARED)
-        assertThat(phases[2]).isEqualTo(ReceiptPhase.FAILED)
-        assertThat((restored.state.value as SenderState.Failed).canResume).isTrue()
-        reopened.close()
+        assertThat(checkpoints[1]?.phase).isEqualTo(ReceiptPhase.APPLIED_DURABLE)
+        assertThat(checkpoints[2]?.phase).isEqualTo(ReceiptPhase.APPLIED_DURABLE)
+        assertThat(checkpoints[3]?.phase).isEqualTo(ReceiptPhase.FAILED)
+        assertThat(checkpoints[3]?.detail).contains(ItemStatus.OVERSIZE.name)
+        repository.close()
     }
 
     @Test
