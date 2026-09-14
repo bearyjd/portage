@@ -10,9 +10,11 @@
 package com.ventouxlabs.portage.send.transfer
 
 import com.ventouxlabs.portage.model.ItemMeta
+import com.ventouxlabs.portage.model.ManifestValidation
 import com.ventouxlabs.portage.model.TransferManifest
 import com.ventouxlabs.portage.providers.ExportProvider
 import java.io.File
+import java.security.SecureRandom
 
 /** One advertised item: its manifest metadata plus the staged payload on disk. */
 data class StagedItem(val meta: ItemMeta, val file: File)
@@ -40,9 +42,15 @@ class ManifestBuilder(
     private val providers: List<ExportProvider>,
     private val stagingDir: File,
     private val senderName: String,
+    private val lineageId: String,
+    private val random: SecureRandom = SecureRandom(),
+    private val newOccurrenceId: () -> String = {
+        ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    },
 ) {
 
     suspend fun build(): StagedManifest {
+        ManifestValidation.requireIdentity(lineageId)
         stagingDir.mkdirs()
         val staged = mutableListOf<StagedItem>()
         var nextId = 1
@@ -51,7 +59,11 @@ class ManifestBuilder(
             if (!runCatching { provider.available() }.getOrDefault(false)) continue
 
             val itemId = nextId
-            val file = File(stagingDir, "item-$itemId-${provider.kind.name.lowercase()}.bin")
+            val occurrenceId = newOccurrenceId()
+            ManifestValidation.requireIdentity(occurrenceId)
+            check(staged.none { it.meta.occurrenceId == occurrenceId }) { "duplicate generated occurrence" }
+            val file = File(stagingDir, "$lineageId-$occurrenceId.bin")
+            check(file.createNewFile()) { "staging occurrence already exists" }
             val exported = try {
                 file.outputStream().use { provider.exportTo(it) }
                 true
@@ -73,6 +85,7 @@ class ManifestBuilder(
                     sha256 = sha256,
                     displayName = provider.displayName,
                     group = provider.group,
+                    occurrenceId = occurrenceId,
                 ),
                 file = file,
             )
@@ -84,6 +97,7 @@ class ManifestBuilder(
                 senderName = senderName,
                 items = staged.map { it.meta },
                 totalBytes = staged.sumOf { it.meta.size },
+                lineageId = lineageId,
             ),
             items = staged,
         )

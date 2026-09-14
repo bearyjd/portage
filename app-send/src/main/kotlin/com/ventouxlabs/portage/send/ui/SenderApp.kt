@@ -132,15 +132,18 @@ private fun StateBody(
                 step = "02 · PAIRED",
                 headline = "Linked",
                 caption = "Secure channel up. Waiting for the new phone's picks…",
+                onCancel = viewModel::cancelTransfer,
             )
 
         is SenderState.Sending ->
-            SendingScreen(items = current.items, modifier = Modifier.fillMaxSize())
+            SendingScreen(items = current.items, modifier = Modifier.fillMaxSize(), onCancel = viewModel::cancelTransfer)
 
         is SenderState.Done ->
             SendDoneScreen(
                 sent = current.sent,
                 failed = current.failed,
+                unknown = current.unknown,
+                onResume = viewModel::onResumeTransfer,
                 onDone = viewModel::reset,
                 modifier = Modifier.fillMaxSize(),
             )
@@ -148,7 +151,9 @@ private fun StateBody(
         is SenderState.Failed ->
             SendFailedScreen(
                 reason = current.reason,
-                onRetry = viewModel::reset,
+                onRetry = viewModel::onStartTransfer,
+                onResume = if (current.canResume) viewModel::onResumeTransfer else null,
+                onCancel = if (current.canResume) viewModel::cancelTransfer else null,
                 modifier = Modifier.fillMaxSize(),
             )
     }

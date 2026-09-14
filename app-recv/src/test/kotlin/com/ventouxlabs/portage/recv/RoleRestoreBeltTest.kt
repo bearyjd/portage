@@ -77,7 +77,7 @@ class RoleRestoreBeltTest {
     }
 
     private inner class FakeChannel(vararg incoming: ProtocolMessage) : SecureChannel {
-        private val queue = ArrayDeque(incoming.toList())
+        private val queue = ArrayDeque(withLineageBootstrap(incoming.toList()))
         override suspend fun send(message: ProtocolMessage) = Unit
         override suspend fun receive(): ProtocolMessage? = if (queue.isEmpty()) null else queue.removeFirst()
         override fun close() = Unit
@@ -99,12 +99,12 @@ class RoleRestoreBeltTest {
      */
     private fun rolesChannel(json: String, thenBreakProtocol: Boolean = false): SecureChannel {
         val bytes = json.toByteArray()
-        val meta = ItemMeta(4, ItemKind.DEFAULT_ROLES, bytes.size.toLong(), sha256(bytes), "Default apps", "Apps")
+        val meta = testItemMeta(4, ItemKind.DEFAULT_ROLES, bytes.size.toLong(), sha256(bytes), "Default apps", "Apps")
         val tail: ProtocolMessage =
             if (thenBreakProtocol) ProtocolMessage.Hello("x", "x")
             else ProtocolMessage.BatchEnd(listOf(4), "done")
         return FakeChannel(
-            ProtocolMessage.Manifest(TransferManifest("old phone", listOf(meta), bytes.size.toLong())),
+            ProtocolMessage.Manifest(testManifest("old phone", listOf(meta), bytes.size.toLong())),
             ProtocolMessage.ItemBegin(4, ItemKind.DEFAULT_ROLES, meta.size, bytes.size),
             ProtocolMessage.ItemData(4, 0, bytes),
             ProtocolMessage.ItemEnd(4, meta.sha256),

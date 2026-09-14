@@ -9,6 +9,8 @@
  */
 package com.ventouxlabs.portage.recv.transfer
 
+import com.ventouxlabs.portage.recv.testItemMeta
+
 import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.model.ItemMeta
 import com.ventouxlabs.portage.model.ItemStatus
@@ -45,7 +47,7 @@ class ItemStreamReceiverTest {
     val tmp = TemporaryFolder()
 
     private val payload = "BEGIN:VCARD...END:VCARD".toByteArray()
-    private val meta = ItemMeta(1, ItemKind.CONTACTS_VCF, payload.size.toLong(), sha256(payload), "Contacts", "People")
+    private val meta = testItemMeta(1, ItemKind.CONTACTS_VCF, payload.size.toLong(), sha256(payload), "Contacts", "People")
 
     private fun itemFrames(meta: ItemMeta, bytes: ByteArray, chunk: Int = 8): List<ProtocolMessage> {
         val frames = mutableListOf<ProtocolMessage>(
@@ -108,7 +110,7 @@ class ItemStreamReceiverTest {
 
     @Test
     fun `a failed item never aborts the batch — the next item still applies`() = runTest {
-        val meta2 = ItemMeta(2, ItemKind.CALL_LOG, 5L, sha256("calls".toByteArray()), "Calls", "History")
+        val meta2 = testItemMeta(2, ItemKind.CALL_LOG, 5L, sha256("calls".toByteArray()), "Calls", "History")
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, meta.kind, meta.size, 8),
             ProtocolMessage.ItemData(1, 0, "garbage!".toByteArray()),
@@ -127,7 +129,7 @@ class ItemStreamReceiverTest {
     @Test
     fun `the receiver's own byte cap refuses an item even when manifest and wire agree`() = runTest {
         // PROTOCOL.md §5: receiver-enforced max item size REGARDLESS of manifest claims.
-        val bigMeta = ItemMeta(1, ItemKind.CONTACTS_VCF, 100, "a".repeat(64), "Contacts", "People")
+        val bigMeta = testItemMeta(1, ItemKind.CONTACTS_VCF, 100, "a".repeat(64), "Contacts", "People")
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, bigMeta.kind, bigMeta.size, 8), // wire agrees: 100 bytes
             ProtocolMessage.ItemData(1, 0, ByteArray(100)),
@@ -154,8 +156,8 @@ class ItemStreamReceiverTest {
         // SAME receiver is still OVERSIZE — the proof the raised cap does not leak (PRP-06 §5).
         val tierZeroDefault = 64L * 1024 * 1024
         val big = tierZeroDefault + 1
-        val relayMeta = ItemMeta(1, ItemKind.APP_BACKUP_RELAY, big, "a".repeat(64), "Signal backup", "App backups")
-        val piiMeta = ItemMeta(2, ItemKind.CONTACTS_VCF, big, "b".repeat(64), "Contacts", "People")
+        val relayMeta = testItemMeta(1, ItemKind.APP_BACKUP_RELAY, big, "a".repeat(64), "Signal backup", "App backups")
+        val piiMeta = testItemMeta(2, ItemKind.CONTACTS_VCF, big, "b".repeat(64), "Contacts", "People")
         val frames = listOf(
             // Relay item: wire + manifest agree at `big`; relay cap allows it. We don't deliver the
             // bytes (no need to materialize 64 MiB) — the up-front begin.size cap is what we assert,
@@ -185,7 +187,7 @@ class ItemStreamReceiverTest {
         // The relay cap is finite: an item above the raised ceiling is still rejected (no unbounded
         // writes). Use a tiny explicit relay cap so the test stays cheap.
         val relayCap = 16L
-        val overMeta = ItemMeta(1, ItemKind.APP_BACKUP_RELAY, 100L, "a".repeat(64), "Backup", "App backups")
+        val overMeta = testItemMeta(1, ItemKind.APP_BACKUP_RELAY, 100L, "a".repeat(64), "Backup", "App backups")
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, ItemKind.APP_BACKUP_RELAY, 100L, 8), // wire agrees
             ProtocolMessage.ItemData(1, 0, ByteArray(100)),
@@ -209,7 +211,7 @@ class ItemStreamReceiverTest {
         // A 65 MiB-shaped relay item (modeled small to keep the test fast, but above the Tier-0
         // default would be rejected without the per-kind raise) flows end to end under the raise.
         val blob = "OPAQUE-CIPHERTEXT".toByteArray()
-        val relayMeta = ItemMeta(1, ItemKind.APP_BACKUP_RELAY, blob.size.toLong(), sha256(blob), "Signal backup", "App backups")
+        val relayMeta = testItemMeta(1, ItemKind.APP_BACKUP_RELAY, blob.size.toLong(), sha256(blob), "Signal backup", "App backups")
         val frames = itemFrames(relayMeta, blob) + ProtocolMessage.BatchEnd(listOf(1), "done")
         val channel = ScriptedChannel(*frames.toTypedArray())
         val applied = mutableListOf<ByteArray>()
@@ -263,7 +265,7 @@ class ItemStreamReceiverTest {
 
     @Test
     fun `an unrequested item id is drained and SKIPPED without touching apply`() = runTest {
-        val rogue = ItemMeta(7, ItemKind.SETTINGS, 4L, sha256("evil".toByteArray()), "X", "Y")
+        val rogue = testItemMeta(7, ItemKind.SETTINGS, 4L, sha256("evil".toByteArray()), "X", "Y")
         val frames = itemFrames(rogue, "evil".toByteArray()) +
             itemFrames(meta, payload) +
             ProtocolMessage.BatchEnd(listOf(7, 1), "done")
@@ -302,7 +304,7 @@ class ItemStreamReceiverTest {
 
     @Test
     fun `selected items the sender never delivered are reported SKIPPED`() = runTest {
-        val meta2 = ItemMeta(2, ItemKind.CALL_LOG, 5L, "f".repeat(64), "Calls", "History")
+        val meta2 = testItemMeta(2, ItemKind.CALL_LOG, 5L, "f".repeat(64), "Calls", "History")
         val frames = itemFrames(meta, payload) + ProtocolMessage.BatchEnd(listOf(1), "done")
         val channel = ScriptedChannel(*frames.toTypedArray())
 
@@ -404,8 +406,8 @@ class ItemStreamReceiverTest {
         // The APK per-item cap (1 GiB) admits a 65 MiB APK item that the 64 MiB Tier-0 default would
         // refuse; a same-size SETTINGS item on the SAME receiver is still OVERSIZE — APK-scoped raise.
         val big = 64L * 1024 * 1024 + 1
-        val apkMeta = ItemMeta(1, ItemKind.APK, big, "a".repeat(64), "Some app", "Apps")
-        val piiMeta = ItemMeta(2, ItemKind.SETTINGS, big, "b".repeat(64), "Settings", "System")
+        val apkMeta = testItemMeta(1, ItemKind.APK, big, "a".repeat(64), "Some app", "Apps")
+        val piiMeta = testItemMeta(2, ItemKind.SETTINGS, big, "b".repeat(64), "Settings", "System")
         val frames = listOf(
             // Sizes are declared, not materialized (the up-front begin.size cap is what we assert).
             ProtocolMessage.ItemBegin(1, ItemKind.APK, big, 8),
@@ -429,7 +431,7 @@ class ItemStreamReceiverTest {
     fun `AC-5 an APK item whose bytes exceed the manifest size is OVERSIZE and its staged file is wiped`() = runTest {
         val staging = tmp.newFolder()
         val blob = "APK-CONTAINER".toByteArray()
-        val apkMeta = ItemMeta(1, ItemKind.APK, blob.size.toLong(), sha256(blob), "Some app", "Apps")
+        val apkMeta = testItemMeta(1, ItemKind.APK, blob.size.toLong(), sha256(blob), "Some app", "Apps")
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, ItemKind.APK, apkMeta.size, 8),
             ProtocolMessage.ItemData(1, 0, blob),
@@ -456,7 +458,7 @@ class ItemStreamReceiverTest {
         val staging = tmp.newFolder()
         val blob = "APK-CONTAINER".toByteArray()
         // Manifest hash is wrong on purpose: streamed bytes will not match it.
-        val apkMeta = ItemMeta(1, ItemKind.APK, blob.size.toLong(), "0".repeat(64), "Some app", "Apps")
+        val apkMeta = testItemMeta(1, ItemKind.APK, blob.size.toLong(), "0".repeat(64), "Some app", "Apps")
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, ItemKind.APK, apkMeta.size, 8),
             ProtocolMessage.ItemData(1, 0, blob),
@@ -481,7 +483,7 @@ class ItemStreamReceiverTest {
     fun `AC-16 an APK item fails closed when free space is under twice its size, then proceeds when ample`() = runTest {
         val blob = "APK-CONTAINER-BYTES".toByteArray()
         val size = blob.size.toLong()
-        val apkMeta = ItemMeta(1, ItemKind.APK, size, sha256(blob), "Some app", "Apps")
+        val apkMeta = testItemMeta(1, ItemKind.APK, size, sha256(blob), "Some app", "Apps")
 
         // Under the double-stage requirement (2*size - 1): fail closed, nothing staged.
         val tightStaging = tmp.newFolder()
@@ -523,7 +525,7 @@ class ItemStreamReceiverTest {
     fun `a USER_FILE item fails closed when free space is under twice its size, then proceeds when ample`() = runTest {
         val blob = "portable-file".toByteArray()
         val size = blob.size.toLong()
-        val fileMeta = ItemMeta(1, ItemKind.USER_FILE, size, sha256(blob), "notes.txt", "Files")
+        val fileMeta = testItemMeta(1, ItemKind.USER_FILE, size, sha256(blob), "notes.txt", "Files")
 
         val tightFrames = itemFrames(fileMeta, blob) + ProtocolMessage.BatchEnd(listOf(1), "done")
         var tightApplyCalled = false
@@ -557,8 +559,8 @@ class ItemStreamReceiverTest {
     fun `USER_FILE items are aggregate-bounded across one transfer`() = runTest {
         val bytesA = "abcdef".toByteArray()
         val bytesB = "ghijkl".toByteArray()
-        val a = ItemMeta(1, ItemKind.USER_FILE, bytesA.size.toLong(), sha256(bytesA), "a.txt", "Files")
-        val b = ItemMeta(2, ItemKind.USER_FILE, bytesB.size.toLong(), sha256(bytesB), "b.txt", "Files")
+        val a = testItemMeta(1, ItemKind.USER_FILE, bytesA.size.toLong(), sha256(bytesA), "a.txt", "Files")
+        val b = testItemMeta(2, ItemKind.USER_FILE, bytesB.size.toLong(), sha256(bytesB), "b.txt", "Files")
         val frames = itemFrames(a, bytesA) + itemFrames(b, bytesB) + ProtocolMessage.BatchEnd(listOf(1, 2), "done")
 
         val results = ItemStreamReceiver(
@@ -583,16 +585,16 @@ class ItemStreamReceiverTest {
         // from the per-item cap (AC-4's concern); MAX_APK_TOTAL_BYTES itself stays the real 8 GiB.
         val perItemCap = 4L * 1024 * 1024 * 1024
         val threeGiB = 3L * 1024 * 1024 * 1024
-        val a = ItemMeta(1, ItemKind.APK, threeGiB, "a".repeat(64), "App A", "Apps")
-        val b = ItemMeta(2, ItemKind.APK, threeGiB, "b".repeat(64), "App B", "Apps")
-        val c = ItemMeta(3, ItemKind.APK, threeGiB, "c".repeat(64), "App C", "Apps")
+        val a = testItemMeta(1, ItemKind.APK, threeGiB, "a".repeat(64), "App A", "Apps")
+        val b = testItemMeta(2, ItemKind.APK, threeGiB, "b".repeat(64), "App B", "Apps")
+        val c = testItemMeta(3, ItemKind.APK, threeGiB, "c".repeat(64), "App C", "Apps")
         // A non-APK item of the same declared 3 GiB would blow the 64 MiB Tier-0 cap, so model it small
         // to prove only that the APK aggregate never counts it; keep it under its own default cap.
-        val nonApk = ItemMeta(4, ItemKind.SETTINGS, 4L, sha256("set!".toByteArray()), "Settings", "System")
+        val nonApk = testItemMeta(4, ItemKind.SETTINGS, 4L, sha256("set!".toByteArray()), "Settings", "System")
         // A 4th APK item sized to fit the CORRECT remaining budget after items 1+2 (8 GiB - 6 GiB = 2 GiB).
         // With item 3 rejected its size never enters acceptedBytes, so item 4 sees the real 2 GiB headroom.
         val twoGiB = 2L * 1024 * 1024 * 1024
-        val d = ItemMeta(5, ItemKind.APK, twoGiB, "d".repeat(64), "App D", "Apps")
+        val d = testItemMeta(5, ItemKind.APK, twoGiB, "d".repeat(64), "App D", "Apps")
         val frames = listOf(
             // Sizes declared, bytes not materialized — the up-front aggregate gate is what we assert.
             ProtocolMessage.ItemBegin(1, ItemKind.APK, threeGiB, 8),
@@ -631,10 +633,10 @@ class ItemStreamReceiverTest {
         // A hostile sender with size = -1 (meta matches, passes size-agreement gate without the floor).
         // The negative-floor gate must fire FIRST as OVERSIZE("negative declared size"), and a
         // following legit APK item must still be judged against the un-corrupted budget.
-        val negMeta1 = ItemMeta(1, ItemKind.APK, -1L, "a".repeat(64), "Evil -1", "Apps")
-        val negMeta2 = ItemMeta(2, ItemKind.APK, Long.MIN_VALUE, "b".repeat(64), "Evil MIN", "Apps")
+        val negMeta1 = testItemMeta(1, ItemKind.APK, -1L, "a".repeat(64), "Evil -1", "Apps")
+        val negMeta2 = testItemMeta(2, ItemKind.APK, Long.MIN_VALUE, "b".repeat(64), "Evil MIN", "Apps")
         val legitBlob = "GOOD-APK".toByteArray()
-        val legitMeta = ItemMeta(3, ItemKind.APK, legitBlob.size.toLong(), sha256(legitBlob), "Legit", "Apps")
+        val legitMeta = testItemMeta(3, ItemKind.APK, legitBlob.size.toLong(), sha256(legitBlob), "Legit", "Apps")
         val staging = tmp.newFolder()
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, ItemKind.APK, -1L, 8),
@@ -681,9 +683,9 @@ class ItemStreamReceiverTest {
         // the aggregate gate as the sole rejection reason. 9 GiB > 8 GiB+1, so only aggregate fires.
         val perItemCap = 9L * 1024 * 1024 * 1024
         val overAggregate = ApkContainerValidation.MAX_APK_TOTAL_BYTES + 1L  // 8 GiB + 1 → aggregate bust
-        val item1Meta = ItemMeta(1, ItemKind.APK, overAggregate, "a".repeat(64), "Over agg", "Apps")
+        val item1Meta = testItemMeta(1, ItemKind.APK, overAggregate, "a".repeat(64), "Over agg", "Apps")
         val item2Size = 1L * 1024 * 1024 * 1024  // 1 GiB — fits comfortably
-        val item2Meta = ItemMeta(2, ItemKind.APK, item2Size, "b".repeat(64), "Fits", "Apps")
+        val item2Meta = testItemMeta(2, ItemKind.APK, item2Size, "b".repeat(64), "Fits", "Apps")
 
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, ItemKind.APK, overAggregate, 8),
@@ -714,10 +716,10 @@ class ItemStreamReceiverTest {
         // Item 2b (sibling run): size = 2 → total = MAX_APK_TOTAL_BYTES + 1 → OVERSIZE.
         val perItemCap = ApkContainerValidation.MAX_APK_TOTAL_BYTES  // cap high enough not to interfere
         val firstSize = ApkContainerValidation.MAX_APK_TOTAL_BYTES - 1L
-        val item1Meta = ItemMeta(1, ItemKind.APK, firstSize, "a".repeat(64), "App A", "Apps")
+        val item1Meta = testItemMeta(1, ItemKind.APK, firstSize, "a".repeat(64), "App A", "Apps")
 
         // Case A: second item exactly closes the budget (size = 1) → accepted.
-        val exactMeta = ItemMeta(2, ItemKind.APK, 1L, "b".repeat(64), "Exact", "Apps")
+        val exactMeta = testItemMeta(2, ItemKind.APK, 1L, "b".repeat(64), "Exact", "Apps")
         val framesA = listOf(
             ProtocolMessage.ItemBegin(1, ItemKind.APK, firstSize, 8),
             ProtocolMessage.ItemEnd(1, item1Meta.sha256),
@@ -733,7 +735,7 @@ class ItemStreamReceiverTest {
         assertThat(resultsA.first { it.itemId == 2 }.status).isEqualTo(ItemStatus.HASH_MISMATCH)
 
         // Case B: second item is one byte over (size = 2) → OVERSIZE.
-        val overMeta = ItemMeta(2, ItemKind.APK, 2L, "c".repeat(64), "Over", "Apps")
+        val overMeta = testItemMeta(2, ItemKind.APK, 2L, "c".repeat(64), "Over", "Apps")
         val framesB = listOf(
             ProtocolMessage.ItemBegin(1, ItemKind.APK, firstSize, 8),
             ProtocolMessage.ItemEnd(1, item1Meta.sha256),
@@ -755,7 +757,7 @@ class ItemStreamReceiverTest {
         // with an empty digest, so it terminates at HASH_MISMATCH — the EXACT status a gate-passing,
         // no-bytes-sent item reaches. Asserting that exact status proves it traversed the cap gate
         // (vs. a looser isNotEqualTo(OVERSIZE) that would also green for SKIPPED/UNKNOWN_KIND).
-        val atCapMeta = ItemMeta(1, ItemKind.APK, cap, "a".repeat(64), "At cap", "Apps")
+        val atCapMeta = testItemMeta(1, ItemKind.APK, cap, "a".repeat(64), "At cap", "Apps")
         val framesAt = listOf(
             ProtocolMessage.ItemBegin(1, ItemKind.APK, cap, 8),
             ProtocolMessage.ItemEnd(1, atCapMeta.sha256),
@@ -766,7 +768,7 @@ class ItemStreamReceiverTest {
         assertThat(resultsAt.single().status).isEqualTo(ItemStatus.HASH_MISMATCH)
 
         // One byte over cap: OVERSIZE before staging.
-        val overCapMeta = ItemMeta(1, ItemKind.APK, cap + 1L, "b".repeat(64), "Over cap", "Apps")
+        val overCapMeta = testItemMeta(1, ItemKind.APK, cap + 1L, "b".repeat(64), "Over cap", "Apps")
         val framesOver = listOf(
             ProtocolMessage.ItemBegin(1, ItemKind.APK, cap + 1L, 8),
             ProtocolMessage.ItemEnd(1, overCapMeta.sha256),
@@ -795,11 +797,11 @@ class ItemStreamReceiverTest {
         // toward the APK budget, the follow-on apk3 (which exactly fills the remaining 5 GiB) would
         // be wrongly refused — that's what this test rules out.
         val nonApkBytes = "settings-data".toByteArray()
-        val nonApkMeta = ItemMeta(2, ItemKind.SETTINGS, nonApkBytes.size.toLong(), sha256(nonApkBytes), "Settings", "System")
+        val nonApkMeta = testItemMeta(2, ItemKind.SETTINGS, nonApkBytes.size.toLong(), sha256(nonApkBytes), "Settings", "System")
         val apk3Size = 5L * 1024 * 1024 * 1024       // 5 GiB — fits the remaining 5 GiB APK budget
 
-        val apk1Meta = ItemMeta(1, ItemKind.APK, apk1Size, "a".repeat(64), "App A", "Apps")
-        val apk3Meta = ItemMeta(3, ItemKind.APK, apk3Size, "c".repeat(64), "App C", "Apps")
+        val apk1Meta = testItemMeta(1, ItemKind.APK, apk1Size, "a".repeat(64), "App A", "Apps")
+        val apk3Meta = testItemMeta(3, ItemKind.APK, apk3Size, "c".repeat(64), "App C", "Apps")
 
         val frames = listOf(
             // apk1: size declared, no bytes sent — aggregate gate is what we assert.
@@ -834,9 +836,9 @@ class ItemStreamReceiverTest {
         // NOT a batch abort — the FOLLOWING item must still stage, verify, and apply. The openSink seam
         // throws ONLY for the first staged file; the second item gets a real sink.
         val blob1 = "FIRST-ITEM-BYTES".toByteArray()
-        val item1 = ItemMeta(1, ItemKind.CONTACTS_VCF, blob1.size.toLong(), sha256(blob1), "First", "People")
+        val item1 = testItemMeta(1, ItemKind.CONTACTS_VCF, blob1.size.toLong(), sha256(blob1), "First", "People")
         val blob2 = "SECOND-ITEM".toByteArray()
-        val item2 = ItemMeta(2, ItemKind.CONTACTS_VCF, blob2.size.toLong(), sha256(blob2), "Second", "People")
+        val item2 = testItemMeta(2, ItemKind.CONTACTS_VCF, blob2.size.toLong(), sha256(blob2), "Second", "People")
         val frames = itemFrames(item1, blob1) + itemFrames(item2, blob2) +
             ProtocolMessage.BatchEnd(listOf(1, 2), "done")
         val channel = ScriptedChannel(*frames.toTypedArray())
@@ -867,7 +869,7 @@ class ItemStreamReceiverTest {
         // override so the production default arg (it.usableSpace on the real temp staging volume) is
         // exercised. The temp dir has ample space, so the APK free-space gate must admit the item.
         val blob = "APK-ON-REAL-DISK".toByteArray()
-        val apkMeta = ItemMeta(1, ItemKind.APK, blob.size.toLong(), sha256(blob), "Some app", "Apps")
+        val apkMeta = testItemMeta(1, ItemKind.APK, blob.size.toLong(), sha256(blob), "Some app", "Apps")
         val frames = itemFrames(apkMeta, blob) + ProtocolMessage.BatchEnd(listOf(1), "done")
         val channel = ScriptedChannel(*frames.toTypedArray())
         val applied = mutableListOf<ByteArray>()
@@ -890,7 +892,7 @@ class ItemStreamReceiverTest {
         // The negative-size floor runs for ALL kinds and precedes the meta-null / kind / size arms.
         // A requested SETTINGS item with size = -1 must be refused OVERSIZE("negative declared size"),
         // proving the floor is not APK-scoped — it guards every numeric gate downstream.
-        val negMeta = ItemMeta(1, ItemKind.SETTINGS, -1L, "a".repeat(64), "Evil settings", "System")
+        val negMeta = testItemMeta(1, ItemKind.SETTINGS, -1L, "a".repeat(64), "Evil settings", "System")
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, ItemKind.SETTINGS, -1L, 8),
             ProtocolMessage.ItemEnd(1, negMeta.sha256),
@@ -935,7 +937,7 @@ class ItemStreamReceiverTest {
         // as a frame-desync (WRITE_ERROR "stream out of order"), not let a wrong byte set slide through to a
         // downstream HASH_MISMATCH — and must DRAIN to stay frame-synchronized so the next item still
         // applies. (Pins the seq guard the bug-hunt flagged as the one untested receiver safety arm.)
-        val meta2 = ItemMeta(2, ItemKind.CALL_LOG, 5L, sha256("calls".toByteArray()), "Calls", "History")
+        val meta2 = testItemMeta(2, ItemKind.CALL_LOG, 5L, sha256("calls".toByteArray()), "Calls", "History")
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, meta.kind, meta.size, 8),
             ProtocolMessage.ItemData(1, 0, "AAAAAAAA".toByteArray()),
@@ -963,7 +965,7 @@ class ItemStreamReceiverTest {
         // A DATA frame tagged with a different itemId than the open ItemBegin — the receiver must never
         // misattribute bytes across items; it rejects the desync as WRITE_ERROR and DRAINS so the next
         // item still applies. The chunk uses seq=1 (== nextSeq), isolating the itemId arm of the guard.
-        val meta2 = ItemMeta(2, ItemKind.CALL_LOG, 5L, sha256("calls".toByteArray()), "Calls", "History")
+        val meta2 = testItemMeta(2, ItemKind.CALL_LOG, 5L, sha256("calls".toByteArray()), "Calls", "History")
         val frames = listOf(
             ProtocolMessage.ItemBegin(1, meta.kind, meta.size, 8),
             ProtocolMessage.ItemData(1, 0, "AAAAAAAA".toByteArray()),

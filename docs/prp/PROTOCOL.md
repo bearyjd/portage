@@ -1,4 +1,4 @@
-# PROTOCOL.md — `portage` pairing + transfer wire format (v5)
+# PROTOCOL.md — `portage` pairing + transfer wire format (v6)
 
 Scope: one sender (`portage-send`, old phone), one receiver (`portage-recv`, new phone),
 same LAN, no cloud, no relay. One transfer session at a time.
@@ -25,12 +25,17 @@ URI form: `portage1:<base64url(CBOR)>` with fields:
 
 | field | type | meaning |
 |---|---|---|
-| `v` | uint | protocol version, `4` |
+| `version` | uint | protocol version, `6`; all other versions rejected before network use |
 | `psk` | bytes(32) | one-time pre-shared key, CSPRNG |
 | `sid` | bytes(16) | session id (public; also used to match the mDNS instance) |
 | `ip` | array of text | sender's current addresses, best-effort hints |
 | `port` | uint | sender's listening TCP port |
-| `exp` | uint | unix seconds; QR invalid after (default now+120 s) |
+| `expiresAtEpochSeconds` | uint | unix seconds; QR invalid after (default now+120 s) |
+| `mode` | text | `NEW` or `RESUME`; bound into the Noise transcript |
+
+The lineage ID and 32-byte resume credential never appear in the QR. NEW authenticates
+possession of this QR. RESUME requires both this fresh QR PSK and the credential stored by
+the original authenticated peers. Losing that credential requires an explicit new move.
 
 Sender registers NSD service `_portage._tcp` with instance name `portage-<hex(sid[0..4])>`
 while the transfer screen is open. Receiver tries `ip:port` from the QR first, then
@@ -58,9 +63,8 @@ version. No negotiation exists on the wire, so there is nothing to downgrade.
   authenticator; the static keys ride along.
 - *vs. `NNpsk0` (PSK-only, no statics):* would be sufficient for a one-shot transfer and
   is the approved **fallback if the chosen library lacks psk-modified XX**. XXpsk3 is
-  preferred because the exchanged static keys give us (a) resume after an app restart
-  *without* re-scanning, by re-handshaking `KKpsk0`-style against remembered statics
-  bound to the same `sid`, and (b) a "remembered device" identity for repeat transfers.
+  retained for compatibility with the vendored Noise implementation. Fresh static keys
+  are not persistent peer identity; v6 authenticates continuity through the lineage credential.
 - *vs. TLS 1.3 (raw public keys or self-signed pinning):* drags in a PKI-shaped API to
   then disable most of it; cert pinning across two ephemeral apps is more code and more
   footguns than a fixed Noise pattern. Noise gives us exactly the four properties we
@@ -72,9 +76,19 @@ version. No negotiation exists on the wire, so there is nothing to downgrade.
 
 **Roles:** receiver = Noise initiator (it dials the TCP connection); sender = responder.
 
-**Prologue** (mixed into the handshake hash; any mismatch fails the handshake):
-`"portage" || v || sid || "recv->send"`. This binds protocol version and session id into
-the transcript — a spliced or cross-session handshake cannot complete.
+**Prologue** (mixed into the handshake hash; any mismatch fails the handshake): six
+length-prefixed fields, each encoded `u16be(length) || bytes`, in order: ASCII
+`portage-noise-prologue`, one-byte version, ASCII mode (`NEW` or `RESUME`), raw 16-byte
+session ID, ASCII `recv->send`, and the locally stored raw 16-byte lineage ID (empty
+for NEW). The prologue is constructed locally; it is not a plaintext lineage message.
+
+NEW uses the QR PSK directly. RESUME derives a 32-byte Noise PSK with HKDF-SHA256:
+`PRK = HMAC-SHA256(qrPsk, resumeCredential)` and
+`PSK = HMAC-SHA256(PRK, info || 0x01)`. `info` uses the same field encoding and order as
+the prologue, with domain `portage-resume-psk`. This binds the fresh QR, credential,
+lineage, protocol version, mode, session, and direction. Wrong credentials, QR-only
+attempts, mismatched lineages, and mode tampering fail authentication. Credentials prove
+bearer continuity with the original session, not hardware identity.
 
 **Message flow (XX, psk3):**
 ```
@@ -98,9 +112,10 @@ DH results are mixed in).
 
 - Wire = TCP. After the handshake, every frame is one Noise transport message:
   `u16 BE length || ciphertext` (Noise max plaintext 65 519 B respected).
-- One application message per Noise payload. Application messages are CBOR maps with an
-  integer `t` (type) field. Unknown map keys MUST be ignored (forward compat); unknown
-  `t` ⇒ respond `ITEM_ACK{status:SKIPPED}` where applicable or close with `ERROR`.
+- One application message per Noise payload: a one-byte integer type discriminator
+  followed by its CBOR map. Field names below are descriptive; Kotlin property names
+  (camelCase) are the actual CBOR keys. Unknown map keys are ignored; an unknown type or
+  malformed body closes the channel.
 - Binary fields (notably ITEM_DATA `bytes`) are **definite-length CBOR byte strings**
   (major type 2), NOT arrays of integers — an array encoding ~doubles text payloads and a
   60 KiB chunk would overflow the 65 519 B plaintext budget / 65 535 B frame cap.
@@ -110,22 +125,34 @@ DH results are mixed in).
 
 ```
 recv→send  HELLO        {t:0, app_version, os_fingerprint}
-send→recv  MANIFEST     {t:1, items:[ItemMeta…], sender_name, totals}
+send→recv  LINEAGE_INIT {t:10, lineageId, resumeCredential:bytes(32)}  [NEW only]
+        or LINEAGE_RESUME {t:11, lineageId}                         [RESUME only]
+recv→send  LINEAGE_ACK  {t:12, lineageId}  [only after durable local persistence]
+send→recv  MANIFEST     {t:1, manifest:{lineageId, items:[ItemMeta…], senderName, totalBytes}}
 recv→send  SELECT       {t:2, want:[item_id…], resume:[{item_id, offset}…]}
 loop per selected item (sender-driven, sequential):
   send→recv ITEM_BEGIN  {t:3, item_id, kind, size, chunk_size, meta}
   send→recv ITEM_DATA   {t:4, item_id, seq, bytes}        × ⌈size/chunk⌉
   send→recv ITEM_END    {t:5, item_id, sha256}
-  recv→send ITEM_ACK    {t:6, item_id, status, detail?}
+  recv→send ITEM_ACK    {t:6, result:{itemId, occurrenceId, status, phase, detail?}}
 send→recv  BATCH_END    {t:7, sent:[…], summary}
-recv→send  BATCH_ACK    {t:8, results:[{item_id, status, detail?}…]}
+recv→send  BATCH_ACK    {t:8, results:[{itemId, occurrenceId, status, phase, detail?}…]}
 close
 ```
 
 `ItemMeta = {item_id (u32), kind (tstr: "contacts.vcf" | "calendar.ics" | "calllog" |
 "sms" | "mms" | "inventory" | "apk" | "settings" | "wallpaper" | "sound.selection" |
 "sound.file" | "app.backup.relay" | "user.file" | "roles" | …), tier (0|1),
-size, sha256, display_name, group}`.
+size, sha256, display_name, group, occurrenceId, wireSchemaVersion}`.
+
+Each explicit new move generates exactly 16 SecureRandom bytes as a lowercase 32-hex
+lineage ID. Each selected manifest entry receives a separate random 16-byte occurrence
+ID, even when two entries contain identical bytes. The prepared manifest and staging
+metadata persist across retry/relaunch. Numeric item IDs are ordering indices. The
+receiver validates canonical lineage/occurrence encoding and manifest-wide uniqueness
+before constructing checklist/UI or touching checkpoint storage. Checkpoint construction
+validates again and includes lineage, occurrence, kind, item wire-schema version, size,
+and canonical lowercase SHA-256.
 
 > The `contacts.vcf` kind is vCard 3.0 plus Portage extension fields where Android exposes
 > useful device-local metadata that standard vCard does not carry. `X-PORTAGE-STARRED:1`
@@ -204,21 +231,47 @@ size, sha256, display_name, group}`.
 > reason the version gate exists: without a bump both peers still advertise the same number, QR
 > validation passes, and the transfer dies AFTER pairing instead of refusing cleanly before it.
 
-> No `seedvault.blob` kind in v5: couriering a Seedvault file would imply app-data
+> No `seedvault.blob` kind in v6: couriering a Seedvault file would imply app-data
 > transfer, which the Seedvault division of labor explicitly excludes (PRP §2,
 > DEVILS_ADVOCATE Q5). Reconsider only behind a future protocol bump with explicit UX copy.
 
 - **Integrity:** every byte already rides inside AEAD frames (in-flight integrity);
   `ITEM_END.sha256` is the *at-rest* check over the assembled item — it catches
   receiver-side staging corruption and validates resumed items end-to-end.
-- **Resume:** receiver persists staged partials keyed by `(sid_origin, item_id,
-  bytes_received)`. On a new session (re-scan or remembered-statics re-handshake), it
-  offers `resume` offsets in SELECT; sender seeks. The final `sha256` must still match;
-  on mismatch the receiver discards the staging file and re-requests from offset 0.
+- **Resume:** only complete staged files are resumable in v6. The receiver advertises
+  `SELECT.resume` with `offset == item.size` only after exact checkpoint-key, size, and
+  full SHA-256 revalidation. Sender sends `ITEM_BEGIN` and `ITEM_END` without `ITEM_DATA`
+  for those occurrences; receiver validates retained bytes again and acknowledges them.
+  Partial offsets are rejected. Missing/invalid staging restarts at byte zero. Every
+  resumed item is applied again after the user's selection confirmation: no provider
+  durability proof is supplied in PR 0a, so even `APPLIED_DURABLE` cannot suppress replay.
 - **Apply vs. receive:** `ITEM_ACK` reports *receipt+verification*. Application of
   settings/contacts happens receiver-side after staging; apply-results go in
   `BATCH_ACK.results` (and the receiver's own done-screen). A settings key that fails to
   apply is a per-key line item in the summary, never a transport error.
+
+Durable receiver transitions are `PREPARED → RECEIVED_VERIFIED → APPLYING →
+APPLIED_DURABLE`, or typed `FAILED`/`UNKNOWN_INTERRUPTED`. Bytes are synced and receipt
+state committed before `ITEM_ACK(OK, RECEIVED_VERIFIED)`; APPLYING is committed before
+provider mutation. Reopen converts an interrupted APPLYING to UNKNOWN_INTERRUPTED.
+ITEM_ACK never asserts durable application. Only a validated final BATCH_ACK covering
+the exact selected occurrence set can do so. If that final acknowledgement is missing,
+the sender reports UNKNOWN_INTERRUPTED for each receipt-verified item.
+
+Both apps persist atomic, versioned snapshots under `noBackupFilesDir/lineage`; an OS
+writer lock prevents concurrent repositories. A corrupt/unknown snapshot is an error.
+Temporary snapshots never override committed revocation. Staged bytes expire exactly
+24 hours after authenticated activity; lineage credentials/checkpoints expire at 30
+days. Relaunch/viewing does not renew either deadline. Explicit finish, cancel, or new
+move durably tombstones the lineage and removes its secret before deleting staged bytes.
+The end of a transfer retains the lineage for a lost-final-ack retry until the user exits
+Done/finishes the move.
+
+While connected either peer may send authenticated `CANCEL {t:13, lineageId}`. The peer
+commits revocation and deletes local data before `CANCEL_ACK {t:14, lineageId}`. A local
+cancel records peer deletion only upon the matching authenticated acknowledgement.
+Disconnected cancel and lost cancel acknowledgements remain local-only; the offline
+peer purges independently at its own deadline.
 
 ## 5. Failure semantics
 

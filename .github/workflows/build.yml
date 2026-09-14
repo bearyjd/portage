@@ -68,11 +68,11 @@ jobs:
         # extracts the REAL step bodies from this file and asserts they fail CLOSED on reader
         # failure, rather than re-implementing them (a copy would drift and prove nothing).
         run: ./scripts/test-boundary-gate.sh
-      - name: Unit tests (core-model + core-transport + adb-bridge + wizard + providers + app-recv + app-send)
+      - name: Unit tests (core-model + core-lineage + core-transport + adb-bridge + wizard + providers + app-recv + app-send)
         # app-recv and app-send are flavored (distribution: degoogle/play, ADR-003) so their unit-test
         # tasks are per-flavor; both flavors run. The play variant exercises the Tier-0 no-bridge wiring
         # (PlayPrivilegeIntegrationTest), the degoogle variant the real ADB-bridge install adapters.
-        run: ./gradlew :core-model:test :core-transport:testDebugUnitTest :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest :app-recv:testDegoogleDebugUnitTest :app-recv:testPlayDebugUnitTest :app-send:testDegoogleDebugUnitTest :app-send:testPlayDebugUnitTest --no-daemon --stacktrace
+        run: ./gradlew :core-model:test :core-lineage:test :core-transport:testDebugUnitTest :adb-bridge:testDebugUnitTest :wizard:testDebugUnitTest :providers:testDebugUnitTest :app-recv:testDegoogleDebugUnitTest :app-recv:testPlayDebugUnitTest :app-send:testDegoogleDebugUnitTest :app-send:testPlayDebugUnitTest --no-daemon --stacktrace
       - name: Assemble debug and release APKs (both distribution flavors, both apps)
         # Release variants exercise R8/resource shrinking. They are unsigned CI artifacts and are
         # built as a release-readiness gate, not published.
@@ -322,7 +322,7 @@ jobs:
         # and AdbBridge.kt's comments describe this same rule — keep all three in sync.
         run: |
           set -euo pipefail
-          if grep -rn '\.shell(' --include='*.kt' app-recv app-send providers core-model core-transport settings-catalog wizard | grep -vE '/(test|androidTest)[A-Za-z]*/'; then
+          if grep -rn '\.shell(' --include='*.kt' app-recv app-send providers core-model core-lineage core-transport settings-catalog wizard | grep -vE '/(test|androidTest)[A-Za-z]*/'; then
             echo "::error::raw AdbBridge.shell() call outside :adb-bridge — use a typed operation"
             exit 1
           fi

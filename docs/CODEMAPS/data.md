@@ -2,7 +2,7 @@
 
 # Data model — wire protocol & allowlists
 
-No database. "Data" is the LAN wire protocol (CBOR) + compiled safety allowlists.
+Data is the LAN wire protocol (CBOR), a durable versioned lineage snapshot, and compiled safety allowlists.
 
 ## ItemKind registry (`core-model/Manifest.kt`) — APPEND-ONLY wire enum
 | wire | tier | | wire | tier |
@@ -21,13 +21,27 @@ than applying an unknown kind.
 
 ## Protocol messages (`core-model/Messages.kt`, `MessageType`)
 ```
-Hello → Manifest(TransferManifest) → Select(want[], resume[]) →
+Hello → LineageInit/LineageResume → LineageAck → Manifest(TransferManifest) → Select(want[], resume[]) →
   ItemBegin → ItemData(chunk) → ItemEnd(sha256) → ItemAck(ItemResult) →
 BatchEnd(sent[], summary) → BatchAck(results[]) ;  Ping (keepalive)
-ItemStatus = OK · SKIPPED · HASH_MISMATCH · WRITE_ERROR · UNKNOWN_KIND · OVERSIZE
-TransferManifest { items: ItemMeta[ id, kind, size, hash, … ] }   ResumePoint(itemId, offset)
-Pairing.kt — QR PSK pairing payload
+ItemStatus = OK · SKIPPED · HASH_MISMATCH · WRITE_ERROR · UNKNOWN_KIND · OVERSIZE · UNKNOWN_INTERRUPTED
+TransferManifest { lineageId, items: ItemMeta[ id, occurrenceId, kind, wireSchemaVersion, size, hash, … ] }
+Pairing.kt — v6 QR PSK pairing payload with NEW/RESUME mode; no lineage or resume secret
+Cancel(lineageId) → CancelAck(lineageId) ; peer deletion remains unconfirmed until acknowledgement
 ```
+
+## Durable lineage (`core-lineage/LineageRepository.kt`)
+
+`noBackupFilesDir/lineage/lineage.json` atomically stores the active lineage, credential,
+prepared manifest, checkpoints, and terminal tombstones. `CheckpointKey.from()` validates
+lineage + occurrence + kind + wire schema + size + SHA-256 before every lookup/mutation.
+Two byte-identical selected files have separate occurrence keys. Staging uses owned files
+under `lineage/staging`, revalidated by size and full hash before whole-item reuse.
+
+`PREPARED → RECEIVED_VERIFIED → APPLYING → APPLIED_DURABLE`; typed failures do not become
+success on restart. Reopen maps APPLYING to UNKNOWN_INTERRUPTED. Apply is never skipped
+without provider-specific evidence (unavailable in PR 0a). Exact deadlines are 24 hours for
+staging and 30 days for credentials/checkpoints since the last authenticated activity.
 
 ## Safety allowlists
 - `settings-catalog/SettingsAllowlist` (118L): compiled SAFE allowlist; `SettingKey` + `Validation`.

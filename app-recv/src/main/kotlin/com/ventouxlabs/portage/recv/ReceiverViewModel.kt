@@ -16,6 +16,11 @@ import com.ventouxlabs.portage.model.ItemMeta
 import com.ventouxlabs.portage.model.ItemResult
 import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.model.ProtocolMessage
+import com.ventouxlabs.portage.model.ManifestValidation
+import com.ventouxlabs.portage.model.PairingMode
+import com.ventouxlabs.portage.model.ResumePoint
+import com.ventouxlabs.portage.lineage.CheckpointKey
+import com.ventouxlabs.portage.lineage.LineageRepository
 import com.ventouxlabs.portage.providers.ApplyOutcome
 import com.ventouxlabs.portage.providers.ApplyProviderRegistry
 import com.ventouxlabs.portage.providers.apk.ApkContainerValidation
@@ -49,6 +54,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -72,7 +81,7 @@ class ReceiverViewModel(
     private val appVersion: String = "0.1.0",
     private val osFingerprint: String = android.os.Build.FINGERPRINT,
     // Deliberately NO default: staged payloads are plaintext PII, so the staging location
-    // must be wired explicitly (production: app-private cacheDir via the factory).
+    // must be wired explicitly (production: noBackupFilesDir via the lineage repository).
     private val stagingDir: File,
     // Inert by default: without a real coordinator (or its manifest role components) SMS
     // can never be granted, so the apply path always self-skips.
@@ -124,6 +133,7 @@ class ReceiverViewModel(
     // AND costs a thread hop per frame: NoiseSecureChannel's own withContext(Dispatchers.IO) skips
     // dispatch only while the outer interceptor already IS Dispatchers.IO.
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val lineageRepository: LineageRepository = LineageRepository(File(stagingDir, "lineage")),
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<ReceiverState>(ReceiverState.Idle)
@@ -283,6 +293,14 @@ class ReceiverViewModel(
         applyRegistry.forKind(ItemKind.APP_BACKUP_RELAY) as? AppBackupRelayApplyProvider
 
     private var channel: SecureChannel? = null
+    private var currentLineageId: String? = null
+    @Volatile private var cancellationRequested = false
+    @Volatile private var streamRunning = false
+    private var firstStreamMessage: Deferred<ProtocolMessage?>? = null
+
+    /** True only after an authenticated CANCEL_ACK; an offline cancel remains local-only. */
+    private val _peerDeletionConfirmed = MutableStateFlow(false)
+    val peerDeletionConfirmed: StateFlow<Boolean> = _peerDeletionConfirmed.asStateFlow()
 
     /**
      * Serializes the user-driven opt-in grants on the Done screen. [AdbRuntimePermissionGranter] documents
@@ -307,6 +325,8 @@ class ReceiverViewModel(
             // distinctBy { role } keeps the FIRST entry and the stale row would SHADOW the new
             // transfer's legitimate one for that role.
             clearRoleState()
+            cancellationRequested = false
+            _peerDeletionConfirmed.value = false
             _state.value = ReceiverState.Scanning
         }
     }
@@ -328,15 +348,74 @@ class ReceiverViewModel(
         _state.value = ReceiverState.Pairing
         viewModelScope.launch {
             try {
-                val ch = channelFactory.connectAsReceiver(payload).also { channel = it }
+                val existing = lineageRepository.active()
+                require(payload.mode != PairingMode.NEW || existing == null) {
+                    "A move is already saved. Resume it, or return home and start a new move."
+                }
+                val credential = if (payload.mode == PairingMode.RESUME) lineageRepository.credentialForResume() else null
+                val ch = try {
+                    channelFactory.connectAsReceiver(payload, credential, if (credential != null) existing?.id else null)
+                } finally { credential?.fill(0) }.let { connected ->
+                    // UI cancellation may send concurrently with ITEM_ACK. Noise's send key
+                    // and frame writer must advance once, in the same serialized order.
+                    val sends = Mutex()
+                    object : SecureChannel {
+                        override suspend fun send(message: ProtocolMessage) = sends.withLock { connected.send(message) }
+                        override suspend fun receive(): ProtocolMessage? = connected.receive()
+                        override fun close() = connected.close()
+                    }
+                }
+                channel = ch
                 ch.send(ProtocolMessage.Hello(appVersion, osFingerprint))
+                val lineageMessage = ch.receive()
+                val authenticatedId = when {
+                    payload.mode == PairingMode.NEW && lineageMessage is ProtocolMessage.LineageInit -> {
+                        try { lineageRepository.acceptInitial(lineageMessage.lineageId, lineageMessage.resumeCredential) }
+                        finally { lineageMessage.resumeCredential.fill(0) }
+                        lineageMessage.lineageId
+                    }
+                    payload.mode == PairingMode.RESUME && lineageMessage is ProtocolMessage.LineageResume -> {
+                        require(existing?.id == lineageMessage.lineageId) { "resumed lineage mismatch" }
+                        lineageMessage.lineageId
+                    }
+                    else -> error("Sender did not establish the expected lineage")
+                }
+                lineageRepository.authenticated(authenticatedId)
+                currentLineageId = authenticatedId
+                ch.send(ProtocolMessage.LineageAck(authenticatedId))
                 when (val msg = ch.receive()) {
-                    is ProtocolMessage.Manifest ->
+                    is ProtocolMessage.Manifest -> {
+                        ManifestValidation.requireValid(msg.manifest)
+                        require(msg.manifest.lineageId == authenticatedId) { "manifest lineage mismatch" }
+                        lineageRepository.saveManifest(msg.manifest)
                         _state.value = ReceiverState.Reviewing(
                             senderName = msg.manifest.senderName,
                             groups = ReceiverChecklist.build(msg.manifest),
                             absentKinds = ReceiverChecklist.absentKinds(msg.manifest),
                         )
+                        // Keep one reader during user review so a connected peer can cancel.
+                        // Its first data message is handed to the stream, never consumed twice.
+                        firstStreamMessage = viewModelScope.async(ioDispatcher) {
+                            var message = ch.receive()
+                            while (message is ProtocolMessage.Ping) message = ch.receive()
+                            when (message) {
+                                is ProtocolMessage.Cancel -> {
+                                    require(message.lineageId == authenticatedId) { "cancel lineage mismatch" }
+                                    lineageRepository.cancel(authenticatedId)
+                                    ch.send(ProtocolMessage.CancelAck(authenticatedId))
+                                    fail("The sender cancelled this move. Local move data was deleted.")
+                                    null
+                                }
+                                is ProtocolMessage.CancelAck -> {
+                                    require(cancellationRequested && message.lineageId == authenticatedId) { "unexpected cancel acknowledgement" }
+                                    lineageRepository.markPeerDeleted(authenticatedId)
+                                    _peerDeletionConfirmed.value = true
+                                    null
+                                }
+                                else -> message
+                            }
+                        }
+                    }
                     else -> fail("Sender did not send a manifest")
                 }
             } catch (c: CancellationException) {
@@ -356,6 +435,8 @@ class ReceiverViewModel(
         val current = _state.value as? ReceiverState.Reviewing ?: return
         val selected = ReceiverChecklist.selectedMetas(current.groups)
         if (selected.isEmpty()) return
+        val lineageId = checkNotNull(currentLineageId)
+        selected.forEach { lineageRepository.checkpoint(CheckpointKey.from(lineageId, it)) }
         // Retry ledgers prevent duplicate rows only within this transfer. A later intentional
         // transfer must be able to restore records the user deleted in the meantime.
         applyRegistry.beginTransfer()
@@ -365,7 +446,15 @@ class ReceiverViewModel(
         val needsSmsRole = selected.any { it.kind == ItemKind.SMS || it.kind == ItemKind.MMS }
         viewModelScope.launch {
             try {
-                val ch = channel ?: error("no channel")
+                val connected = channel ?: error("no channel")
+                val first = firstStreamMessage
+                val ch = if (first == null) connected else object : SecureChannel {
+                    private var consumed = false
+                    override suspend fun send(message: ProtocolMessage) = connected.send(message)
+                    override suspend fun receive(): ProtocolMessage? =
+                        if (!consumed) { consumed = true; first.await() } else connected.receive()
+                    override fun close() = connected.close()
+                }
                 // Hold the process alive + CPU awake for the whole item stream (#85): released in the
                 // finally below on EVERY exit (done / fail / timeout / reset). Idempotent.
                 transferKeepAlive.start()
@@ -382,7 +471,13 @@ class ReceiverViewModel(
                 // [DATA_PHASE_TIMEOUT_MS].
                 val results = withDataPhaseDeadline(ch, dataPhaseTimeoutMs) {
                     withSmsRoleIfNeeded(needsSmsRole) {
-                        ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
+                        val resume = withContext(ioDispatcher) {
+                            selected.mapNotNull { meta ->
+                                lineageRepository.verifiedStaged(CheckpointKey.from(lineageId, meta))
+                                    ?.let { ResumePoint(meta.itemId, meta.size) }
+                            }
+                        }
+                        ch.send(ProtocolMessage.Select(selected.map { it.itemId }, resume))
                         // Off Main for the whole stream (#158). Deliberately INSIDE
                         // withSmsRoleIfNeeded, not outside it: acquireRole/relinquishTo launch an
                         // interactive system dialog through ActivityResultLauncher, which is NOT
@@ -394,8 +489,13 @@ class ReceiverViewModel(
                         // items one at a time on a single coroutine (see applyStaged's INVARIANT
                         // note) — withContext adds no parallelism.
                         withContext(ioDispatcher) {
+                            streamRunning = true
                             ItemStreamReceiver(
-                                stagingDir = stagingDir,
+                                stagingDir = lineageRepository.stagingDir,
+                                lineageRepository = lineageRepository,
+                                lineageId = lineageId,
+                                resumeItems = resume.map { it.itemId }.toSet(),
+                                cancellationRequested = { cancellationRequested },
                                 // Raise the per-item cap for the two large-payload kinds, each to
                                 // its OWN documented ceiling: the APP_BACKUP_RELAY opaque blob
                                 // (PRP-06 §5) and the APK container item (ADR-006 D4, 1 GiB via
@@ -441,6 +541,10 @@ class ReceiverViewModel(
                 ensureActive()
                 fail(t.message ?: "Transfer failed")
             } finally {
+                streamRunning = false
+                _peerDeletionConfirmed.value = lineageRepository.tombstones().any {
+                    it.lineageId == lineageId && it.peerDeleted
+                }
                 // Always release the keep-alive — done, fail, timeout, or reset() close
                 // unwinding through here. Idempotent.
                 transferKeepAlive.stop()
@@ -760,8 +864,51 @@ class ReceiverViewModel(
     }
 
     fun reset() {
-        channel?.close()
+        val ch = channel
+        val activeId = lineageRepository.active()?.id
+        cancellationRequested = true
+        if (activeId != null) {
+            if (_state.value is ReceiverState.Done) lineageRepository.finish(activeId)
+            else lineageRepository.cancel(activeId)
+        }
+        if (ch != null && activeId != null) {
+            viewModelScope.launch {
+                try {
+                    ch.send(ProtocolMessage.Cancel(activeId))
+                    withTimeoutOrNull(5_000) {
+                        // The existing owner gets first chance to consume CANCEL_ACK. If it
+                        // unwinds from an apply/checkpoint boundary, take over its reader only
+                        // after it has stopped, and drain any already in-flight item frames.
+                        firstStreamMessage?.join()
+                        while (streamRunning) delay(10)
+                        if (!lineageRepository.tombstones().any { it.lineageId == activeId && it.peerDeleted }) {
+                            while (true) {
+                                when (val ack = ch.receive()) {
+                                    is ProtocolMessage.CancelAck -> {
+                                        require(ack.lineageId == activeId) { "cancel acknowledgement lineage mismatch" }
+                                        lineageRepository.markPeerDeleted(activeId)
+                                        _peerDeletionConfirmed.value = true
+                                        break
+                                    }
+                                    is ProtocolMessage.Cancel -> {
+                                        require(ack.lineageId == activeId) { "cancel lineage mismatch" }
+                                        lineageRepository.cancel(activeId)
+                                        ch.send(ProtocolMessage.CancelAck(activeId))
+                                    }
+                                    null -> break
+                                    else -> Unit
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Local deletion remains recorded even when the peer cannot acknowledge.
+                } finally { ch.close() }
+            }
+            viewModelScope.launch { delay(5_000); ch.close() }
+        } else ch?.close()
         channel = null
+        currentLineageId = null
         // Abandon any sealed-but-uncommitted PackageInstaller sessions from this run before clearing
         // the prompt list — a user who never tapped install and hits Home must not leave APK bytes
         // lingering in uncommitted sessions (fix 5). Best-effort: abandonUncommittedSessions is
@@ -810,11 +957,12 @@ class ReceiverViewModel(
     private fun fail(reason: String) {
         channel?.close()
         channel = null
-        _state.value = ReceiverState.Failed(reason)
+        _state.value = if (cancellationRequested) ReceiverState.Idle else ReceiverState.Failed(reason)
     }
 
     override fun onCleared() {
         channel?.close()
+        lineageRepository.close()
         super.onCleared()
     }
 }

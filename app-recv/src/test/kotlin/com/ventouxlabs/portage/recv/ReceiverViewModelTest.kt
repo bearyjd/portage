@@ -44,10 +44,12 @@ import com.ventouxlabs.portage.transport.PairingCodec
 import com.ventouxlabs.portage.transport.SecureChannel
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -82,7 +84,7 @@ private class FakeCodec : PairingCodec {
 }
 
 private class FakeChannel(vararg incoming: ProtocolMessage?) : SecureChannel {
-    private val queue = ArrayDeque(incoming.toList())
+    private val queue = ArrayDeque(withLineageBootstrap(incoming.toList()))
     val sent = mutableListOf<ProtocolMessage>()
     var closed = false
 
@@ -118,7 +120,7 @@ private class FakeFactory(private val channel: SecureChannel) : SecureChannel.Fa
  * per-read `soTimeout` (covered by the transport's own tests), not coroutine cancellation.
  */
 private class StallingChannel(vararg incoming: ProtocolMessage) : SecureChannel {
-    private val queue = ArrayDeque(incoming.toList())
+    private val queue = ArrayDeque(withLineageBootstrap(incoming.toList()))
     val sent = mutableListOf<ProtocolMessage>()
     var closed = false
     override suspend fun send(message: ProtocolMessage) { sent += message }
@@ -199,11 +201,11 @@ class ReceiverViewModelTest {
     private val callsBytes = "callscalls".toByteArray()
 
     private val contactsMeta =
-        ItemMeta(1, ItemKind.CONTACTS_VCF, contactsBytes.size.toLong(), sha256(contactsBytes), "Contacts", "People")
+        testItemMeta(1, ItemKind.CONTACTS_VCF, contactsBytes.size.toLong(), sha256(contactsBytes), "Contacts", "People")
     private val callsMeta =
-        ItemMeta(2, ItemKind.CALL_LOG, callsBytes.size.toLong(), sha256(callsBytes), "Call history", "History")
+        testItemMeta(2, ItemKind.CALL_LOG, callsBytes.size.toLong(), sha256(callsBytes), "Call history", "History")
 
-    private val manifest = TransferManifest(
+    private val manifest = testManifest(
         senderName = "old phone",
         items = listOf(contactsMeta, callsMeta),
         totalBytes = contactsBytes.size.toLong() + callsBytes.size,
@@ -227,10 +229,10 @@ class ReceiverViewModelTest {
 
     private val smsBytes = """{"address":"+15551234567","body":"hi","dateMillis":1,"type":1}""".toByteArray()
     private val smsMeta =
-        ItemMeta(3, ItemKind.SMS, smsBytes.size.toLong(), sha256(smsBytes), "Text messages", "History")
+        testItemMeta(3, ItemKind.SMS, smsBytes.size.toLong(), sha256(smsBytes), "Text messages", "History")
 
     private fun smsChannel() = FakeChannel(
-        ProtocolMessage.Manifest(TransferManifest("old phone", listOf(smsMeta), smsBytes.size.toLong())),
+        ProtocolMessage.Manifest(testManifest("old phone", listOf(smsMeta), smsBytes.size.toLong())),
         ProtocolMessage.ItemBegin(3, ItemKind.SMS, smsMeta.size, smsBytes.size),
         ProtocolMessage.ItemData(3, 0, smsBytes),
         ProtocolMessage.ItemEnd(3, smsMeta.sha256),
@@ -303,6 +305,48 @@ class ReceiverViewModelTest {
             ItemKind.SOUND_SELECTION, ItemKind.BLUETOOTH_DEVICES, ItemKind.APP_BACKUP_RELAY,
             ItemKind.USER_FILE,
         ).inOrder()
+    }
+
+    @Test
+    fun `connected cancel during checklist review confirms peer deletion only after acknowledgement`() = runTest(dispatcher) {
+        val cancel = CompletableDeferred<Unit>()
+        val queue = ArrayDeque(withLineageBootstrap(listOf(ProtocolMessage.Manifest(manifest))))
+        val channel = object : SecureChannel {
+            override suspend fun send(message: ProtocolMessage) {
+                if (message is ProtocolMessage.Cancel) {
+                    assertThat(java.io.File(tmp.root, "lineage/lineage.json").readText()).contains("\"active\":null")
+                    cancel.complete(Unit)
+                }
+            }
+            override suspend fun receive(): ProtocolMessage? {
+                if (queue.isNotEmpty()) return queue.removeFirst()
+                cancel.await()
+                return ProtocolMessage.CancelAck(manifest.lineageId)
+            }
+            override fun close() = Unit
+        }
+        val vm = viewModel(channel)
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        runCurrent()
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Reviewing::class.java)
+        assertThat(vm.peerDeletionConfirmed.value).isFalse()
+        vm.reset()
+        advanceUntilIdle()
+        assertThat(vm.peerDeletionConfirmed.value).isTrue()
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Idle::class.java)
+    }
+
+    @Test
+    fun `peer cancel during checklist review removes saved lineage and acknowledges`() = runTest(dispatcher) {
+        val channel = FakeChannel(ProtocolMessage.Manifest(manifest), ProtocolMessage.Cancel(manifest.lineageId))
+        val vm = viewModel(channel)
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+        assertThat(vm.state.value).isInstanceOf(ReceiverState.Failed::class.java)
+        assertThat(channel.sent.filterIsInstance<ProtocolMessage.CancelAck>()).containsExactly(ProtocolMessage.CancelAck(manifest.lineageId))
+        assertThat(java.io.File(tmp.root, "lineage/lineage.json").readText()).contains("\"active\":null")
     }
 
     @Test
@@ -608,7 +652,7 @@ class ReceiverViewModelTest {
 
         val failed = vm.state.value as ReceiverState.Failed
         assertThat(failed.reason).contains("connection lost")
-        assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // partial staging swept
+        assertThat(java.io.File(tmp.root, "lineage/staging").listFiles().orEmpty()).isEmpty() // partial staging swept; durable lineage retained
     }
 
     @Test
@@ -638,7 +682,7 @@ class ReceiverViewModelTest {
         val failed = vm.state.value as ReceiverState.Failed
         assertThat(failed.reason).contains("timed out")
         assertThat(channel.closed).isTrue()
-        assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // block cancelled → staging swept
+        assertThat(java.io.File(tmp.root, "lineage/staging").listFiles().orEmpty()).isEmpty() // partials swept; durable lineage retained
     }
 
     /**
@@ -683,7 +727,7 @@ class ReceiverViewModelTest {
         val failed = vm.state.value as ReceiverState.Failed
         assertThat(failed.reason).contains("timed out") // null, NOT an escaped CancellationException
         assertThat(channel.closed).isTrue()
-        assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // finallys ran across the boundary
+        assertThat(java.io.File(tmp.root, "lineage/staging").listFiles().orEmpty()).isEmpty() // finallys ran across the boundary
         assertThat(keepAlive.stops).isEqualTo(1) // released on the timeout unwind
     }
 
@@ -739,6 +783,10 @@ class ReceiverViewModelTest {
         vm.reset()
         runCurrent()
         assertThat(vm.state.value).isInstanceOf(ReceiverState.Idle::class.java)
+        assertThat(channel.sent.filterIsInstance<ProtocolMessage.Cancel>()).hasSize(1)
+        assertThat(vm.peerDeletionConfirmed.value).isFalse()
+        advanceTimeBy(5_000)
+        runCurrent()
         assertThat(channel.closed).isTrue()
 
         // A stream callback still in flight when the user left must not resurrect Transferring.
@@ -812,7 +860,7 @@ class ReceiverViewModelTest {
     @Test
     fun `relinquish runs even when the transfer throws after the role was acquired`() = runTest(dispatcher) {
         val droppedChannel = FakeChannel(
-            ProtocolMessage.Manifest(TransferManifest("old phone", listOf(smsMeta), smsBytes.size.toLong())),
+            ProtocolMessage.Manifest(testManifest("old phone", listOf(smsMeta), smsBytes.size.toLong())),
             ProtocolMessage.ItemBegin(3, ItemKind.SMS, smsMeta.size, smsBytes.size),
             null, // connection lost mid-item → TransportException
         )
@@ -882,7 +930,7 @@ class ReceiverViewModelTest {
         vm.onQrScanned("good-qr")
         advanceUntilIdle()
 
-        val smsMeta = ItemMeta(9, ItemKind.SMS, 10, "h9", "Text messages", "History")
+        val smsMeta = testItemMeta(9, ItemKind.SMS, 10, "h9", "Text messages", "History")
         val outcome = vm.applyStaged(smsMeta, ByteArrayInputStream(ByteArray(0)))
 
         assertThat(outcome.status).isEqualTo(ItemStatus.SKIPPED)
@@ -897,9 +945,9 @@ class ReceiverViewModelTest {
             override fun installedPackageNames() = emptySet<String>()
         }
         val invBytes = ByteArrayOutputStream().also { AppInventoryExportProvider(source).exportTo(it) }.toByteArray()
-        val invMeta = ItemMeta(5, ItemKind.APP_INVENTORY, invBytes.size.toLong(), sha256(invBytes), "App list", "Apps")
+        val invMeta = testItemMeta(5, ItemKind.APP_INVENTORY, invBytes.size.toLong(), sha256(invBytes), "App list", "Apps")
         val channel = FakeChannel(
-            ProtocolMessage.Manifest(TransferManifest("old phone", listOf(invMeta), invBytes.size.toLong())),
+            ProtocolMessage.Manifest(testManifest("old phone", listOf(invMeta), invBytes.size.toLong())),
             ProtocolMessage.ItemBegin(5, ItemKind.APP_INVENTORY, invMeta.size, invBytes.size),
             ProtocolMessage.ItemData(5, 0, invBytes),
             ProtocolMessage.ItemEnd(5, invMeta.sha256),
@@ -955,9 +1003,9 @@ class ReceiverViewModelTest {
             ),
         )
         val btBytes = BtRosterCodec.encode(roster).toByteArray(Charsets.UTF_8)
-        val btMeta = ItemMeta(6, ItemKind.BLUETOOTH_DEVICES, btBytes.size.toLong(), sha256(btBytes), "Paired Bluetooth devices", "Bluetooth")
+        val btMeta = testItemMeta(6, ItemKind.BLUETOOTH_DEVICES, btBytes.size.toLong(), sha256(btBytes), "Paired Bluetooth devices", "Bluetooth")
         val channel = FakeChannel(
-            ProtocolMessage.Manifest(TransferManifest("old phone", listOf(btMeta), btBytes.size.toLong())),
+            ProtocolMessage.Manifest(testManifest("old phone", listOf(btMeta), btBytes.size.toLong())),
             ProtocolMessage.ItemBegin(6, ItemKind.BLUETOOTH_DEVICES, btMeta.size, btBytes.size),
             ProtocolMessage.ItemData(6, 0, btBytes),
             ProtocolMessage.ItemEnd(6, btMeta.sha256),
@@ -1017,13 +1065,13 @@ class ReceiverViewModelTest {
             )
             out.toByteArray()
         }
-        val relayMeta = ItemMeta(
+        val relayMeta = testItemMeta(
             6, ItemKind.APP_BACKUP_RELAY, relayBytes.size.toLong(), sha256(relayBytes),
             "signal.backup", "App backups",
         )
         val handedOff = mutableListOf<ByteArray>()
         val channel = FakeChannel(
-            ProtocolMessage.Manifest(TransferManifest("old phone", listOf(relayMeta), relayBytes.size.toLong())),
+            ProtocolMessage.Manifest(testManifest("old phone", listOf(relayMeta), relayBytes.size.toLong())),
             ProtocolMessage.ItemBegin(6, ItemKind.APP_BACKUP_RELAY, relayMeta.size, relayBytes.size),
             ProtocolMessage.ItemData(6, 0, relayBytes),
             ProtocolMessage.ItemEnd(6, relayMeta.sha256),

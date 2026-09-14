@@ -85,6 +85,7 @@ import com.ventouxlabs.portage.recv.sms.SmsRoleCoordinator
 import com.ventouxlabs.portage.recv.sms.SmsRoleCoordinatorHolder
 import com.ventouxlabs.portage.recv.ui.ReceiverApp
 import java.io.File
+import com.ventouxlabs.portage.lineage.LineageRepository
 
 /**
  * Importer entry point (portage-prp-prompt.md §7): scan QR → handshake → receive manifest →
@@ -114,8 +115,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Sweep staging orphaned by a mid-transfer process death — staged payloads are
-        // plaintext PII and must never outlive a single session.
+        // Remove only legacy cache staging. Durable v6 staging is reconciled by its repository.
         File(cacheDir, STAGING_DIR).deleteRecursively()
         // Sweep sealed-but-uncommitted PackageInstaller sessions left by a previous run that was
         // abandoned before the user tapped to install (fix 5c). mySessions is app-scoped; only
@@ -159,6 +159,7 @@ private class ReceiverViewModelFactory(
 ) : ViewModelProvider.Factory {
 
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        val lineageRepository = LineageRepository(File(context.noBackupFilesDir, "lineage"))
         // The active distribution flavor supplies every apply-time privilege seam (ADR-003 flavor
         // split): degoogle wires the self-contained ADB bridge + wizard; play returns no-op Tier-0
         // defaults with neither :adb-bridge nor :wizard compiled in. :app-recv/src/main holds no
@@ -266,7 +267,8 @@ private class ReceiverViewModelFactory(
         }
         @Suppress("UNCHECKED_CAST")
         return ReceiverViewModel(
-            stagingDir = File(context.cacheDir, STAGING_DIR),
+            stagingDir = lineageRepository.stagingDir,
+            lineageRepository = lineageRepository,
             smsRoleCoordinator = smsRoleCoordinator,
             applyRegistryFactory = registryFactory,
             // Abandon sealed-but-uncommitted sessions on return-home (fix 5b).

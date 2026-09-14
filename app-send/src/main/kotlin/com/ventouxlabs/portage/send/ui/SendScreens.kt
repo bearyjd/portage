@@ -39,6 +39,7 @@ fun PendingScreen(
     headline: String,
     caption: String,
     modifier: Modifier = Modifier,
+    onCancel: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
     Column(
@@ -67,6 +68,10 @@ fun PendingScreen(
         Spacer(Modifier.height(s.lg))
         // Live activity while preparing exports / awaiting the receiver's picks (portage #58).
         SwissIndeterminateRule()
+        onCancel?.let {
+            Spacer(Modifier.height(s.md))
+            SwissPrimaryButton(text = "Cancel move", onClick = it, fullWidth = true)
+        }
     }
 }
 
@@ -78,6 +83,7 @@ fun PendingScreen(
 fun SendingScreen(
     items: List<SendProgress>,
     modifier: Modifier = Modifier,
+    onCancel: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
     val totalBytes = items.sumOf { it.totalBytes }
@@ -126,6 +132,10 @@ fun SendingScreen(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        onCancel?.let {
+            Spacer(Modifier.height(s.md))
+            SwissPrimaryButton(text = "Cancel move", onClick = it, fullWidth = true)
+        }
     }
 }
 
@@ -193,6 +203,8 @@ fun SendDoneScreen(
     failed: Int,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
+    unknown: Int = 0,
+    onResume: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
     Column(
@@ -202,7 +214,7 @@ fun SendDoneScreen(
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = "DONE",
+            text = if (unknown > 0) "NEEDS REVIEW" else "DONE",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary,
         )
@@ -228,6 +240,15 @@ fun SendDoneScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        if (unknown > 0) {
+            Spacer(Modifier.height(s.sm))
+            Text("$unknown outcomes were not confirmed. Review the new phone before resuming; some changes may already be applied.",
+                style = MaterialTheme.typography.bodyLarge)
+            onResume?.let {
+                Spacer(Modifier.height(s.md))
+                SwissPrimaryButton(text = "Resume saved move", onClick = it, fullWidth = true)
+            }
+        }
         Spacer(Modifier.height(s.lg))
         HairlineDivider()
         Spacer(Modifier.height(s.lg))
@@ -247,6 +268,8 @@ fun SendFailedScreen(
     reason: String,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    onResume: (() -> Unit)? = null,
+    onCancel: (() -> Unit)? = null,
 ) {
     val s = LocalSpacing.current
     Column(
@@ -262,7 +285,7 @@ fun SendFailedScreen(
         )
         Spacer(Modifier.height(s.lg))
         Text(
-            text = "That didn't carry",
+            text = "Move paused",
             style = MaterialTheme.typography.displaySmall,
             color = MaterialTheme.colorScheme.onBackground,
         )
@@ -273,6 +296,14 @@ fun SendFailedScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(s.xl))
-        SwissPrimaryButton(text = "Start over", onClick = onRetry, fullWidth = true)
+        onResume?.let {
+            SwissPrimaryButton(text = "Resume saved move", onClick = it, fullWidth = true)
+            Spacer(Modifier.height(s.md))
+        }
+        SwissPrimaryButton(text = "Start a new move", onClick = onRetry, fullWidth = true)
+        onCancel?.let {
+            Spacer(Modifier.height(s.md))
+            SwissPrimaryButton(text = "Cancel saved move", onClick = it, fullWidth = true)
+        }
     }
 }

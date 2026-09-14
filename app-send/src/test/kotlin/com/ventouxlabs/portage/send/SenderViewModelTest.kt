@@ -14,6 +14,9 @@ import com.ventouxlabs.portage.model.ItemResult
 import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.model.PairingPayload
 import com.ventouxlabs.portage.model.ProtocolMessage
+import com.ventouxlabs.portage.model.ReceiptPhase
+import com.ventouxlabs.portage.model.PairingMode
+import com.ventouxlabs.portage.lineage.LineageRepository
 import com.ventouxlabs.portage.providers.ExportProvider
 import com.ventouxlabs.portage.providers.apk.InstalledApkFile
 import com.ventouxlabs.portage.providers.apk.InstalledApp
@@ -36,6 +39,8 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.yield
 import org.junit.After
@@ -44,6 +49,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.OutputStream
+import java.io.File
 import java.security.SecureRandom
 
 private class BytesExport(
@@ -65,13 +71,32 @@ private class ScriptedChannel(vararg incoming: ProtocolMessage?) : SecureChannel
     private val queue = ArrayDeque(incoming.toList())
     val sent = mutableListOf<ProtocolMessage>()
     var closed = false
+    var afterSend: ((ProtocolMessage) -> Unit)? = null
+    var cancelReply: ProtocolMessage? = null
     override suspend fun send(message: ProtocolMessage) {
         yield()
         sent += message
+        if (message is ProtocolMessage.LineageInit) queue.addFirst(ProtocolMessage.LineageAck(message.lineageId))
+        if (message is ProtocolMessage.LineageResume) queue.addFirst(ProtocolMessage.LineageAck(message.lineageId))
+        if (message is ProtocolMessage.Cancel) cancelReply?.let { queue.addFirst(it) }
+        afterSend?.invoke(message)
     }
     override suspend fun receive(): ProtocolMessage? {
         yield()
-        return if (queue.isEmpty()) null else queue.removeFirst()
+        val message = if (queue.isEmpty()) null else queue.removeFirst()
+        // These UI-flow fixtures express verdicts by integer index; attach the exact
+        // advertised occurrence and receipt phase like a protocol-v6 peer.
+        fun identified(result: ItemResult): ItemResult {
+            val manifest = sent.filterIsInstance<ProtocolMessage.Manifest>().last().manifest
+            return result.copy(occurrenceId = manifest.items.single { it.itemId == result.itemId }.occurrenceId)
+        }
+        return when (message) {
+            is ProtocolMessage.ItemAck -> ProtocolMessage.ItemAck(identified(message.result).let {
+                if (it.status == ItemStatus.OK) it.copy(phase = ReceiptPhase.RECEIVED_VERIFIED) else it
+            })
+            is ProtocolMessage.BatchAck -> ProtocolMessage.BatchAck(message.results.map(::identified))
+            else -> message
+        }
     }
     override fun close() { closed = true }
 }
@@ -88,7 +113,10 @@ private class StallingChannel(vararg incoming: ProtocolMessage) : SecureChannel 
     private val queue = ArrayDeque(incoming.toList())
     val sent = mutableListOf<ProtocolMessage>()
     var closed = false
-    override suspend fun send(message: ProtocolMessage) { sent += message }
+    override suspend fun send(message: ProtocolMessage) {
+        sent += message
+        if (message is ProtocolMessage.LineageInit) queue.addFirst(ProtocolMessage.LineageAck(message.lineageId))
+    }
     override suspend fun receive(): ProtocolMessage? =
         if (queue.isNotEmpty()) queue.removeFirst() else awaitCancellation()
     override fun close() { closed = true }
@@ -121,6 +149,8 @@ private class FakeFactory(
     private val acceptError: Throwable? = null,
 ) : SecureChannel.Factory {
     var acceptedPayload: PairingPayload? = null
+    var resumeCredential: ByteArray? = null
+    var resumedLineageId: String? = null
     override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel =
         throw UnsupportedOperationException("sender tests never dial")
     override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel {
@@ -128,6 +158,11 @@ private class FakeFactory(
         yield() // the real listener parks here awaiting the handshake
         acceptError?.let { throw it }
         return checkNotNull(channel)
+    }
+    override suspend fun acceptAsSender(payload: PairingPayload, resumeCredential: ByteArray?, lineageId: String?): SecureChannel {
+        this.resumeCredential = resumeCredential?.copyOf()
+        resumedLineageId = lineageId
+        return acceptAsSender(payload)
     }
 }
 
@@ -170,6 +205,7 @@ class SenderViewModelTest {
         inventorySource: InventorySource? = null,
         installedAppSource: InstalledAppSource? = null,
         keepAlive: TransferKeepAlive = TransferKeepAlive.NoOp,
+        repository: LineageRepository? = null,
     ) = SenderViewModel(
         providers = providers,
         stagingDir = tmp.root,
@@ -186,6 +222,7 @@ class SenderViewModelTest {
         // resolution deterministically (in production this is Dispatchers.IO, off the UI thread).
         relayResolveDispatcher = dispatcher,
         transferKeepAlive = keepAlive,
+        lineageRepository = repository,
     )
 
     private fun signalPick(
@@ -300,7 +337,8 @@ class SenderViewModelTest {
         // is parked at the wait-for-SELECT — i.e. the cap fired DURING the data phase, not earlier.
         assertThat(channel.sent.filterIsInstance<ProtocolMessage.Manifest>()).isNotEmpty()
         assertThat(channel.closed).isTrue()
-        assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // fail() swept staging
+        assertThat(File(tmp.root, "lineage/staging").listFiles().orEmpty()).isNotEmpty()
+        assertThat(failed.canResume).isTrue()
     }
 
     @Test
@@ -361,10 +399,208 @@ class SenderViewModelTest {
         vm.reset()
 
         assertThat(vm.state.value).isEqualTo(SenderState.Home)
-        assertThat(tmp.root.listFiles().orEmpty()).isEmpty()
+        assertThat(File(tmp.root, "lineage/staging").listFiles().orEmpty()).isEmpty()
     }
 
     // ---- transfer keep-alive (#85): foreground-service lifecycle around the data phase ----
+
+    @Test
+    fun `corrupt saved move surfaces an error without replacement or lifecycle crash`() = runTest(dispatcher) {
+        val saved = File(tmp.newFolder("lineage"), "lineage.json").apply { writeText("{broken") }
+        val factory = FakeFactory(happyChannel())
+        val vm = viewModel(factory)
+        assertThat((vm.state.value as SenderState.Failed).reason).contains("could not be read")
+        vm.onStartTransfer()
+        advanceUntilIdle()
+        assertThat(vm.state.value).isInstanceOf(SenderState.Failed::class.java)
+        vm.reset()
+        assertThat(vm.state.value).isInstanceOf(SenderState.Failed::class.java)
+        vm.cancelTransfer()
+        assertThat(vm.state.value).isInstanceOf(SenderState.Failed::class.java)
+        assertThat(saved.readText()).isEqualTo("{broken")
+        assertThat(factory.acceptedPayload).isNull()
+        androidx.lifecycle.ViewModelStore().apply { put("sender", vm); clear() }
+    }
+
+    @Test
+    fun `final acknowledgement timeout persists unknown instead of a completed move`() = runTest(dispatcher) {
+        val repository = LineageRepository(tmp.newFolder())
+        val incoming = Channel<ProtocolMessage>(Channel.UNLIMITED)
+        incoming.send(ProtocolMessage.Hello("0.1", "recv"))
+        val channel = object : SecureChannel {
+            override suspend fun send(message: ProtocolMessage) {
+                when (message) {
+                    is ProtocolMessage.LineageInit -> incoming.send(ProtocolMessage.LineageAck(message.lineageId))
+                    is ProtocolMessage.Manifest -> incoming.send(ProtocolMessage.Select(listOf(1)))
+                    is ProtocolMessage.ItemEnd -> {
+                        val meta = repository.active()!!.manifest!!.items.single()
+                        incoming.send(ProtocolMessage.ItemAck(ItemResult(meta.itemId, ItemStatus.OK,
+                            phase = ReceiptPhase.RECEIVED_VERIFIED, occurrenceId = meta.occurrenceId)))
+                    }
+                    else -> Unit
+                }
+            }
+            override suspend fun receive(): ProtocolMessage? = incoming.receive()
+            override fun close() { incoming.close() }
+        }
+        val vm = SenderViewModel(
+            providers = listOf(BytesExport(ItemKind.CONTACTS_VCF, "vcard".toByteArray())),
+            stagingDir = tmp.root,
+            senderName = "sender",
+            channelFactory = FakeFactory(channel),
+            addressHints = { listOf("192.168.1.2") },
+            portFinder = { 40123 },
+            dataPhaseTimeoutMs = 1_000L,
+            lineageRepository = repository,
+        )
+        vm.onStartTransfer()
+        advanceUntilIdle()
+        assertThat(vm.state.value).isEqualTo(SenderState.Done(0, 0, unknown = 1))
+        val active = repository.active()!!
+        val key = com.ventouxlabs.portage.lineage.CheckpointKey.from(active.id, active.manifest!!.items.single())
+        assertThat(repository.checkpoint(key)?.phase).isEqualTo(ReceiptPhase.UNKNOWN_INTERRUPTED)
+        assertThat(repository.stagedFile(key)).isNotNull()
+        repository.close()
+    }
+
+    @Test
+    fun `reopening after dropped final receipt preserves manifest bytes and resume credential`() = runTest(dispatcher) {
+        val directory = tmp.newFolder()
+        val repository = LineageRepository(directory)
+        val lostAck = ScriptedChannel(ProtocolMessage.Hello("0.1", "recv"), ProtocolMessage.Select(listOf(1)),
+            ProtocolMessage.ItemAck(ItemResult(1, ItemStatus.OK)), null)
+        val original = viewModel(FakeFactory(lostAck), repository = repository)
+        original.onStartTransfer()
+        advanceUntilIdle()
+        assertThat(original.state.value).isEqualTo(SenderState.Done(0, 0, unknown = 1))
+        val manifest = checkNotNull(repository.active()).manifest
+        val credential = repository.credentialForResume()
+        repository.close()
+
+        val reopened = LineageRepository(directory)
+        val factory = FakeFactory(happyChannel())
+        val restored = viewModel(factory, providers = emptyList(), repository = reopened)
+        assertThat((restored.state.value as SenderState.Failed).canResume).isTrue()
+        restored.onResumeTransfer()
+        advanceUntilIdle()
+        assertThat(restored.state.value).isEqualTo(SenderState.Done(1, 0))
+        assertThat(factory.acceptedPayload?.mode).isEqualTo(PairingMode.RESUME)
+        assertThat(factory.resumedLineageId).isEqualTo(manifest?.lineageId)
+        assertThat(factory.resumeCredential).isEqualTo(credential)
+        assertThat(reopened.active()?.manifest).isEqualTo(manifest)
+        restored.reset()
+        assertThat(reopened.active()).isNull()
+        assertThat(reopened.tombstones().last().reason).isEqualTo("finished")
+        reopened.close()
+        credential.fill(0)
+    }
+
+    @Test
+    fun `retry before first authentication preserves lineage and uses fresh initial pairing`() = runTest(dispatcher) {
+        val repository = LineageRepository(tmp.newFolder())
+        val failingFactory = FakeFactory(acceptError = TransportException("listener expired"))
+        val vm = viewModel(failingFactory, repository = repository)
+        vm.onStartTransfer()
+        advanceUntilIdle()
+        val prepared = repository.active()
+        val firstQrSecret = failingFactory.acceptedPayload!!.psk.copyOf()
+        vm.onResumeTransfer()
+        advanceUntilIdle()
+        assertThat(repository.active()).isEqualTo(prepared)
+        assertThat(failingFactory.acceptedPayload?.mode).isEqualTo(PairingMode.NEW)
+        assertThat(failingFactory.acceptedPayload?.psk).isNotEqualTo(firstQrSecret)
+        repository.close()
+    }
+
+    @Test
+    fun `one hundred explicit new moves each consume exactly sixteen lineage bytes`() = runTest(dispatcher) {
+        val requests = mutableListOf<Int>()
+        var value = 0
+        val random = object : SecureRandom() {
+            override fun nextBytes(bytes: ByteArray) {
+                requests += bytes.size
+                bytes.fill((++value).toByte())
+            }
+        }
+        val repository = LineageRepository(tmp.newFolder(), random = random)
+        val vm = viewModel(FakeFactory(happyChannel()), providers = emptyList(), repository = repository)
+        assertThat(requests).isEmpty()
+        val lineages = mutableSetOf<String>()
+        repeat(100) {
+            vm.onStartTransfer()
+            advanceUntilIdle()
+            lineages += checkNotNull(repository.active()).id
+        }
+        assertThat(lineages).hasSize(100)
+        assertThat(requests).hasSize(100)
+        assertThat(requests.toSet()).containsExactly(16)
+        repository.close()
+    }
+
+    @Test
+    fun `disconnected cancel revokes local secret without claiming peer deletion`() = runTest(dispatcher) {
+        val repository = LineageRepository(tmp.newFolder())
+        val vm = viewModel(FakeFactory(acceptError = TransportException("offline")), repository = repository)
+        vm.onStartTransfer()
+        advanceUntilIdle()
+        vm.cancelTransfer()
+        advanceUntilIdle()
+        assertThat(repository.active()).isNull()
+        assertThat(repository.tombstones().last().peerDeleted).isFalse()
+        assertThat((vm.state.value as SenderState.Failed).reason).contains("not confirmed")
+        assertThat(repository.stagingDir.listFiles().orEmpty()).isEmpty()
+        repository.close()
+    }
+
+    @Test
+    fun `connected cancel waits for matching peer acknowledgement`() = runTest(dispatcher) {
+        val repository = LineageRepository(tmp.newFolder())
+        val channel = happyChannel()
+        val vm = viewModel(FakeFactory(channel), repository = repository)
+        channel.afterSend = { message ->
+            if (message is ProtocolMessage.ItemEnd) {
+                channel.cancelReply = ProtocolMessage.CancelAck(checkNotNull(repository.active()).id)
+                vm.cancelTransfer()
+                assertThat(repository.active()).isNull()
+                assertThat(repository.tombstones().last().peerDeleted).isFalse()
+            }
+        }
+        vm.onStartTransfer()
+        advanceUntilIdle()
+        assertThat(repository.tombstones().last().peerDeleted).isTrue()
+        assertThat((vm.state.value as SenderState.Failed).reason).contains("Both phones confirmed")
+        assertThat(channel.closed).isTrue()
+        repository.close()
+    }
+
+    @Test
+    fun `connected cancel while waiting for selection exchanges acknowledgement`() = runTest(dispatcher) {
+        val repository = LineageRepository(tmp.newFolder())
+        val incoming = Channel<ProtocolMessage>(Channel.UNLIMITED)
+        incoming.send(ProtocolMessage.Hello("0.1", "recv"))
+        var manifestSent = false
+        val channel = object : SecureChannel {
+            override suspend fun send(message: ProtocolMessage) {
+                when (message) {
+                    is ProtocolMessage.LineageInit -> incoming.send(ProtocolMessage.LineageAck(message.lineageId))
+                    is ProtocolMessage.Manifest -> manifestSent = true
+                    is ProtocolMessage.Cancel -> incoming.send(ProtocolMessage.CancelAck(message.lineageId))
+                    else -> Unit
+                }
+            }
+            override suspend fun receive(): ProtocolMessage? = incoming.receive()
+            override fun close() { incoming.close() }
+        }
+        val vm = viewModel(FakeFactory(channel), repository = repository)
+        vm.onStartTransfer()
+        runCurrent()
+        assertThat(manifestSent).isTrue()
+        vm.cancelTransfer()
+        advanceUntilIdle()
+        assertThat(repository.tombstones().last().peerDeleted).isTrue()
+        assertThat((vm.state.value as SenderState.Failed).reason).contains("Both phones confirmed")
+        repository.close()
+    }
 
     @Test
     fun `keep-alive starts before the data phase and stops once on success`() = runTest(dispatcher) {

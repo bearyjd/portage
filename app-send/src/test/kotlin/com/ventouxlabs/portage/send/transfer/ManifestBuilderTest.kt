@@ -48,7 +48,7 @@ class ManifestBuilderTest {
         val contacts = FakeExport(ItemKind.CONTACTS_VCF, "Contacts", "People", "vcard-bytes".toByteArray())
         val calls = FakeExport(ItemKind.CALL_LOG, "Call history", "History", "call-bytes!".toByteArray())
 
-        val staged = ManifestBuilder(listOf(contacts, calls), tmp.root, "old phone").build()
+        val staged = ManifestBuilder(listOf(contacts, calls), tmp.root, "old phone", "a".repeat(32)).build()
 
         assertThat(staged.manifest.senderName).isEqualTo("old phone")
         assertThat(staged.manifest.items).hasSize(2)
@@ -72,7 +72,7 @@ class ManifestBuilderTest {
         val present = FakeExport(ItemKind.CONTACTS_VCF, "Contacts", "People", "x".toByteArray())
         val absent = FakeExport(ItemKind.SMS, "Texts", "History", payload = null)
 
-        val staged = ManifestBuilder(listOf(present, absent), tmp.root, "s").build()
+        val staged = ManifestBuilder(listOf(present, absent), tmp.root, "s", "a".repeat(32)).build()
 
         assertThat(staged.manifest.items.map { it.kind }).containsExactly(ItemKind.CONTACTS_VCF)
     }
@@ -82,7 +82,7 @@ class ManifestBuilderTest {
         val bad = FakeExport(ItemKind.CALENDAR_ICS, "Calendar", "Schedule", "y".toByteArray(), throwOnAvailable = true)
         val good = FakeExport(ItemKind.CONTACTS_VCF, "Contacts", "People", "x".toByteArray())
 
-        val staged = ManifestBuilder(listOf(bad, good), tmp.root, "s").build()
+        val staged = ManifestBuilder(listOf(bad, good), tmp.root, "s", "a".repeat(32)).build()
 
         assertThat(staged.manifest.items.map { it.kind }).containsExactly(ItemKind.CONTACTS_VCF)
     }
@@ -91,7 +91,7 @@ class ManifestBuilderTest {
     fun `a provider that throws mid-export is excluded and its staging file removed`() = runTest {
         val bad = FakeExport(ItemKind.CALENDAR_ICS, "Calendar", "Schedule", "y".toByteArray(), throwOnExport = true)
 
-        val staged = ManifestBuilder(listOf(bad), tmp.root, "s").build()
+        val staged = ManifestBuilder(listOf(bad), tmp.root, "s", "a".repeat(32)).build()
 
         assertThat(staged.manifest.items).isEmpty()
         assertThat(tmp.root.listFiles().orEmpty()).isEmpty()
@@ -101,7 +101,7 @@ class ManifestBuilderTest {
     fun `an empty export is excluded — nothing to carry`() = runTest {
         val empty = FakeExport(ItemKind.CALL_LOG, "Call history", "History", ByteArray(0))
 
-        val staged = ManifestBuilder(listOf(empty), tmp.root, "s").build()
+        val staged = ManifestBuilder(listOf(empty), tmp.root, "s", "a".repeat(32)).build()
 
         assertThat(staged.manifest.items).isEmpty()
     }
@@ -109,11 +109,22 @@ class ManifestBuilderTest {
     @Test
     fun `cleanup removes every staged file`() = runTest {
         val provider = FakeExport(ItemKind.CONTACTS_VCF, "Contacts", "People", "x".toByteArray())
-        val staged = ManifestBuilder(listOf(provider), tmp.root, "s").build()
+        val staged = ManifestBuilder(listOf(provider), tmp.root, "s", "a".repeat(32)).build()
         assertThat(staged.items[0].file.exists()).isTrue()
 
         staged.cleanup()
 
         assertThat(staged.items[0].file.exists()).isFalse()
+    }
+
+    @Test
+    fun `byte identical selected files keep separate occurrence identities and paths`() = runTest {
+        val first = FakeExport(ItemKind.USER_FILE, "same.txt", "Files", "same".toByteArray())
+        val second = FakeExport(ItemKind.USER_FILE, "same.txt", "Files", "same".toByteArray())
+        val staged = ManifestBuilder(listOf(first, second), tmp.root, "s", "a".repeat(32)).build()
+        assertThat(staged.items.map { it.meta.sha256 }.toSet()).hasSize(1)
+        assertThat(staged.items.map { it.meta.occurrenceId }.toSet()).hasSize(2)
+        assertThat(staged.items.map { it.file }.toSet()).hasSize(2)
+        staged.items.forEach { assertThat(it.meta.occurrenceId).matches("[0-9a-f]{32}") }
     }
 }

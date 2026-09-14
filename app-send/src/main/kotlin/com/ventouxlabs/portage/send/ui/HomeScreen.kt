@@ -153,7 +153,7 @@ fun HomeScreen(
         }
         Spacer(Modifier.height(s.xl))
         SwissPrimaryButton(
-            text = "Start transfer",
+            text = "Start a new move",
             fullWidth = true,
             onClick = {
                 val missing = SENDER_PERMISSIONS.filter {

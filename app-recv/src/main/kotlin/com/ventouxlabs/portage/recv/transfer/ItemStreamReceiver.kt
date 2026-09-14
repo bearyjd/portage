@@ -14,6 +14,10 @@ import com.ventouxlabs.portage.model.ItemMeta
 import com.ventouxlabs.portage.model.ItemResult
 import com.ventouxlabs.portage.model.ItemStatus
 import com.ventouxlabs.portage.model.ProtocolMessage
+import com.ventouxlabs.portage.model.ReceiptPhase
+import com.ventouxlabs.portage.model.ManifestValidation
+import com.ventouxlabs.portage.lineage.CheckpointKey
+import com.ventouxlabs.portage.lineage.LineageRepository
 import com.ventouxlabs.portage.providers.ApplyOutcome
 import com.ventouxlabs.portage.providers.apk.ApkContainerValidation
 import com.ventouxlabs.portage.transport.SecureChannel
@@ -23,11 +27,12 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.FileOutputStream
 import java.security.MessageDigest
 
 /**
  * Receiver side of the per-item stream (PROTOCOL.md §4-5): for each ITEM_BEGIN, stage the
- * DATA chunks to a generated cacheDir file with an incremental sha256, verify against BOTH
+ * DATA chunks to an owned staging file with an incremental sha256, verify against BOTH
  * the wire's ITEM_END hash and the manifest's advertised hash/size, ack receipt, then run
  * the apply callback — apply results ride BATCH_ACK, never ITEM_ACK.
  *
@@ -36,8 +41,8 @@ import java.security.MessageDigest
  * drained (to stay frame-synchronized) and reported per-item — it NEVER aborts the batch.
  * Only a dead channel or a protocol-order violation throws [TransportException].
  *
- * Staged files hold personal data: every payload is deleted after its apply, and the whole
- * staging dir is swept in a finally — partials never survive the session.
+ * With a lineage repository, complete verified payloads survive interruption under its
+ * 24-hour expiry; partials are removed. Without persistence, all staging is session-scoped.
  */
 class ItemStreamReceiver(
     private val stagingDir: File,
@@ -52,8 +57,12 @@ class ItemStreamReceiver(
     // deterministically. Production reads the real free space.
     private val freeSpace: (File) -> Long = { it.usableSpace },
     // Staging-file sink factory, seam-injected so tests can simulate a mid-stream disk fault (ENOSPC)
-    // deterministically. Production opens the real cacheDir file; only the LOCAL staging write throws.
+    // deterministically. Production opens the owned no-backup file; only the LOCAL staging write throws.
     private val openSink: (File) -> OutputStream = { it.outputStream() },
+    private val lineageRepository: LineageRepository? = null,
+    private val lineageId: String? = null,
+    private val resumeItems: Set<Int> = emptySet(),
+    private val cancellationRequested: () -> Boolean = { false },
 ) {
 
     /** The effective per-item byte cap for [kind]: its override if any, else the default. */
@@ -72,6 +81,14 @@ class ItemStreamReceiver(
         apply: suspend (ItemMeta, InputStream) -> ApplyOutcome,
         onEvent: (Event) -> Unit,
     ): List<ItemResult> {
+        // Validate the entire selected set before the first filesystem/store/event access.
+        expected.values.forEach { ManifestValidation.requireIdentity(it.occurrenceId) }
+        require(expected.values.map { it.occurrenceId }.toSet().size == expected.size) { "duplicate occurrence id" }
+        require(expected.all { (id, meta) -> id == meta.itemId }) { "item index disagrees with selection" }
+        lineageRepository?.let { store ->
+            ManifestValidation.requireIdentity(checkNotNull(lineageId))
+            expected.values.forEach { store.checkpoint(CheckpointKey.from(lineageId, it)) }
+        }
         stagingDir.mkdirs()
         val results = linkedMapOf<Int, ItemResult>()
         // PROTOCOL.md §5: the receiver enforces a max item count regardless of manifest
@@ -92,6 +109,7 @@ class ItemStreamReceiver(
                         if (++begun > maxItems) {
                             throw TransportException("sender exceeded the item-count cap")
                         }
+                        if (message.itemId in results) throw TransportException("duplicate ITEM_BEGIN")
                         val result = receiveOneItem(
                             channel, message, expected[message.itemId], apkBudget,
                             userFileBudget, apply, onEvent,
@@ -99,7 +117,12 @@ class ItemStreamReceiver(
                         results[message.itemId] = result
                         onEvent(Event.ItemFinished(result))
                     }
-                    is ProtocolMessage.BatchEnd -> break@stream
+                    is ProtocolMessage.BatchEnd -> {
+                        if (message.sent.size != message.sent.toSet().size || message.sent.toSet() != results.keys) {
+                            throw TransportException("BATCH_END disagrees with received occurrences")
+                        }
+                        break@stream
+                    }
                     else -> throw TransportException(
                         "expected ITEM_BEGIN or BATCH_END, got ${message.javaClass.simpleName}",
                     )
@@ -109,7 +132,7 @@ class ItemStreamReceiver(
             // Selected items the sender never delivered are reported, not forgotten.
             for ((itemId, _) in expected) {
                 if (itemId !in results) {
-                    val result = ItemResult(itemId, ItemStatus.SKIPPED, "not delivered by sender")
+                    val result = ItemResult(itemId, ItemStatus.SKIPPED, "not delivered by sender", occurrenceId = expected.getValue(itemId).occurrenceId)
                     results[itemId] = result
                     onEvent(Event.ItemFinished(result))
                 }
@@ -119,11 +142,19 @@ class ItemStreamReceiver(
             channel.send(ProtocolMessage.BatchAck(final))
             return final
         } finally {
-            // deleteRecursively (not delete): a non-recursive sweep would leave a non-empty nested subdir
-            // behind — e.g. the ApkApplyProvider's per-app apk/ staging dir — defeating the partials-never-
-            // survive guarantee. Benign today (the apply provider wipes its own subdir in a finally and the
-            // launch sweep also runs), but this hardens the nested-dir case (ADR-006 defense-in-depth).
-            runCatching { stagingDir.listFiles()?.forEach { it.deleteRecursively() } }
+            // Session-only callers sweep everything. Durable callers retain only verified bytes.
+            if (lineageRepository == null) {
+                runCatching { stagingDir.listFiles()?.forEach { it.deleteRecursively() } }
+            } else {
+                lineageRepository.reconcileInterrupted()
+                // Only exact verified files survive; interrupted partials restart from byte zero.
+                expected.values.forEach { meta ->
+                    val key = CheckpointKey.from(checkNotNull(lineageId), meta)
+                    if (runCatching { lineageRepository?.verifiedStaged(key) }.getOrNull() == null) {
+                        File(stagingDir, "${meta.occurrenceId}.bin").delete()
+                    }
+                }
+            }
         }
     }
 
@@ -186,19 +217,34 @@ class ItemStreamReceiver(
         if (failure == null && isUserFile) userFileBudget.add(begin.size)
 
         // Generated name — display fields are NEVER paths (THREAT_MODEL, path traversal).
-        val file = File(stagingDir, "stage-${begin.itemId}.bin")
+        val key = if (meta != null && lineageRepository != null) CheckpointKey.from(checkNotNull(lineageId), meta) else null
+        val resumed = if (begin.itemId in resumeItems && key != null) lineageRepository?.verifiedStaged(key) else null
+        if (begin.itemId in resumeItems && resumed == null) throw TransportException("verified staging unavailable; restart item from zero")
+        val file = resumed ?: File(stagingDir, if (lineageRepository == null) "stage-${begin.itemId}.bin"
+            else "${meta?.occurrenceId ?: "unrequested-${begin.itemId}"}.bin")
         val digest = MessageDigest.getInstance("SHA-256")
-        var received = 0L
+        var received = if (resumed != null) begin.size else 0L
+        if (resumed != null) resumed.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+        }
         var nextSeq = 0
         var endSha: String? = null
 
-        val sink: OutputStream? = if (failure == null) openSink(file) else null
+        if (key != null) {
+            val previous = checkNotNull(lineageRepository?.checkpoint(key))
+            if (previous.phase != ReceiptPhase.PREPARED && previous.phase != ReceiptPhase.RECEIVED_VERIFIED) {
+                lineageRepository.transition(key, previous.phase, ReceiptPhase.PREPARED)
+            }
+        }
+        val sink: OutputStream? = if (failure == null && resumed == null) openSink(file) else null
         try {
             chunks@ while (true) {
                 val message = receiveSkippingPing(channel)
                     ?: throw TransportException("connection lost mid-item")
                 when (message) {
                     is ProtocolMessage.ItemData -> {
+                        if (resumed != null) throw TransportException("resumed whole item must not contain DATA")
                         // Drain mode: a failed item still reads its frames to stay sync'd. Drained bytes
                         // are not separately capped here — the new aggregate/free-space gates route more
                         // item classes into drain, and that bound is delegated to the aggregate
@@ -243,18 +289,34 @@ class ItemStreamReceiver(
                 }
             }
         } finally {
-            runCatching { sink?.close() }
+            try {
+                sink?.flush()
+                (sink as? FileOutputStream)?.fd?.sync()
+            } catch (_: IOException) {
+                failure = ItemResult(begin.itemId, ItemStatus.WRITE_ERROR, "staged bytes could not be persisted")
+            } finally { sink?.close() }
         }
 
         val receipt = failure ?: verifyStaged(begin.itemId, meta, digest, endSha, received)
         if (receipt != null) {
             runCatching { file.delete() }
-            channel.send(ProtocolMessage.ItemAck(receipt))
-            return receipt
+            if (key != null) {
+                val previous = checkNotNull(lineageRepository?.checkpoint(key))
+                lineageRepository.transition(key, previous.phase, ReceiptPhase.FAILED, detail = receipt.detail)
+            }
+            val identified = receipt.copy(phase = ReceiptPhase.FAILED, occurrenceId = meta?.occurrenceId ?: "")
+            channel.send(ProtocolMessage.ItemAck(identified))
+            return identified
         }
 
         // Receipt verified — ack it, then apply; the apply verdict rides BATCH_ACK (§4).
-        channel.send(ProtocolMessage.ItemAck(ItemResult(begin.itemId, ItemStatus.OK)))
+        if (key != null && lineageRepository?.checkpoint(key)?.phase == ReceiptPhase.PREPARED) {
+            lineageRepository.transition(key, ReceiptPhase.PREPARED, ReceiptPhase.RECEIVED_VERIFIED, stagedFile = file)
+        }
+        channel.send(ProtocolMessage.ItemAck(ItemResult(begin.itemId, ItemStatus.OK,
+            phase = ReceiptPhase.RECEIVED_VERIFIED, occurrenceId = checkNotNull(meta).occurrenceId)))
+        check(!cancellationRequested()) { "move cancelled" }
+        if (key != null) lineageRepository?.transition(key, ReceiptPhase.RECEIVED_VERIFIED, ReceiptPhase.APPLYING)
         onEvent(Event.ItemApplying(begin.itemId))
         val outcome = try {
             file.inputStream().use { apply(checkNotNull(meta), it) }
@@ -263,9 +325,11 @@ class ItemStreamReceiver(
         } catch (t: Throwable) {
             ApplyOutcome(ItemStatus.WRITE_ERROR, t.message ?: "apply failed")
         } finally {
-            runCatching { file.delete() }
+            if (lineageRepository == null) runCatching { file.delete() }
         }
-        return ItemResult(begin.itemId, outcome.status, outcome.detail)
+        val phase = if (outcome.status == ItemStatus.OK) ReceiptPhase.APPLIED_DURABLE else ReceiptPhase.FAILED
+        if (key != null) lineageRepository?.transition(key, ReceiptPhase.APPLYING, phase, detail = outcome.detail)
+        return ItemResult(begin.itemId, outcome.status, outcome.detail, phase, checkNotNull(meta).occurrenceId)
     }
 
     /** Null = verified; otherwise the receipt failure to ack. */
@@ -307,6 +371,22 @@ class ItemStreamReceiver(
     private suspend fun receiveSkippingPing(channel: SecureChannel): ProtocolMessage? {
         while (true) {
             val message = channel.receive() ?: return null
+            if (message is ProtocolMessage.Cancel) {
+                require(message.lineageId == lineageId) { "cancel lineage mismatch" }
+                val store = checkNotNull(lineageRepository) { "cancel without lineage store" }
+                store.cancel(message.lineageId)
+                channel.send(ProtocolMessage.CancelAck(message.lineageId))
+                throw TransportException("peer cancelled this move; local data deleted")
+            }
+            if (message is ProtocolMessage.CancelAck) {
+                require(cancellationRequested() && message.lineageId == lineageId) { "unexpected cancel acknowledgement" }
+                checkNotNull(lineageRepository).markPeerDeleted(message.lineageId)
+                throw TransportException("move cancelled on both devices")
+            }
+            if ((message is ProtocolMessage.ItemBegin || message is ProtocolMessage.ItemEnd || message is ProtocolMessage.BatchEnd) &&
+                lineageId != null && !cancellationRequested()) {
+                lineageRepository?.authenticated(lineageId)
+            }
             if (message !is ProtocolMessage.Ping) return message
         }
     }
