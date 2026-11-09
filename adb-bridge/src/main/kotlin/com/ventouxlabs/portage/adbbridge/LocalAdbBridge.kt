@@ -11,8 +11,11 @@ package com.ventouxlabs.portage.adbbridge
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -38,6 +41,13 @@ class LocalAdbBridge internal constructor(
     private val connectTimeoutMs: Long = CONNECT_TIMEOUT_MS,
     private val shellTimeoutMs: Long = SHELL_TIMEOUT_MS,
 ) : AdbBridge {
+
+    /**
+     * Detached home for the blocking libadb connect (#156). Its mDNS discovery wait ignores thread
+     * interruption, so a cancelled [connect] must be able to return while the stuck worker is merely
+     * abandoned — never joined. SupervisorJob so an orphaned failure cannot touch the caller.
+     */
+    private val connectScope = CoroutineScope(SupervisorJob() + io)
 
     /** Serializes pair/connect/shell — one ADB conversation at a time (single stream, single adbd). */
     private val opLock = Mutex()
@@ -76,12 +86,16 @@ class LocalAdbBridge internal constructor(
             // in-flight discovery. Gate up front and never call connect() into a missing endpoint; the
             // wizard's route() uses the same guard. NoEndpoint is exactly "Wireless Debugging is off".
             if (!gate.isWirelessDebuggingEnabled()) return@withLock AdbBridge.ConnectionResult.NoEndpoint
+            // #156: the toggle can read ON while adbd's TLS endpoint is not listening (Wireless
+            // Debugging is per-network). gate.connect() then blocks in an interrupt-deaf discovery
+            // wait, and a bare withTimeout around it never unwinds. Run it detached and only AWAIT
+            // it, so the timeout below always bounds this call. The abandoned worker is cancelled
+            // (best effort) in the finally.
+            val attempt = connectScope.async { gate.connect(connectTimeoutMs) }
             try {
                 // The outer guard fires TIMEOUT_SLACK_MS after the gate's own timeout so the
                 // gate gets to map its own, more specific failure first.
-                withTimeout(connectTimeoutMs + TIMEOUT_SLACK_MS) {
-                    gate.connect(connectTimeoutMs)
-                }
+                withTimeout(connectTimeoutMs + TIMEOUT_SLACK_MS) { attempt.await() }
                 if (gate.isConnected()) {
                     AdbBridge.ConnectionResult.Connected
                 } else {
@@ -103,6 +117,8 @@ class LocalAdbBridge internal constructor(
                 }
             } catch (t: Throwable) {
                 AdbBridge.ConnectionResult.Rejected(CONNECT_FAILED)
+            } finally {
+                if (attempt.isActive) attempt.cancel()
             }
         }
     }
