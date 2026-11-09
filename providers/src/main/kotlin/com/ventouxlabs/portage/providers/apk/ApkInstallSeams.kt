@@ -9,6 +9,7 @@
  */
 package com.ventouxlabs.portage.providers.apk
 
+import java.io.File
 import java.io.InputStream
 
 /**
@@ -155,5 +156,22 @@ fun interface RuntimePermissionGranter {
     companion object {
         /** The default: grants nothing. Used in tests and wherever no privileged granter is wired. */
         val NoOp = RuntimePermissionGranter { _, _ -> emptySet() }
+    }
+}
+
+/**
+ * Derives the package name an APK REALLY declares from the staged base APK file itself (read in
+ * `:app-recv` via `PackageManager.getPackageArchiveInfo`), never from the sender-supplied container
+ * header. The privileged silent-install / `pm grant` path trusts only this value: a header name that
+ * differs is a confused-deputy attempt and the apply aborts. Returns null when the archive cannot be
+ * parsed. The default [None] always returns null, so an unwired provider FAILS CLOSED (no silent
+ * install, no grant).
+ */
+fun interface ApkArchivePackageName {
+    fun packageNameOf(baseApk: File): String?
+
+    companion object {
+        /** The default: cannot verify anything, so the privileged path is refused. */
+        val None = ApkArchivePackageName { null }
     }
 }

@@ -46,6 +46,9 @@ import java.io.InputStream
  */
 private const val NO_TAP_DEGRADED_NOTE = " — no-tap install unavailable"
 
+/** Neutral Tier-0 label when the staged base APK's real package could not be read. */
+private const val UNVERIFIED_LABEL = "an app (package unverified)"
+
 class ApkApplyProvider(
     private val stagingDir: File,
     private val targetConfig: () -> ApkTargetConfig,
@@ -64,6 +67,12 @@ class ApkApplyProvider(
      */
     private val permissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
     private val targetDeclaredPermissions: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
+    /**
+     * Confused-deputy guard: the package the staged base APK ACTUALLY declares. The privileged silent
+     * install + `pm grant` path only proceeds when this equals the header's (sender-supplied) package;
+     * every privileged call then uses this verified name. Default fails closed (see [ApkArchivePackageName]).
+     */
+    private val archivePackageName: ApkArchivePackageName = ApkArchivePackageName.None,
     private val onApkInstall: (ApkInstallAction) -> Unit,
     /**
      * Surfaces an "incompatible on this device — install from store" deep link (ADR-006 D3 step 2),
@@ -124,8 +133,23 @@ class ApkApplyProvider(
             val entries = ApkContainerValidation.validatedEntriesOrNull(header, staged.map { it.entry })
                 ?: return ApplyOutcome(ItemStatus.WRITE_ERROR, "invalid APK container (file set)")
 
+            // Confused-deputy guard: bind the sender-supplied header name to the REAL manifest of the staged
+            // base APK, once, right after staging. A mismatch is hostile/corrupt -> refuse on every path
+            // (nothing installed, nothing granted). An unreadable archive (null) is not trusted for any
+            // privileged action: it skips the silent install + grants and degrades to the Tier-0 tap path,
+            // where the system confirm dialog shows the real package. Every later use of the package name
+            // is this verified one; null means "unverified".
+            val verifiedPackage: String? = staged.firstOrNull { it.entry.name == ApkContainerValidation.BASE_NAME }
+                ?.file?.let(archivePackageName::packageNameOf)
+            if (verifiedPackage != null && verifiedPackage != header.packageName) {
+                return ApplyOutcome(
+                    ItemStatus.WRITE_ERROR,
+                    "refused: APK package does not match the declared package — not installed",
+                )
+            }
+
             // AC-18: skip an already-installed app at >= the container's versionCode (no downgrade).
-            installedVersions.installedVersionCode(header.packageName)?.let { installed ->
+            verifiedPackage?.let(installedVersions::installedVersionCode)?.let { installed ->
                 if (installed >= header.versionCode) {
                     return ApplyOutcome(
                         ItemStatus.SKIPPED,
@@ -144,7 +168,7 @@ class ApkApplyProvider(
             val reconcile = ApkReconcile.reconcile(derivedEntries, targetConfig())
             val keptEntries = when (reconcile) {
                 is ApkReconcile.Result.Incompatible -> {
-                    onStoreFallback?.invoke(header.packageName, header.packageName)
+                    verifiedPackage?.let { onStoreFallback?.invoke(it, it) }
                     return ApplyOutcome(
                         ItemStatus.SKIPPED,
                         "incompatible on this device — install from store (${reconcile.reason})",
@@ -168,13 +192,16 @@ class ApkApplyProvider(
             // outcome detail (#86): a wizard-set-up transfer that nonetheless taps shows the reason. The
             // presence of the note vs a plain message distinguishes "no SILENT_INSTALL at apply time"
             // (capability not live — plain message) from "bridge gone at apply time" (note + reason).
-            val silentNote: String = if (hasSilentInstall()) {
-                when (val result = silentInstaller.install(header.packageName, keptFiles)) {
+            val silentNote: String = if (hasSilentInstall() && verifiedPackage == null) {
+                // Audit note: SILENT_INSTALL was live but the base APK's package could not be verified.
+                "$NO_TAP_DEGRADED_NOTE (APK package unverified); used the tap installer"
+            } else if (hasSilentInstall() && verifiedPackage != null) {
+                when (val result = silentInstaller.install(verifiedPackage, keptFiles)) {
                     is ApkInstallResult.Installed -> {
                         // Silent install succeeded and the bridge path is live — the ONLY place runtime
                         // permission parity (ADR-006 D5) runs. Best-effort; never downgrades the OK status.
-                        val parity = grantRuntimePermissionParity(header.packageName, header.capturedPermissions)
-                        return ApplyOutcome(ItemStatus.OK, "installed ${header.packageName} silently$parity")
+                        val parity = grantRuntimePermissionParity(verifiedPackage, header.capturedPermissions)
+                        return ApplyOutcome(ItemStatus.OK, "installed $verifiedPackage silently$parity")
                     }
                     is ApkInstallResult.Failed ->
                         return ApplyOutcome(ItemStatus.WRITE_ERROR, "silent install failed: ${result.reason}")
@@ -189,10 +216,11 @@ class ApkApplyProvider(
 
             // Tier-0: emit the install action; the app-recv PackageInstaller adapter fires the system
             // confirm UI. The provider's success here is "install prompt surfaced", not "installed".
-            onApkInstall(ApkInstallAction(header.packageName, header.packageName, keptFiles))
+            val label = verifiedPackage ?: UNVERIFIED_LABEL
+            onApkInstall(ApkInstallAction(verifiedPackage ?: header.packageName, label, keptFiles))
             return ApplyOutcome(
                 ItemStatus.OK,
-                "ready to install ${header.packageName} — confirm on the next screen$silentNote",
+                "ready to install $label — confirm on the next screen$silentNote",
             )
         } finally {
             // Stage → act → wipe: drop the staged splits on every path. The Tier-0 PackageInstaller
@@ -214,8 +242,8 @@ class ApkApplyProvider(
      *     regression let a non-default perm into `auto`, this site refuses to hand it to `pm grant`. The
      *     planner already guarantees `auto ⊆ DEFAULT_SAFE`; this makes the grant site safe in isolation.
      *
-     * The package name is the header's, already validated against the package grammar
-     * ([ApkContainerValidation.validatedHeaderOrNull]); the permission strings are allowlist constants.
+     * The package name is the one VERIFIED against the staged APK's real manifest ([archivePackageName])
+     * and equal to the header's grammar-validated name; the permission strings are allowlist constants.
      * `AdbBridge.grantRuntimePermission` still re-validates both via `ShellArgs` at the wire boundary.
      */
     private suspend fun grantRuntimePermissionParity(packageName: String, captured: List<String>): String {

@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import com.ventouxlabs.portage.providers.apk.ApkSilentInstaller
 import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
+import com.ventouxlabs.portage.providers.apk.ApkArchivePackageName
 import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
 import com.ventouxlabs.portage.providers.roles.RoleRestorer
 import com.ventouxlabs.portage.providers.settings.TierOneGrant
@@ -36,6 +37,8 @@ class PrivilegeWiring(
     val hasSilentInstall: () -> Boolean,
     val permissionGranter: RuntimePermissionGranter,
     val targetDeclaredPermissions: TargetDeclaredPermissions,
+    /** Real package of the staged base APK; gates the silent install + grant (confused-deputy guard). */
+    val archivePackageName: ApkArchivePackageName,
     val tierOneGrant: TierOneGrant,
     val optInPermissionGranter: RuntimePermissionGranter,
     /**
