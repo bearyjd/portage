@@ -329,7 +329,8 @@ internal fun buildApplyProviders(
     hasSilentInstall: () -> Boolean = { false },
     permissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
     targetDeclaredPermissions: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
-    archivePackageName: ApkArchivePackageName = ApkArchivePackageName.None,
+    // Deliberately NO default: an omitted pass-through must be a compile error, not a silent-install outage.
+    archivePackageName: ApkArchivePackageName,
     tierOneGrant: TierOneGrant = TierOneGrant.Unavailable,
     // Whether this build can set a default-app role at all (#122): false on play, which ships no
     // bridge. Only shapes the reported item status, never what is surfaced.

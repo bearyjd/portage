@@ -398,43 +398,128 @@ class ApkApplyProviderTest {
     }
 
     @Test
-    fun `an APK whose package cannot be read is refused on the silent path with no grant`() = runTest {
+    fun `an unreadable APK package skips the silent install and any grant and degrades to Tier-0`() = runTest {
         val granter = RecordingGranter()
         var silentCalled = false
+        var action: ApkInstallAction? = null
         val outcome = provider(
             silent = { _, _ -> silentCalled = true; ApkInstallResult.Installed },
             hasSilent = { true },
             granter = granter,
             targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
             archiveName = ApkArchivePackageName { null },
+            onApkInstall = { action = it },
         ).apply(
             container(
+                packageName = "org.torproject.torbrowser",
                 capturedPermissions = listOf(PermissionAllowlist.INTERNET),
                 files = listOf(base() to ByteArray(4)),
             ),
         )
-        assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(outcome.detail).contains("package unverified")
         assertThat(silentCalled).isFalse()
         assertThat(granter.calls).isEqualTo(0)
+        // The unverified sender-supplied name is never used as the Tier-0 label.
+        assertThat(action).isNotNull()
+        assertThat(action!!.label).doesNotContain("torproject")
+        assertThat(outcome.detail).doesNotContain("torproject")
     }
 
     @Test
-    fun `the default archive seam fails closed so an unwired provider never grants`() = runTest {
+    fun `the default archive seam never grants and never installs silently`() = runTest {
         val granter = RecordingGranter()
+        var silentCalled = false
+        var emitted = false
         val outcome = provider(
-            silent = silentInstalls,
+            silent = { _, _ -> silentCalled = true; ApkInstallResult.Installed },
             hasSilent = { true },
             granter = granter,
             targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
             archiveName = ApkArchivePackageName.None,
+            onApkInstall = { emitted = true },
         ).apply(
             container(
                 capturedPermissions = listOf(PermissionAllowlist.INTERNET),
                 files = listOf(base() to ByteArray(4)),
             ),
         )
-        assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(silentCalled).isFalse()
         assertThat(granter.calls).isEqualTo(0)
+        assertThat(emitted).isTrue()
+    }
+
+    @Test
+    fun `a package mismatch is refused on the Tier-0 path too`() = runTest {
+        var emitted = false
+        val outcome = provider(
+            hasSilent = { false },
+            archiveName = ApkArchivePackageName { "com.attacker.dummy" },
+            onApkInstall = { emitted = true },
+        ).apply(container(files = listOf(base() to ByteArray(4))))
+        assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(emitted).isFalse()
+        assertThat(stagedFiles()).isEmpty()
+    }
+
+    @Test
+    fun `the AC-18 version skip and Tier-0 label use the verified package`() = runTest {
+        var asked: String? = null
+        var action: ApkInstallAction? = null
+        provider(
+            installed = InstalledPackageVersions { asked = it; null },
+            archiveName = ApkArchivePackageName { "com.example.app" },
+            onApkInstall = { action = it },
+        ).apply(container(files = listOf(base() to ByteArray(4))))
+        assertThat(asked).isEqualTo("com.example.app")
+        assertThat(action!!.packageName).isEqualTo("com.example.app")
+        assertThat(action!!.label).isEqualTo("com.example.app")
+    }
+
+    @Test
+    fun `the version skip is not driven by an unverified header name`() = runTest {
+        // Unreadable archive: the header's name must not be looked up (nor used to skip).
+        var asked = false
+        val outcome = provider(
+            installed = InstalledPackageVersions { asked = true; 99L },
+            archiveName = ApkArchivePackageName { null },
+        ).apply(container(files = listOf(base() to ByteArray(4))))
+        assertThat(asked).isFalse()
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+    }
+
+    @Test
+    fun `the store fallback uses the verified package only`() = runTest {
+        val seen = mutableListOf<String>()
+        provider(
+            archiveName = ApkArchivePackageName { "com.example.app" },
+            onStoreFallback = { p, _ -> seen += p },
+        ).apply(container(files = listOf(base() to ByteArray(4), abi("x86_64") to ByteArray(4))))
+        assertThat(seen).containsExactly("com.example.app")
+        val unverified = mutableListOf<String>()
+        provider(
+            archiveName = ApkArchivePackageName { null },
+            onStoreFallback = { p, _ -> unverified += p },
+        ).apply(container(files = listOf(base() to ByteArray(4), abi("x86_64") to ByteArray(4))))
+        assertThat(unverified).isEmpty()
+    }
+
+    @Test
+    fun `only the base split is read even when it is not first and splits claim another package`() = runTest {
+        val baseBytes = byteArrayOf(9, 9, 9, 9)
+        var silentPkg: String? = null
+        val outcome = provider(
+            silent = { pkg, _ -> silentPkg = pkg; ApkInstallResult.Installed },
+            hasSilent = { true },
+            archiveName = ApkArchivePackageName { f ->
+                if (f.readBytes().contentEquals(baseBytes)) "com.example.app" else "com.other.split"
+            },
+        ).apply(
+            container(files = listOf(abi("arm64_v8a") to byteArrayOf(1, 1, 1, 1), base() to baseBytes)),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(silentPkg).isEqualTo("com.example.app")
     }
 
     @Test

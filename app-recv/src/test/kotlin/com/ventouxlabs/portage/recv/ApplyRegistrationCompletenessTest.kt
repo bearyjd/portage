@@ -11,7 +11,17 @@ package com.ventouxlabs.portage.recv
 
 import com.ventouxlabs.portage.model.ItemKind
 import com.ventouxlabs.portage.providers.ApplyProviderRegistry
+import com.ventouxlabs.portage.model.ItemStatus
+import com.ventouxlabs.portage.providers.apk.ApkArchivePackageName
+import com.ventouxlabs.portage.providers.apk.ApkCodec
+import com.ventouxlabs.portage.providers.apk.ApkContainerHeader
+import com.ventouxlabs.portage.providers.apk.ApkFileEntry
+import com.ventouxlabs.portage.providers.apk.ApkFileRole
+import com.ventouxlabs.portage.providers.apk.ApkInstallResult
+import com.ventouxlabs.portage.providers.apk.ApkSilentInstaller
+import com.ventouxlabs.portage.providers.apk.ApkSourceFile
 import com.ventouxlabs.portage.providers.apk.ApkTargetConfig
+import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
 import com.ventouxlabs.portage.providers.calendar.CalendarStore
 import com.ventouxlabs.portage.providers.calendar.EventRecord
 import com.ventouxlabs.portage.providers.calllog.CallLogStore
@@ -34,7 +44,12 @@ import com.ventouxlabs.portage.providers.wallpaper.ImageBounds
 import com.ventouxlabs.portage.providers.wallpaper.WallpaperStore
 import com.ventouxlabs.portage.providers.wallpaper.WallpaperSurface
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.runBlocking
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
@@ -47,9 +62,16 @@ import java.io.File
  */
 class ApplyRegistrationCompletenessTest {
 
-    @Test
-    fun `every ItemKind has a registered apply provider`() {
-        val registry = ApplyProviderRegistry(
+    @get:Rule
+    val tmp = TemporaryFolder()
+
+    private fun registryWith(
+        stagingDir: File,
+        archivePackageName: ApkArchivePackageName = ApkArchivePackageName.None,
+        hasSilentInstall: () -> Boolean = { false },
+        silentInstaller: ApkSilentInstaller = ApkSilentInstaller.Deferred,
+        permissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
+    ): ApplyProviderRegistry = ApplyProviderRegistry(
             buildApplyProviders(
                 contactsStore = FakeContactsStore,
                 calendarStore = FakeCalendarStore,
@@ -58,7 +80,7 @@ class ApplyRegistrationCompletenessTest {
                 smsRoleGateway = FakeSmsRoleGateway,
                 mmsStore = FakeMmsStore,
                 inventorySource = FakeInventorySource,
-                apkStagingDir = File("unused-completeness-test-staging"),
+                apkStagingDir = stagingDir,
                 apkTargetConfig = { ApkTargetConfig(emptyList(), "mdpi", emptyList()) },
                 systemSettingsStore = FakeSystemSettingsStore,
                 secureGlobalSettingsStore = FakeSecureGlobalSettingsStore,
@@ -78,14 +100,59 @@ class ApplyRegistrationCompletenessTest {
                 ),
                 onApkInstall = {},
                 onStoreFallback = { _, _ -> },
-            ),
-        )
+                archivePackageName = archivePackageName,
+                hasSilentInstall = hasSilentInstall,
+                silentInstaller = silentInstaller,
+                permissionGranter = permissionGranter,
+            )
+    )
+
+    @Test
+    fun `every ItemKind has a registered apply provider`() {
+        val registry = registryWith(File("unused-completeness-test-staging"))
 
         val registered = ItemKind.entries.filter { registry.forKind(it) != null }
 
         // No apply-only exceptions today: every shipped ItemKind has an app-recv apply provider.
         assertThat(registered).containsExactlyElementsIn(ItemKind.entries)
     }
+    private fun apkItem(): ByteArray {
+        val entry = ApkFileEntry("base", ApkFileRole.BASE, length = 4)
+        val header = ApkContainerHeader("com.example.app", 1L, 1, emptyList())
+        return ByteArrayOutputStream().use { out ->
+            ApkCodec.writeContainer(out, header, listOf(ApkSourceFile(entry) { ByteArrayInputStream(ByteArray(4)) }))
+            out.toByteArray()
+        }
+    }
+
+    /** Pins the production wiring: the archive seam passed to [buildApplyProviders] reaches the silent path. */
+    @Test
+    fun `buildApplyProviders threads the archive seam into the silent install path`() = runBlocking {
+        var seamCalls = 0
+        val registry = registryWith(
+            stagingDir = tmp.newFolder("apk"),
+            archivePackageName = ApkArchivePackageName { seamCalls++; "com.example.app" },
+            hasSilentInstall = { true },
+            silentInstaller = ApkSilentInstaller { _, _ -> ApkInstallResult.Installed },
+        )
+        val outcome = registry.forKind(ItemKind.APK)!!.apply(ByteArrayInputStream(apkItem()))
+        assertThat(seamCalls).isEqualTo(1)
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(outcome.detail).contains("silently")
+    }
+
+    @Test
+    fun `an unwired archive seam never takes the silent path`() = runBlocking {
+        var silentCalls = 0
+        val registry = registryWith(
+            stagingDir = tmp.newFolder("apk-none"),
+            hasSilentInstall = { true },
+            silentInstaller = ApkSilentInstaller { _, _ -> silentCalls++; ApkInstallResult.Installed },
+        )
+        registry.forKind(ItemKind.APK)!!.apply(ByteArrayInputStream(apkItem()))
+        assertThat(silentCalls).isEqualTo(0)
+    }
+
 }
 
 private object FakeContactsStore : ContactsStore {

@@ -9,6 +9,7 @@
  */
 package com.ventouxlabs.portage.recv.privilege
 
+import com.ventouxlabs.portage.providers.apk.ApkArchivePackageName
 import com.ventouxlabs.portage.providers.apk.ApkInstallResult
 import com.ventouxlabs.portage.providers.apk.ApkSilentInstaller
 import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
@@ -58,5 +59,13 @@ class PlayPrivilegeIntegrationTest {
         // The Tier-1 WRITE_SECURE_SETTINGS grant is permanently unavailable on play.
         assertThat(wiring.tierOneGrant.ensureWriteSecureSettingsGranted())
             .isEqualTo(TierOneGrant.Outcome.UNAVAILABLE)
+    }
+
+    @Test
+    fun `play wiring has the fail-closed archive seam and never the silent path`() {
+        val wiring = playWiring()
+        assertThat(wiring.archivePackageName).isSameInstanceAs(ApkArchivePackageName.None)
+        assertThat(wiring.archivePackageName.packageNameOf(java.io.File("base.apk"))).isNull()
+        assertThat(wiring.hasSilentInstall()).isFalse()
     }
 }
