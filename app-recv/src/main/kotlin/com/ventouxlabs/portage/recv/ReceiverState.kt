@@ -141,8 +141,13 @@ sealed interface ReceiverState {
         val failedItems: List<FailedItem> = emptyList(),
     ) : ReceiverState
 
-    /** Fail-closed terminal state with a user-facing reason. */
-    data class Failed(val reason: String) : ReceiverState
+    /**
+     * Fail-closed terminal state with a user-facing reason. [mayHaveApplied] is true only for failures
+     * raised after the data phase began (items apply as they arrive, so some may already be on this
+     * phone, #157); failures before any item is applied (bad QR, no manifest, pairing) pass false. Required (no default)
+     * so a new Failed(...) must decide; false is the claim that must never be made by accident.
+     */
+    data class Failed(val reason: String, val mayHaveApplied: Boolean) : ReceiverState
 
     /**
      * The visible state of one tapped role (#122). There is deliberately no SUCCEEDED entry: a

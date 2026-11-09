@@ -322,7 +322,7 @@ class ReceiverViewModel(
     fun onQrScanned(qr: String) {
         if (_state.value !is ReceiverState.Scanning) return
         val payload = pairingCodec.decode(qr, nowEpochSeconds()).getOrElse {
-            _state.value = ReceiverState.Failed(it.message ?: "Invalid pairing QR")
+            _state.value = ReceiverState.Failed(it.message ?: "Invalid pairing QR", mayHaveApplied = false)
             return
         }
         _state.value = ReceiverState.Pairing
@@ -337,12 +337,12 @@ class ReceiverViewModel(
                             groups = ReceiverChecklist.build(msg.manifest),
                             absentKinds = ReceiverChecklist.absentKinds(msg.manifest),
                         )
-                    else -> fail("Sender did not send a manifest")
+                    else -> fail("Sender did not send a manifest", mayHaveApplied = false)
                 }
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
-                fail(t.message ?: "Pairing failed")
+                fail(t.message ?: "Pairing failed", mayHaveApplied = false)
             }
         }
     }
@@ -421,7 +421,7 @@ class ReceiverViewModel(
                     // null ⇒ the aggregate budget elapsed (a reset() closes the channel → transport
                     // error in catch(t), not null). Fail closed: fail() closes the channel; the block's
                     // finally clauses already swept staging / relinquished the SMS role on the unwind.
-                    fail("Transfer timed out — it took too long to finish")
+                    fail("Transfer timed out — it took too long to finish", mayHaveApplied = true)
                     return@launch
                 }
                 ensureActive() // a reset() mid-run must not be overwritten by Done
@@ -439,7 +439,7 @@ class ReceiverViewModel(
                 // falls through to fail(), which may overwrite the Idle reset() just set. This
                 // is a pre-existing, accepted LOW: the window is narrow and it fails closed.
                 ensureActive()
-                fail(t.message ?: "Transfer failed")
+                fail(t.message ?: "Transfer failed", mayHaveApplied = true)
             } finally {
                 // Always release the keep-alive — done, fail, timeout, or reset() close
                 // unwinding through here. Idempotent.
@@ -807,10 +807,10 @@ class ReceiverViewModel(
     }
 
     /** Fail-closed terminal transition: close the live channel, then surface the reason. */
-    private fun fail(reason: String) {
+    private fun fail(reason: String, mayHaveApplied: Boolean) {
         channel?.close()
         channel = null
-        _state.value = ReceiverState.Failed(reason)
+        _state.value = ReceiverState.Failed(reason, mayHaveApplied)
     }
 
     override fun onCleared() {

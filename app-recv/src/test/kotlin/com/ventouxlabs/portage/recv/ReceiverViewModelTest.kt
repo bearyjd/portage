@@ -313,6 +313,44 @@ class ReceiverViewModelTest {
         advanceUntilIdle()
 
         assertThat(vm.state.value).isInstanceOf(ReceiverState.Failed::class.java)
+        assertThat((vm.state.value as ReceiverState.Failed).mayHaveApplied).isFalse()
+    }
+
+    @Test
+    fun `a missing manifest fails without claiming anything may have been applied`() = runTest(dispatcher) {
+        val vm = viewModel(FakeChannel(ProtocolMessage.Hello("v", "fp")))
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        val failed = vm.state.value as ReceiverState.Failed
+        assertThat(failed.mayHaveApplied).isFalse()
+    }
+
+    @Test
+    fun `a pairing handshake error fails without claiming anything may have been applied`() = runTest(dispatcher) {
+        val vm = ReceiverViewModel(
+            pairingCodec = FakeCodec(),
+            channelFactory = object : SecureChannel.Factory {
+                override suspend fun connectAsReceiver(payload: PairingPayload): SecureChannel =
+                    throw java.io.IOException("handshake failed")
+                override suspend fun acceptAsSender(payload: PairingPayload): SecureChannel =
+                    throw UnsupportedOperationException()
+            },
+            nowEpochSeconds = { 1_000 },
+            appVersion = "test",
+            osFingerprint = "test-fingerprint",
+            stagingDir = tmp.root,
+            transferKeepAlive = TransferKeepAlive.NoOp,
+            ioDispatcher = dispatcher,
+        )
+        vm.startScanning()
+        vm.onQrScanned("good-qr")
+        advanceUntilIdle()
+
+        val failed = vm.state.value as ReceiverState.Failed
+        assertThat(failed.reason).contains("handshake")
+        assertThat(failed.mayHaveApplied).isFalse()
     }
 
     @Test
@@ -608,6 +646,7 @@ class ReceiverViewModelTest {
 
         val failed = vm.state.value as ReceiverState.Failed
         assertThat(failed.reason).contains("connection lost")
+        assertThat(failed.mayHaveApplied).isTrue()
         assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // partial staging swept
     }
 
@@ -682,6 +721,7 @@ class ReceiverViewModelTest {
 
         val failed = vm.state.value as ReceiverState.Failed
         assertThat(failed.reason).contains("timed out") // null, NOT an escaped CancellationException
+        assertThat(failed.mayHaveApplied).isTrue()
         assertThat(channel.closed).isTrue()
         assertThat(tmp.root.listFiles().orEmpty()).isEmpty() // finallys ran across the boundary
         assertThat(keepAlive.stops).isEqualTo(1) // released on the timeout unwind

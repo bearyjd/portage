@@ -27,6 +27,24 @@ import androidx.compose.ui.unit.dp
 import com.ventouxlabs.portage.recv.ui.theme.LocalSpacing
 
 /**
+ * Transfers are not atomic (PROTOCOL.md §5): items apply as they arrive, so a mid-stream failure can
+ * leave already-applied items on this phone (#157). This note must never claim a clean rollback.
+ */
+internal const val FAILED_PARTIAL_NOTE =
+    "The transfer stopped partway. Some items may already have been applied to this phone, " +
+        "so starting over could create duplicates."
+
+/**
+ * True of THIS attempt only (bad QR, no manifest, pairing). Deliberately no "safe to retry" promise:
+ * an earlier attempt may have applied items, and redoing the transfer would duplicate them.
+ */
+internal const val FAILED_NOTHING_APPLIED_NOTE =
+    "This attempt didn’t change anything on this phone."
+
+internal fun failedNote(mayHaveApplied: Boolean): String =
+    if (mayHaveApplied) FAILED_PARTIAL_NOTE else FAILED_NOTHING_APPLIED_NOTE
+
+/**
  * Fail-closed terminal state. Deliberately calm — the red accent appears only as a small
  * marker square next to the heading (semantic, not alarming). The reason is shown verbatim,
  * then a single "Try again" returns to Idle.
@@ -36,6 +54,7 @@ fun FailedScreen(
     reason: String,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    mayHaveApplied: Boolean = true,
 ) {
     val s = LocalSpacing.current
     Column(
@@ -65,7 +84,7 @@ fun FailedScreen(
         )
         Spacer(Modifier.height(s.md))
         Text(
-            text = "Nothing was changed on this phone. You can start over.",
+            text = failedNote(mayHaveApplied),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

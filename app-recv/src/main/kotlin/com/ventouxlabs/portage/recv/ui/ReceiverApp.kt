@@ -233,6 +233,7 @@ private fun StateBody(
         is ReceiverState.Failed ->
             FailedScreen(
                 reason = current.reason,
+                mayHaveApplied = current.mayHaveApplied,
                 onRetry = viewModel::reset,
                 modifier = Modifier.fillMaxSize(),
             )
