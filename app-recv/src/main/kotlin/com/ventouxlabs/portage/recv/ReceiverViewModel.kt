@@ -322,7 +322,7 @@ class ReceiverViewModel(
     fun onQrScanned(qr: String) {
         if (_state.value !is ReceiverState.Scanning) return
         val payload = pairingCodec.decode(qr, nowEpochSeconds()).getOrElse {
-            _state.value = ReceiverState.Failed(it.message ?: "Invalid pairing QR")
+            _state.value = ReceiverState.Failed(it.message ?: "Invalid pairing QR", mayHaveApplied = false)
             return
         }
         _state.value = ReceiverState.Pairing
@@ -337,12 +337,12 @@ class ReceiverViewModel(
                             groups = ReceiverChecklist.build(msg.manifest),
                             absentKinds = ReceiverChecklist.absentKinds(msg.manifest),
                         )
-                    else -> fail("Sender did not send a manifest")
+                    else -> fail("Sender did not send a manifest", mayHaveApplied = false)
                 }
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
-                fail(t.message ?: "Pairing failed")
+                fail(t.message ?: "Pairing failed", mayHaveApplied = false)
             }
         }
     }
@@ -807,7 +807,7 @@ class ReceiverViewModel(
     }
 
     /** Fail-closed terminal transition: close the live channel, then surface the reason. */
-    private fun fail(reason: String, mayHaveApplied: Boolean = false) {
+    private fun fail(reason: String, mayHaveApplied: Boolean) {
         channel?.close()
         channel = null
         _state.value = ReceiverState.Failed(reason, mayHaveApplied)

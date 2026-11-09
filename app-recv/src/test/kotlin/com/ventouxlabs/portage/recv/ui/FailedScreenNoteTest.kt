@@ -40,5 +40,7 @@ class FailedScreenNoteTest {
         val note = failedNote(mayHaveApplied = false)
         assertThat(note).isEqualTo(FAILED_NOTHING_APPLIED_NOTE)
         assertThat(note.lowercase()).doesNotContain("duplicates")
+        assertThat(note.lowercase()).doesNotContain("safe")
+        assertThat(note).contains("This attempt")
     }
 }
