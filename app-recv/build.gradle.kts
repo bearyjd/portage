@@ -80,6 +80,14 @@ android {
 kotlin { jvmToolchain(17) }
 
 dependencies {
+    // Floor for a transitive guava (OSV gate, GHSA-xxph-c9ww-hj94). A constraint only raises the
+    // version if something already pulls guava in; it adds no dependency of its own.
+    constraints {
+        implementation(libs.guava.android) { because("GHSA-xxph-c9ww-hj94: guava < 33.7.2") }
+        // The androidTest classpath does not inherit the main `implementation` constraint, and
+        // truth (androidTestImplementation below) pulls guava in, so the floor is repeated here.
+        androidTestImplementation(libs.guava.android) { because("GHSA-xxph-c9ww-hj94: guava < 33.7.2") }
+    }
     implementation(project(":core-model"))
     implementation(project(":core-transport"))
     implementation(project(":providers"))
