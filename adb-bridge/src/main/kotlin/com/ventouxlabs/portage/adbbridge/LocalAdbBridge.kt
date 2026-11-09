@@ -12,10 +12,12 @@ package com.ventouxlabs.portage.adbbridge
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -23,6 +25,7 @@ import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import java.net.ConnectException
 import java.net.NoRouteToHostException
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLException
 
 /**
@@ -35,12 +38,26 @@ import javax.net.ssl.SSLException
  */
 class LocalAdbBridge internal constructor(
     private val selfPackage: String,
-    private val gate: AdbDeviceGate,
+    gate: AdbDeviceGate,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val pairTimeoutMs: Long = PAIR_TIMEOUT_MS,
     private val connectTimeoutMs: Long = CONNECT_TIMEOUT_MS,
     private val shellTimeoutMs: Long = SHELL_TIMEOUT_MS,
+    /**
+     * Builds a fresh gate (and so a fresh libadb manager). libadb's `autoConnect` holds the manager's
+     * internal lock for the whole discovery wait, and isConnected/pair/openStream/disconnect take the
+     * same lock — so a manager whose connect was abandoned on [ConnectionResult.Timeout] must never be
+     * reused (#156). Null (tests with a single fake) keeps the original gate.
+     */
+    private val gateFactory: (() -> AdbDeviceGate)? = null,
 ) : AdbBridge {
+
+    /** The live gate; replaced after an abandoned connect so later ops never touch the stuck lock. */
+    @Volatile
+    private var gate: AdbDeviceGate = gate
+
+    /** Abandoned connect workers still running; bounds thread accumulation across retries. */
+    private val abandonedConnects = AtomicInteger(0)
 
     /**
      * Detached home for the blocking libadb connect (#156). Its mDNS discovery wait ignores thread
@@ -91,7 +108,12 @@ class LocalAdbBridge internal constructor(
             // wait, and a bare withTimeout around it never unwinds. Run it detached and only AWAIT
             // it, so the timeout below always bounds this call. The abandoned worker is cancelled
             // (best effort) in the finally.
-            val attempt = connectScope.async { gate.connect(connectTimeoutMs) }
+            // Previous workers are still stuck in interrupt-deaf waits: do not pile more threads on.
+            if (abandonedConnects.get() >= MAX_ABANDONED_CONNECTS) {
+                return@withLock AdbBridge.ConnectionResult.Timeout
+            }
+            val connectGate = gate
+            val attempt = connectScope.async { connectGate.connect(connectTimeoutMs) }
             try {
                 // The outer guard fires TIMEOUT_SLACK_MS after the gate's own timeout so the
                 // gate gets to map its own, more specific failure first.
@@ -102,9 +124,12 @@ class LocalAdbBridge internal constructor(
                     AdbBridge.ConnectionResult.Rejected(KEY_REFUSED)
                 }
             } catch (t: TimeoutCancellationException) {
+                abandon(attempt, connectGate)
                 AdbBridge.ConnectionResult.Timeout
             } catch (c: CancellationException) {
                 throw c
+            } catch (e: AdbEndpointNotFoundException) {
+                AdbBridge.ConnectionResult.NoEndpoint
             } catch (i: InterruptedException) {
                 // libadb-android signals "no endpoint discovered in time" as InterruptedException.
                 AdbBridge.ConnectionResult.NoEndpoint
@@ -121,6 +146,20 @@ class LocalAdbBridge internal constructor(
                 if (attempt.isActive) attempt.cancel()
             }
         }
+    }
+
+    /**
+     * Give up on a stuck connect: swap in a fresh gate so nothing else queues on the abandoned
+     * manager's lock, and tear the old one down off-thread (its close may itself block on that lock).
+     */
+    private fun abandon(attempt: Deferred<Boolean>, stuck: AdbDeviceGate) {
+        if (!attempt.isCompleted) {
+            abandonedConnects.incrementAndGet()
+            attempt.invokeOnCompletion { abandonedConnects.decrementAndGet() }
+        }
+        val factory = gateFactory ?: return
+        gate = factory()
+        connectScope.launch { runCatching { stuck.closeQuietly() } }
     }
 
     override fun isConnected(): Boolean = gate.isConnected()
@@ -456,6 +495,9 @@ class LocalAdbBridge internal constructor(
         const val CONNECT_TIMEOUT_MS = 15_000L
         const val SHELL_TIMEOUT_MS = 20_000L
         const val TIMEOUT_SLACK_MS = 2_000L
+
+        /** Max connect workers left running (interrupt-deaf) before further connects fail fast. */
+        const val MAX_ABANDONED_CONNECTS = 2
 
         /** Max sweeps to attempt on any inconclusive sweep (transient OR drop); idempotent probes, safe to re-run. */
         const val MAX_PROBE_ATTEMPTS = 3
