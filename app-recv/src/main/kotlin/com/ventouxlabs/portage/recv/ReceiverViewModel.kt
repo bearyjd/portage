@@ -369,54 +369,7 @@ class ReceiverViewModel(
                 // Hold the process alive + CPU awake for the whole item stream (#85): released in the
                 // finally below on EVERY exit (done / fail / timeout / reset). Idempotent.
                 transferKeepAlive.start()
-                // Cap the WHOLE data phase, not just each read. withDataPhaseDeadline returns null
-                // on ITS OWN deadline ONLY, so a stalled peer becomes a visible Failed rather than
-                // a re-thrown cancellation. null strictly means "this budget elapsed": the block
-                // always returns a non-null List, and a concurrent reset() here CLOSES THE CHANNEL
-                // (the receiver has no transferJob to cancel) — which surfaces as a transport error
-                // in catch(t), never as null (the helper rethrows pre-deadline errors untouched).
-                // Its watchdog closes the channel at the deadline (#56), unblocking even a read
-                // parked in native code, so the cap fires at ~dataPhaseTimeoutMs instead of the old
-                // budget-plus-one-soTimeout slack; the block's finally clauses (staging sweep /
-                // SMS-role relinquish) still run on the unwind before we fail. See
-                // [DATA_PHASE_TIMEOUT_MS].
-                val results = withDataPhaseDeadline(ch, dataPhaseTimeoutMs) {
-                    withSmsRoleIfNeeded(needsSmsRole) {
-                        ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
-                        // Off Main for the whole stream (#158). Deliberately INSIDE
-                        // withSmsRoleIfNeeded, not outside it: acquireRole/relinquishTo launch an
-                        // interactive system dialog through ActivityResultLauncher, which is NOT
-                        // thread-safe and must stay on the caller's (main) context. That path is
-                        // hardware-verified (#61) and must not regress — hoisting this withContext
-                        // outward would move both onto IO. Pinned by
-                        // `the SMS role handoff stays on the main dispatcher …`.
-                        // Applies stay strictly sequential because ItemStreamReceiver processes
-                        // items one at a time on a single coroutine (see applyStaged's INVARIANT
-                        // note) — withContext adds no parallelism.
-                        withContext(ioDispatcher) {
-                            ItemStreamReceiver(
-                                stagingDir = stagingDir,
-                                // Raise the per-item cap for the two large-payload kinds, each to
-                                // its OWN documented ceiling: the APP_BACKUP_RELAY opaque blob
-                                // (PRP-06 §5) and the APK container item (ADR-006 D4, 1 GiB via
-                                // ApkContainerValidation). Every other kind keeps the 64 MiB Tier-0
-                                // default — the raise never leaks into the PII/Tier-0 item paths.
-                                maxBytesByKind = mapOf(
-                                    ItemKind.APP_BACKUP_RELAY to MAX_RELAY_ITEM_BYTES,
-                                    ItemKind.APK to ApkContainerValidation.MAX_APK_ITEM_BYTES,
-                                    ItemKind.SOUND_FILE to SoundFileHeader.MAX_ITEM_BYTES,
-                                    ItemKind.USER_FILE to UserFileHeader.MAX_ITEM_BYTES,
-                                ),
-                                userFileMaxTotalBytes = UserFileHeader.MAX_TOTAL_BYTES,
-                            ).run(
-                                channel = ch,
-                                expected = selected.associateBy { it.itemId },
-                                apply = ::applyStaged,
-                                onEvent = ::onReceiveEvent,
-                            )
-                        }
-                    }
-                }
+                val results = runDataPhase(ch, selected, needsSmsRole)
                 if (results == null) {
                     // null ⇒ the aggregate budget elapsed (a reset() closes the channel → transport
                     // error in catch(t), not null). Fail closed: fail() closes the channel; the block's
@@ -444,6 +397,66 @@ class ReceiverViewModel(
                 // Always release the keep-alive — done, fail, timeout, or reset() close
                 // unwinding through here. Idempotent.
                 transferKeepAlive.stop()
+            }
+        }
+    }
+
+    /**
+     * The data phase: layer ordering is load-bearing. Outermost to innermost:
+     * [withDataPhaseDeadline] > [withSmsRoleIfNeeded] > `withContext(ioDispatcher)`.
+     * Returns null strictly when the aggregate data-phase budget elapsed.
+     */
+    private suspend fun runDataPhase(
+        ch: SecureChannel,
+        selected: List<ItemMeta>,
+        needsSmsRole: Boolean,
+    ): List<ItemResult>? {
+        // Cap the WHOLE data phase, not just each read. withDataPhaseDeadline returns null
+        // on ITS OWN deadline ONLY, so a stalled peer becomes a visible Failed rather than
+        // a re-thrown cancellation. null strictly means "this budget elapsed": the block
+        // always returns a non-null List, and a concurrent reset() here CLOSES THE CHANNEL
+        // (the receiver has no transferJob to cancel) — which surfaces as a transport error
+        // in catch(t), never as null (the helper rethrows pre-deadline errors untouched).
+        // Its watchdog closes the channel at the deadline (#56), unblocking even a read
+        // parked in native code, so the cap fires at ~dataPhaseTimeoutMs instead of the old
+        // budget-plus-one-soTimeout slack; the block's finally clauses (staging sweep /
+        // SMS-role relinquish) still run on the unwind before we fail. See
+        // [DATA_PHASE_TIMEOUT_MS].
+        return withDataPhaseDeadline(ch, dataPhaseTimeoutMs) {
+            withSmsRoleIfNeeded(needsSmsRole) {
+                ch.send(ProtocolMessage.Select(selected.map { it.itemId }))
+                // Off Main for the whole stream (#158). Deliberately INSIDE
+                // withSmsRoleIfNeeded, not outside it: acquireRole/relinquishTo launch an
+                // interactive system dialog through ActivityResultLauncher, which is NOT
+                // thread-safe and must stay on the caller's (main) context. That path is
+                // hardware-verified (#61) and must not regress — hoisting this withContext
+                // outward would move both onto IO. Pinned by
+                // `the SMS role handoff stays on the main dispatcher …`.
+                // Applies stay strictly sequential because ItemStreamReceiver processes
+                // items one at a time on a single coroutine (see applyStaged's INVARIANT
+                // note) — withContext adds no parallelism.
+                withContext(ioDispatcher) {
+                    ItemStreamReceiver(
+                        stagingDir = stagingDir,
+                        // Raise the per-item cap for the two large-payload kinds, each to
+                        // its OWN documented ceiling: the APP_BACKUP_RELAY opaque blob
+                        // (PRP-06 §5) and the APK container item (ADR-006 D4, 1 GiB via
+                        // ApkContainerValidation). Every other kind keeps the 64 MiB Tier-0
+                        // default — the raise never leaks into the PII/Tier-0 item paths.
+                        maxBytesByKind = mapOf(
+                            ItemKind.APP_BACKUP_RELAY to MAX_RELAY_ITEM_BYTES,
+                            ItemKind.APK to ApkContainerValidation.MAX_APK_ITEM_BYTES,
+                            ItemKind.SOUND_FILE to SoundFileHeader.MAX_ITEM_BYTES,
+                            ItemKind.USER_FILE to UserFileHeader.MAX_ITEM_BYTES,
+                        ),
+                        userFileMaxTotalBytes = UserFileHeader.MAX_TOTAL_BYTES,
+                    ).run(
+                        channel = ch,
+                        expected = selected.associateBy { it.itemId },
+                        apply = ::applyStaged,
+                        onEvent = ::onReceiveEvent,
+                    )
+                }
             }
         }
     }
