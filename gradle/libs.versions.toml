@@ -63,6 +63,9 @@ libadb-android = { module = "com.github.MuntashirAkon:libadb-android", version.r
 conscrypt-android = { module = "org.conscrypt:conscrypt-android", version.ref = "conscrypt" }
 guava-android = { module = "com.google.guava:guava", version.ref = "guava" }
 bouncycastle-bcpkix = { module = "org.bouncycastle:bcpkix-jdk15to18", version.ref = "bcpkix" }
+# Declared directly (same release train as bcpkix): with bcutil excluded from bcpkix, nothing else
+# lifts libadb's transitive bcprov 1.81 to the version that clears the OSV advisories.
+bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk15to18", version.ref = "bcpkix" }
 
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxingCore" }
 zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxingEmbedded" }
