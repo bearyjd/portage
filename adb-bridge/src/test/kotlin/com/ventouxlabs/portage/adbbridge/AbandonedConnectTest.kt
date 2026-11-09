@@ -11,6 +11,7 @@ package com.ventouxlabs.portage.adbbridge
 
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -92,6 +93,22 @@ class AbandonedConnectTest {
         assertThat(boundedRun { bridge.pair(1234, "000000") })
             .isEqualTo(AdbBridge.PairingResult.Paired)
         assertThat(boundedRun { bridge.disconnect() }).isNotNull()
+    }
+
+    @Test
+    fun `cancelling the caller during a stuck connect abandons the gate so the next connect does not hang`() {
+        val bridge = bridge(LockingGate()) { HealthyGate() }
+        val started = CountDownLatch(1)
+        val caller = CoroutineScope(Dispatchers.IO).launch {
+            started.countDown()
+            bridge.connect()
+        }
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue()
+        Thread.sleep(100) // let connect() reach the stuck gate.connect
+        caller.cancel()
+
+        // Healthy replacement gate: completes (not connected => Rejected), never blocks.
+        assertThat(boundedRun { bridge.connect() }).isNotNull()
     }
 
     @Test

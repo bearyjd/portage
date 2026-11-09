@@ -164,6 +164,18 @@ class PrivilegeWizardTest {
     }
 
     @Test
+    fun `a connect Timeout with wireless debugging on says the network is unreachable, not re-pair`() = runTest {
+        val bridge = FakeBridge().apply { connectResult = { AdbBridge.ConnectionResult.Timeout } }
+        val w = wizard(bridge, FakeEnvironment(devOptions = true, wirelessDebug = true))
+
+        w.start()
+        advanceUntilIdle()
+
+        val step = w.step.value as PrivilegeWizard.Step.EnterPairingCode
+        assertThat(step.error).isEqualTo(PrivilegeWizard.PairingError.NOT_REACHABLE)
+    }
+
+    @Test
     fun `toggle on with a reconnectable bridge reaches Ready via the post-gate connect`() = runTest {
         // Explicit cover for route()'s post-gate connect-success branch. It was only covered
         // transitively by the default environment happening to pass both gates; pin it here with

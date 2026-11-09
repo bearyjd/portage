@@ -427,6 +427,28 @@ class ApkApplyProviderTest {
     }
 
     @Test
+    fun `an unreadable base APK on a device with the same version installed gets the tap prompt, not SKIPPED, and no grant`() = runTest {
+        val granter = RecordingGranter()
+        var action: ApkInstallAction? = null
+        val outcome = provider(
+            installed = InstalledPackageVersions { 7L },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
+            archiveName = ApkArchivePackageName { null },
+            onApkInstall = { action = it },
+        ).apply(
+            container(
+                versionCode = 7L,
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(action).isNotNull()
+        assertThat(granter.calls).isEqualTo(0)
+    }
+
+    @Test
     fun `the default archive seam never grants and never installs silently`() = runTest {
         val granter = RecordingGranter()
         var silentCalled = false
