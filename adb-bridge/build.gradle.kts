@@ -30,13 +30,7 @@ dependencies {
     // libadb-android falls back to a hidden platform Conscrypt class (ADR-003 §risks).
     implementation(libs.conscrypt.android)
     // Self-signed X.509 for the ADB identity (AdbKeyStore); bcprov rides in transitively.
-    implementation(libs.bouncycastle.bcpkix) {
-        // bcprov 1.85 (needed for GHSA-9pwp-9qqc-pr26 / GHSA-qp49-qgx5-5m26) now also ships
-        // org.bouncycastle.asn1.iana.IANAObjectIdentifiers, which bcutil ships too, so AGP's
-        // duplicate-class check fails. The identity cert uses X509v3CertificateBuilder only, not
-        // the CMS/OCSP/TSP classes bcutil carries. Revisit when a BouncyCastle release fixes the overlap.
-        exclude(group = "org.bouncycastle", module = "bcutil-jdk15to18")
-    }
+    implementation(libs.bouncycastle.bcpkix)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)
