@@ -19,6 +19,8 @@ import android.provider.Settings
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runInterruptible
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -64,9 +66,8 @@ internal class LibAdbDeviceGate(
         Settings.Global.getInt(appContext.contentResolver, ADB_WIFI_ENABLED, 0) == 1
     }.getOrDefault(false)
 
-    override suspend fun connect(timeoutMs: Long): Boolean = runInterruptible(io) {
-        manager.connectTls(appContext, timeoutMs)
-    }
+    override suspend fun connect(timeoutMs: Long): Boolean =
+        connectMappingDiscoveryTimeout(io) { manager.connectTls(appContext, timeoutMs) }
 
     override fun isConnected(): Boolean =
         lazyManager.isInitialized() && runCatching { manager.isConnected }.getOrDefault(false)
@@ -151,6 +152,29 @@ internal class LibAdbDeviceGate(
 }
 
 /**
+ * Run a blocking libadb connect interruptibly, but keep libadb's own "Timed out…" signal apart from a
+ * real coroutine cancellation. libadb throws [InterruptedException] when its timed discovery wait
+ * expires; `runInterruptible` would turn that into a [kotlinx.coroutines.CancellationException] and
+ * the caller would be cancelled silently (#156: wizard stuck on "Checking" forever). Inside the block
+ * the coroutine is still active iff the interrupt came from libadb, so only then map it to a typed
+ * [AdbEndpointNotFoundException]; a genuine cancel keeps propagating.
+ */
+internal suspend fun connectMappingDiscoveryTimeout(
+    io: CoroutineDispatcher,
+    block: () -> Boolean,
+): Boolean {
+    val job = currentCoroutineContext()[Job]
+    return runInterruptible(io) {
+        try {
+            block()
+        } catch (e: InterruptedException) {
+            if (job?.isActive == false) throw e
+            throw AdbEndpointNotFoundException(e.message ?: "adb connect endpoint not found")
+        }
+    }
+}
+
+/**
  * libadb-android subclass supplying our persisted identity. `setApi` tells the library the
  * adbd version it speaks to — for self-connection that is exactly this device's SDK.
  */
@@ -184,6 +208,8 @@ object AdbBridges {
             return LocalAdbBridge(
                 selfPackage = app.packageName,
                 gate = LibAdbDeviceGate(app, keyStore),
+                // Same persisted identity, fresh manager: used after an abandoned (stuck) connect.
+                gateFactory = { LibAdbDeviceGate(app, keyStore) },
             ).also { cached = it }
         }
     }

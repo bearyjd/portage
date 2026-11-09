@@ -67,3 +67,9 @@ internal interface AdbDeviceGate {
     @Throws(Exception::class)
     suspend fun execWithStdin(command: String, input: java.io.InputStream, size: Long): String
 }
+
+/**
+ * libadb's timed discovery wait expired: no `_adb-tls-connect` endpoint is listening. Typed so it
+ * survives `runInterruptible` (which turns a raw [InterruptedException] into a silent cancellation).
+ */
+internal class AdbEndpointNotFoundException(message: String) : java.io.IOException(message)
