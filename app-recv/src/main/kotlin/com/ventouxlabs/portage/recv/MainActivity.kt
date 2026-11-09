@@ -26,6 +26,7 @@ import com.ventouxlabs.portage.providers.apk.ApkSilentInstaller
 import com.ventouxlabs.portage.providers.apk.ApkTargetConfig
 import com.ventouxlabs.portage.providers.apk.InstalledPackageVersions
 import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
+import com.ventouxlabs.portage.providers.apk.ApkArchivePackageName
 import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
 import com.ventouxlabs.portage.providers.inventory.AppRecord
 import com.ventouxlabs.portage.providers.inventory.InstallAction
@@ -214,6 +215,7 @@ private class ReceiverViewModelFactory(
                         // grant ever runs. On the Tier-0 fallback neither runs in either flavor.
                         permissionGranter = wiring.permissionGranter,
                         targetDeclaredPermissions = wiring.targetDeclaredPermissions,
+                        archivePackageName = wiring.archivePackageName,
                         onApkInstall = { action ->
                             // Synchronous: seal the PackageInstaller session over the staged bytes BEFORE
                             // the provider wipes them, then surface the one-tap confirm row.
@@ -327,6 +329,7 @@ internal fun buildApplyProviders(
     hasSilentInstall: () -> Boolean = { false },
     permissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
     targetDeclaredPermissions: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
+    archivePackageName: ApkArchivePackageName = ApkArchivePackageName.None,
     tierOneGrant: TierOneGrant = TierOneGrant.Unavailable,
     // Whether this build can set a default-app role at all (#122): false on play, which ships no
     // bridge. Only shapes the reported item status, never what is surfaced.
@@ -349,6 +352,7 @@ internal fun buildApplyProviders(
         hasSilentInstall = hasSilentInstall,
         permissionGranter = permissionGranter,
         targetDeclaredPermissions = targetDeclaredPermissions,
+        archivePackageName = archivePackageName,
         // Display-only: feed the Done screen's "restored Network, Sensors" summary.
         onPermissionsRestored = sinks.onPermissionsRestored,
         // Data-only: feed the Done screen's opt-in dangerous-perm review (Phase 5d). Nothing is

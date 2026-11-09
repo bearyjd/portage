@@ -111,6 +111,7 @@ class ApkApplyProviderTest {
         hasSilent: () -> Boolean = { false },
         granter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
         targetDeclared: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
+        archiveName: ApkArchivePackageName = ApkArchivePackageName { "com.example.app" },
         onApkInstall: (ApkInstallAction) -> Unit = {},
         onStoreFallback: ((String, String) -> Unit)? = null,
         onPermissionsRestored: ((String, List<String>) -> Unit)? = null,
@@ -123,6 +124,7 @@ class ApkApplyProviderTest {
         hasSilentInstall = hasSilent,
         permissionGranter = granter,
         targetDeclaredPermissions = targetDeclared,
+        archivePackageName = archiveName,
         onApkInstall = onApkInstall,
         onStoreFallback = onStoreFallback,
         onPermissionsRestored = onPermissionsRestored,
@@ -369,6 +371,82 @@ class ApkApplyProviderTest {
     }
 
     // ── runtime-permission parity (ADR-006 D5, Phase 5b-2) ─────────────────────────────────────────
+
+    @Test
+    fun `a header package that differs from the APK's real package is refused before install or grant`() = runTest {
+        // Confused-deputy repro: the base APK is really com.attacker.dummy, but the header names an
+        // installed victim app. Nothing may be installed and no pm grant may target the spoofed name.
+        val granter = RecordingGranter()
+        var silentCalled = false
+        val outcome = provider(
+            silent = { _, _ -> silentCalled = true; ApkInstallResult.Installed },
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
+            archiveName = ApkArchivePackageName { "com.attacker.dummy" },
+        ).apply(
+            container(
+                packageName = "org.torproject.torbrowser",
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(silentCalled).isFalse()
+        assertThat(granter.calls).isEqualTo(0)
+        assertThat(stagedFiles()).isEmpty()
+    }
+
+    @Test
+    fun `an APK whose package cannot be read is refused on the silent path with no grant`() = runTest {
+        val granter = RecordingGranter()
+        var silentCalled = false
+        val outcome = provider(
+            silent = { _, _ -> silentCalled = true; ApkInstallResult.Installed },
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
+            archiveName = ApkArchivePackageName { null },
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(silentCalled).isFalse()
+        assertThat(granter.calls).isEqualTo(0)
+    }
+
+    @Test
+    fun `the default archive seam fails closed so an unwired provider never grants`() = runTest {
+        val granter = RecordingGranter()
+        val outcome = provider(
+            silent = silentInstalls,
+            hasSilent = { true },
+            granter = granter,
+            targetDeclared = TargetDeclaredPermissions { setOf(PermissionAllowlist.INTERNET) },
+            archiveName = ApkArchivePackageName.None,
+        ).apply(
+            container(
+                capturedPermissions = listOf(PermissionAllowlist.INTERNET),
+                files = listOf(base() to ByteArray(4)),
+            ),
+        )
+        assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(granter.calls).isEqualTo(0)
+    }
+
+    @Test
+    fun `the archive seam is handed the staged base APK bytes`() = runTest {
+        var seen: ByteArray? = null
+        provider(
+            silent = silentInstalls,
+            hasSilent = { true },
+            archiveName = ApkArchivePackageName { f -> seen = f.readBytes(); "com.example.app" },
+        ).apply(container(files = listOf(base() to byteArrayOf(1, 2, 3, 4))))
+        assertThat(seen).isEqualTo(byteArrayOf(1, 2, 3, 4))
+    }
 
     @Test
     fun `silent install grants only captured default-safe perms the target declares`() = runTest {

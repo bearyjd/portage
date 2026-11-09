@@ -46,6 +46,9 @@ import java.io.InputStream
  */
 private const val NO_TAP_DEGRADED_NOTE = " — no-tap install unavailable"
 
+/** The literal split name of the base APK (ADR-006 D1). */
+private const val BASE_SPLIT_NAME = "base"
+
 class ApkApplyProvider(
     private val stagingDir: File,
     private val targetConfig: () -> ApkTargetConfig,
@@ -64,6 +67,12 @@ class ApkApplyProvider(
      */
     private val permissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
     private val targetDeclaredPermissions: TargetDeclaredPermissions = TargetDeclaredPermissions.None,
+    /**
+     * Confused-deputy guard: the package the staged base APK ACTUALLY declares. The privileged silent
+     * install + `pm grant` path only proceeds when this equals the header's (sender-supplied) package;
+     * every privileged call then uses this verified name. Default fails closed (see [ApkArchivePackageName]).
+     */
+    private val archivePackageName: ApkArchivePackageName = ApkArchivePackageName.None,
     private val onApkInstall: (ApkInstallAction) -> Unit,
     /**
      * Surfaces an "incompatible on this device — install from store" deep link (ADR-006 D3 step 2),
@@ -169,12 +178,22 @@ class ApkApplyProvider(
             // presence of the note vs a plain message distinguishes "no SILENT_INSTALL at apply time"
             // (capability not live — plain message) from "bridge gone at apply time" (note + reason).
             val silentNote: String = if (hasSilentInstall()) {
-                when (val result = silentInstaller.install(header.packageName, keptFiles)) {
+                // Never act privileged on the sender's word: bind the header name to the real manifest of
+                // the base APK being installed, and refuse (no install, no grant) on any mismatch.
+                val baseFile = byName[BASE_SPLIT_NAME]?.file
+                val verifiedPackage = baseFile?.let(archivePackageName::packageNameOf)
+                if (verifiedPackage == null || verifiedPackage != header.packageName) {
+                    return ApplyOutcome(
+                        ItemStatus.WRITE_ERROR,
+                        "refused: APK package does not match the declared package — not installed",
+                    )
+                }
+                when (val result = silentInstaller.install(verifiedPackage, keptFiles)) {
                     is ApkInstallResult.Installed -> {
                         // Silent install succeeded and the bridge path is live — the ONLY place runtime
                         // permission parity (ADR-006 D5) runs. Best-effort; never downgrades the OK status.
-                        val parity = grantRuntimePermissionParity(header.packageName, header.capturedPermissions)
-                        return ApplyOutcome(ItemStatus.OK, "installed ${header.packageName} silently$parity")
+                        val parity = grantRuntimePermissionParity(verifiedPackage, header.capturedPermissions)
+                        return ApplyOutcome(ItemStatus.OK, "installed $verifiedPackage silently$parity")
                     }
                     is ApkInstallResult.Failed ->
                         return ApplyOutcome(ItemStatus.WRITE_ERROR, "silent install failed: ${result.reason}")
@@ -214,8 +233,8 @@ class ApkApplyProvider(
      *     regression let a non-default perm into `auto`, this site refuses to hand it to `pm grant`. The
      *     planner already guarantees `auto ⊆ DEFAULT_SAFE`; this makes the grant site safe in isolation.
      *
-     * The package name is the header's, already validated against the package grammar
-     * ([ApkContainerValidation.validatedHeaderOrNull]); the permission strings are allowlist constants.
+     * The package name is the one VERIFIED against the staged APK's real manifest ([archivePackageName])
+     * and equal to the header's grammar-validated name; the permission strings are allowlist constants.
      * `AdbBridge.grantRuntimePermission` still re-validates both via `ShellArgs` at the wire boundary.
      */
     private suspend fun grantRuntimePermissionParity(packageName: String, captured: List<String>): String {

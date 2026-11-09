@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import com.ventouxlabs.portage.providers.apk.ApkSilentInstaller
 import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
+import com.ventouxlabs.portage.providers.apk.ApkArchivePackageName
 import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
 import com.ventouxlabs.portage.providers.roles.RoleRestorer
 import com.ventouxlabs.portage.providers.settings.TierOneGrant
@@ -53,6 +54,7 @@ internal fun playWiring(): PrivilegeWiring = PrivilegeWiring(
     hasSilentInstall = { false },
     permissionGranter = RuntimePermissionGranter.NoOp,
     targetDeclaredPermissions = TargetDeclaredPermissions.None,
+    archivePackageName = ApkArchivePackageName.None,
     tierOneGrant = TierOneGrant.Unavailable,
     optInPermissionGranter = RuntimePermissionGranter.NoOp,
     // No bridge in this flavor, so role restore is structurally impossible — not merely disabled.

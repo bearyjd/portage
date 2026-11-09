@@ -18,6 +18,7 @@ import com.ventouxlabs.portage.providers.apk.ApkInstallAction
 import com.ventouxlabs.portage.providers.apk.ApkInstallFile
 import com.ventouxlabs.portage.providers.apk.ApkTargetConfig
 import com.ventouxlabs.portage.providers.apk.InstalledPackageVersions
+import com.ventouxlabs.portage.providers.apk.ApkArchivePackageName
 import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
 import java.io.OutputStream
 
@@ -129,6 +130,19 @@ fun androidInstalledPackageVersions(context: Context): InstalledPackageVersions 
         runCatching {
             @Suppress("DEPRECATION")
             context.packageManager.getPackageInfo(packageName, 0).longVersionCode
+        }.getOrNull()
+    }
+
+/**
+ * Confused-deputy seam: the package the staged base APK really declares, parsed from the file's own
+ * manifest via `PackageManager.getPackageArchiveInfo` (no install, no shell). The apply provider refuses
+ * the privileged silent install + `pm grant` unless this equals the sender-supplied header name.
+ * Best-effort: an unparseable archive yields null, which the provider treats as a refusal.
+ */
+fun androidArchivePackageName(context: Context): ApkArchivePackageName =
+    ApkArchivePackageName { baseApk ->
+        runCatching {
+            context.packageManager.getPackageArchiveInfo(baseApk.absolutePath, 0)?.packageName
         }.getOrNull()
     }
 

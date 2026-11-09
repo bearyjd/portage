@@ -27,6 +27,7 @@ import com.ventouxlabs.portage.providers.apk.ApkSourceFile
 import com.ventouxlabs.portage.providers.apk.ApkTargetConfig
 import com.ventouxlabs.portage.providers.apk.InstalledPackageVersions
 import com.ventouxlabs.portage.providers.apk.RuntimePermissionGranter
+import com.ventouxlabs.portage.providers.apk.ApkArchivePackageName
 import com.ventouxlabs.portage.providers.apk.TargetDeclaredPermissions
 import com.ventouxlabs.portage.providers.inventory.AppRecord
 import com.ventouxlabs.portage.providers.permission.PermissionAllowlist
@@ -173,6 +174,7 @@ class ApkDoneSurfacingTest {
                                 hasSilentInstall = hasSilent,
                                 permissionGranter = granter,
                                 targetDeclaredPermissions = targetDeclared,
+                                archivePackageName = ApkArchivePackageName { "com.example.app" },
                                 onPermissionsRestored = sinks.onPermissionsRestored,
                                 onOptInPermissions = sinks.onOptInPermissions,
                                 // Surface a Done-screen install prompt: a fake "session id" stands in for the

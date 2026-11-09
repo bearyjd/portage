@@ -21,6 +21,7 @@ import com.ventouxlabs.portage.adbbridge.AdbBridges
 import com.ventouxlabs.portage.providers.settings.TierOneGrant
 import com.ventouxlabs.portage.recv.install.AdbApkInstaller
 import com.ventouxlabs.portage.recv.install.AdbRuntimePermissionGranter
+import com.ventouxlabs.portage.recv.install.androidArchivePackageName
 import com.ventouxlabs.portage.recv.install.androidTargetDeclaredPermissions
 import com.ventouxlabs.portage.recv.roles.AdbRoleRestorer
 import com.ventouxlabs.portage.recv.ui.WizardScreen
@@ -56,6 +57,8 @@ object DegooglePrivilegeIntegration : PrivilegeIntegration {
             permissionGranter = AdbRuntimePermissionGranter(bridge),
             // The target's declared set, read from PackageManager post-install.
             targetDeclaredPermissions = androidTargetDeclaredPermissions(context),
+            // Real manifest package of the staged base APK — gates the silent install + pm grant.
+            archivePackageName = androidArchivePackageName(context),
             // The lazy Tier-1 WRITE_SECURE_SETTINGS grant fallback (ADR-001 Phase A).
             tierOneGrant = adbTierOneGrant(bridge),
             // Phase 5d-2 user-driven opt-in dangerous-perm grant on the Done screen; same process-scoped
