@@ -12,6 +12,8 @@ package com.ventouxlabs.portage.adbbridge
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -195,6 +197,18 @@ class LocalAdbBridgeTest {
     fun `connect times out as Timeout`() = runTest {
         val gate = FakeGate().apply { connectBehavior = { delay(60_000); true } }
         assertThat(bridge(gate).connect()).isEqualTo(AdbBridge.ConnectionResult.Timeout)
+    }
+
+    @Test
+    fun `connect returns Timeout even when gate connect ignores cancellation (#156)`() = runTest {
+        // Flag ON but nothing listening: libadb's discovery wait is interrupt-deaf, so the gate never
+        // returns and never honours cancellation. The bridge call itself must still be bounded.
+        val neverReturns = CompletableDeferred<Unit>()
+        val gate = FakeGate().apply {
+            connectBehavior = { withContext(NonCancellable) { neverReturns.await() }; true }
+        }
+        assertThat(bridge(gate).connect()).isEqualTo(AdbBridge.ConnectionResult.Timeout)
+        assertThat(gate.connectAttempts).isEqualTo(1)
     }
 
     @Test
