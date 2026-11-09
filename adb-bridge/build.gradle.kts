@@ -29,9 +29,7 @@ dependencies {
     // Public-API Conscrypt for the pairing EKM export AND the TLS connect path; without it
     // libadb-android falls back to a hidden platform Conscrypt class (ADR-003 §risks).
     implementation(libs.conscrypt.android)
-    // Self-signed X.509 for the ADB identity (AdbKeyStore). bcprov is declared explicitly because
-    // bcpkix's only path to bcprov 1.85 ran through the bcutil excluded below.
-    implementation(libs.bouncycastle.bcprov)
+    // Self-signed X.509 for the ADB identity (AdbKeyStore); bcprov rides in transitively.
     implementation(libs.bouncycastle.bcpkix) {
         // bcprov 1.85 (needed for GHSA-9pwp-9qqc-pr26 / GHSA-qp49-qgx5-5m26) now also ships
         // org.bouncycastle.asn1.iana.IANAObjectIdentifiers, which bcutil ships too, so AGP's
