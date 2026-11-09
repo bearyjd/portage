@@ -29,4 +29,16 @@ class FailedScreenNoteTest {
         assertThat(FAILED_PARTIAL_NOTE).contains("may already have been applied")
         assertThat(FAILED_PARTIAL_NOTE).contains("duplicates")
     }
+
+    @Test
+    fun `a failure that may have applied items renders the partial note`() {
+        assertThat(failedNote(mayHaveApplied = true)).isEqualTo(FAILED_PARTIAL_NOTE)
+    }
+
+    @Test
+    fun `a failure before anything applied does not warn about duplicates`() {
+        val note = failedNote(mayHaveApplied = false)
+        assertThat(note).isEqualTo(FAILED_NOTHING_APPLIED_NOTE)
+        assertThat(note.lowercase()).doesNotContain("duplicates")
+    }
 }

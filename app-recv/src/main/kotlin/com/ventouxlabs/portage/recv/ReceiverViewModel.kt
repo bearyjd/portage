@@ -421,7 +421,7 @@ class ReceiverViewModel(
                     // null ⇒ the aggregate budget elapsed (a reset() closes the channel → transport
                     // error in catch(t), not null). Fail closed: fail() closes the channel; the block's
                     // finally clauses already swept staging / relinquished the SMS role on the unwind.
-                    fail("Transfer timed out — it took too long to finish")
+                    fail("Transfer timed out — it took too long to finish", mayHaveApplied = true)
                     return@launch
                 }
                 ensureActive() // a reset() mid-run must not be overwritten by Done
@@ -439,7 +439,7 @@ class ReceiverViewModel(
                 // falls through to fail(), which may overwrite the Idle reset() just set. This
                 // is a pre-existing, accepted LOW: the window is narrow and it fails closed.
                 ensureActive()
-                fail(t.message ?: "Transfer failed")
+                fail(t.message ?: "Transfer failed", mayHaveApplied = true)
             } finally {
                 // Always release the keep-alive — done, fail, timeout, or reset() close
                 // unwinding through here. Idempotent.
@@ -807,10 +807,10 @@ class ReceiverViewModel(
     }
 
     /** Fail-closed terminal transition: close the live channel, then surface the reason. */
-    private fun fail(reason: String) {
+    private fun fail(reason: String, mayHaveApplied: Boolean = false) {
         channel?.close()
         channel = null
-        _state.value = ReceiverState.Failed(reason)
+        _state.value = ReceiverState.Failed(reason, mayHaveApplied)
     }
 
     override fun onCleared() {

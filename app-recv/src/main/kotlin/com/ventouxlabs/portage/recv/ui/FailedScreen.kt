@@ -34,6 +34,13 @@ internal const val FAILED_PARTIAL_NOTE =
     "The transfer stopped partway. Some items may already have been applied to this phone, " +
         "so starting over could create duplicates."
 
+/** Only for failures before any item could have been applied (bad QR, no manifest, pairing). */
+internal const val FAILED_NOTHING_APPLIED_NOTE =
+    "Nothing was applied to this phone, so it is safe to try again."
+
+internal fun failedNote(mayHaveApplied: Boolean): String =
+    if (mayHaveApplied) FAILED_PARTIAL_NOTE else FAILED_NOTHING_APPLIED_NOTE
+
 /**
  * Fail-closed terminal state. Deliberately calm — the red accent appears only as a small
  * marker square next to the heading (semantic, not alarming). The reason is shown verbatim,
@@ -44,6 +51,7 @@ fun FailedScreen(
     reason: String,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    mayHaveApplied: Boolean = true,
 ) {
     val s = LocalSpacing.current
     Column(
@@ -73,7 +81,7 @@ fun FailedScreen(
         )
         Spacer(Modifier.height(s.md))
         Text(
-            text = FAILED_PARTIAL_NOTE,
+            text = failedNote(mayHaveApplied),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
