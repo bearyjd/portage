@@ -127,6 +127,9 @@ class LocalAdbBridge internal constructor(
                 abandon(attempt, connectGate)
                 AdbBridge.ConnectionResult.Timeout
             } catch (c: CancellationException) {
+                // A caller cancelled mid-connect leaves the same stuck worker holding the gate's
+                // lock: abandon it too, or the next connect() queues behind it forever.
+                if (!attempt.isCompleted) abandon(attempt, connectGate)
                 throw c
             } catch (e: AdbEndpointNotFoundException) {
                 AdbBridge.ConnectionResult.NoEndpoint

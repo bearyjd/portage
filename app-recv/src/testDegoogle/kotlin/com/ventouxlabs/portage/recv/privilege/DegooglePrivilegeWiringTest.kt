@@ -25,12 +25,16 @@ class DegooglePrivilegeWiringTest {
     private val source: String by lazy {
         val rel = "src/degoogle/kotlin/com/ventouxlabs/portage/recv/privilege/DegooglePrivilegeIntegration.kt"
         val file = listOf(File(rel), File("app-recv/$rel")).first { it.exists() }
-        file.readText()
+        stripComments(file.readText())
     }
+
+    /** A commented-out wiring line must not satisfy the match. */
+    private fun stripComments(text: String): String =
+        text.replace(Regex("""/\*[\s\S]*?\*/"""), "").replace(Regex("""//[^\n]*"""), "")
 
     @Test
     fun `degoogle wires the real archive package reader`() {
-        assertThat(source).containsMatch("""archivePackageName\s*=\s*androidArchivePackageName\(context\)""")
+        assertThat(source).containsMatch("""(?m)^\s*archivePackageName\s*=\s*androidArchivePackageName\(context\),""")
     }
 
     @Test

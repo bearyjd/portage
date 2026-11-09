@@ -81,7 +81,7 @@ class PrivilegeWizard(
         data object Skipped : Step
     }
 
-    enum class PairingError { WRONG_CODE, TIMEOUT, ENDPOINT_DOWN, CONNECT_FAILED, BAD_INPUT }
+    enum class PairingError { WRONG_CODE, TIMEOUT, ENDPOINT_DOWN, CONNECT_FAILED, NOT_REACHABLE, BAD_INPUT }
 
     private val _step = MutableStateFlow<Step>(Step.Idle)
     val step: StateFlow<Step> = _step.asStateFlow()
@@ -163,11 +163,15 @@ class PrivilegeWizard(
         }
         // Wireless debugging is on, so a real endpoint may exist — the persisted pairing key
         // skips every user-facing step.
-        if (bridge.connect() is AdbBridge.ConnectionResult.Connected) {
+        val connected = bridge.connect()
+        if (connected is AdbBridge.ConnectionResult.Connected) {
             finishProbe()
             return
         }
         enterPairing()
+        // Repeated stuck connects (adb-bridge caps abandoned workers) end here: tell the user the
+        // endpoint is unreachable instead of implying they must re-pair.
+        if (connected is AdbBridge.ConnectionResult.Timeout) failPairing(PairingError.NOT_REACHABLE)
     }
 
     private fun enterPairing() {

@@ -297,6 +297,8 @@ private fun errorCopy(error: PrivilegeWizard.PairingError): String = when (error
             "device with pairing code\" and enter the fresh code AND port — both change each time."
     PrivilegeWizard.PairingError.CONNECT_FAILED ->
         "Paired, but the debug connection failed. Toggle Wireless debugging off and on, then retry."
+    PrivilegeWizard.PairingError.NOT_REACHABLE ->
+        "Wireless Debugging isn't reachable on this network. Turn it off and on, or restart Portage."
     PrivilegeWizard.PairingError.BAD_INPUT ->
         "Enter the 6-digit code (and the port, if no service was found)."
 }
