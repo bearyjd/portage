@@ -103,13 +103,16 @@ object RfcText {
      */
     fun unfold(lines: List<String>): List<String> {
         val out = mutableListOf<String>()
+        var current: StringBuilder? = null // accumulates the logical line being built
         for (line in lines) {
             if (line.isNotEmpty() && (line[0] == ' ' || line[0] == '\t')) {
-                if (out.isNotEmpty()) out[out.size - 1] = out.last() + line.substring(1)
+                current?.append(line, 1, line.length)
             } else {
-                out += line
+                current?.let { out += it.toString() }
+                current = StringBuilder(line)
             }
         }
+        current?.let { out += it.toString() }
         return out
     }
 }
