@@ -90,4 +90,17 @@ class JsonLinesTest {
         assertThat(back.records).containsExactly(Probe("ok"))
         assertThat(back.malformed).isEqualTo(1)
     }
+
+    @Test
+    fun `oversize lines are reported separately and a larger cap admits them`() {
+        val big = """{"name":"${"x".repeat(2000)}"}"""
+        val capped = JsonLines.readFrom<Probe>(bytes(big, """{"name":"ok"}"""), maxLineChars = 1000)
+        assertThat(capped.records).containsExactly(Probe("ok"))
+        assertThat(capped.malformed).isEqualTo(1)
+        assertThat(capped.oversize).isEqualTo(1)
+
+        val roomy = JsonLines.readFrom<Probe>(bytes(big), maxLineChars = 4000)
+        assertThat(roomy.records).hasSize(1)
+        assertThat(roomy.oversize).isEqualTo(0)
+    }
 }
