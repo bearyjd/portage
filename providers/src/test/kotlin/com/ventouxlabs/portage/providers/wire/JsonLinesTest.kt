@@ -72,4 +72,22 @@ class JsonLinesTest {
         assertThat(back.records).isEmpty()
         assertThat(back.malformed).isEqualTo(0)
     }
+
+    @Test
+    fun `an oversize line is counted malformed and skipped without aborting`() {
+        val huge = """{"name":"${"x".repeat(JsonLines.MAX_LINE_CHARS)}"}"""
+        val back = JsonLines.readFrom<Probe>(
+            bytes("""{"name":"before"}""", huge, """{"name":"after"}"""),
+        )
+        assertThat(back.records.map { it.name }).containsExactly("before", "after").inOrder()
+        assertThat(back.malformed).isEqualTo(1)
+    }
+
+    @Test
+    fun `an oversize final line without newline is malformed`() {
+        val huge = "y".repeat(JsonLines.MAX_LINE_CHARS + 1)
+        val back = JsonLines.readFrom<Probe>(bytes("""{"name":"ok"}""", huge))
+        assertThat(back.records).containsExactly(Probe("ok"))
+        assertThat(back.malformed).isEqualTo(1)
+    }
 }

@@ -39,15 +39,52 @@ object JsonLines {
         writer.flush()
     }
 
+    /** Upper bound on one record line; longer lines are counted malformed and skipped unbuffered. */
+    const val MAX_LINE_CHARS = 1024 * 1024
+
     inline fun <reified T> readFrom(source: InputStream): JsonLinesResult<T> {
         val records = mutableListOf<T>()
         var malformed = 0
-        source.bufferedReader(Charsets.UTF_8).forEachLine { line ->
-            if (line.isBlank()) return@forEachLine
-            runCatching { format.decodeFromString<T>(line) }
-                .onSuccess { records += it }
-                .onFailure { malformed++ }
+        forEachBoundedLine(source) { line ->
+            if (line == null) {
+                malformed++
+            } else if (line.isNotBlank()) {
+                runCatching { format.decodeFromString<T>(line) }
+                    .onSuccess { records += it }
+                    .onFailure { malformed++ }
+            }
         }
         return JsonLinesResult(records, malformed)
+    }
+
+    /**
+     * Reads [source] line by line, buffering at most [MAX_LINE_CHARS] per line. An oversize line is
+     * discarded as it streams past (never held in memory) and reported to [onLine] as null.
+     */
+    @PublishedApi
+    internal fun forEachBoundedLine(source: InputStream, onLine: (String?) -> Unit) {
+        val reader = source.bufferedReader(Charsets.UTF_8)
+        val line = StringBuilder()
+        var oversize = false
+        var sawChars = false
+        while (true) {
+            val c = reader.read()
+            if (c == -1) break
+            sawChars = true
+            if (c == '\n'.code) {
+                onLine(if (oversize) null else line.toString().removeSuffix("\r"))
+                line.setLength(0)
+                oversize = false
+                sawChars = false
+            } else if (!oversize) {
+                if (line.length >= MAX_LINE_CHARS) {
+                    oversize = true
+                    line.setLength(0)
+                } else {
+                    line.append(c.toChar())
+                }
+            }
+        }
+        if (sawChars) onLine(if (oversize) null else line.toString().removeSuffix("\r"))
     }
 }
