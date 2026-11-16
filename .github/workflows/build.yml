@@ -68,6 +68,10 @@ jobs:
         # extracts the REAL step bodies from this file and asserts they fail CLOSED on reader
         # failure, rather than re-implementing them (a copy would drift and prove nothing).
         run: ./scripts/test-boundary-gate.sh
+      - name: Privileged ADB dependency checksum pin self-test
+        # libadb-android + spake2-android come from JitPack; their SHA-256 pins in
+        # gradle/verification-metadata.xml are the only integrity check on that privileged chain.
+        run: ./scripts/test-dependency-verification.sh
       - name: Unit tests (core-model + core-transport + adb-bridge + wizard + providers + app-recv + app-send)
         # app-recv and app-send are flavored (distribution: degoogle/play, ADR-003) so their unit-test
         # tasks are per-flavor; both flavors run. The play variant exercises the Tier-0 no-bridge wiring
