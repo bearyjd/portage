@@ -118,6 +118,9 @@ class MmsExportProvider(private val store: MmsStore) : ExportProvider {
     }
 }
 
+private fun oversizeNote(oversize: Int): String =
+    if (oversize > 0) " ($oversize over the size limit)" else ""
+
 class MmsApplyProvider(
     private val store: MmsStore,
     private val roleGateway: SmsRoleGateway,
@@ -128,13 +131,13 @@ class MmsApplyProvider(
         if (!roleGateway.isSelfDefault()) {
             return ApplyOutcome(ItemStatus.SKIPPED, "MMS restore needs the temporary default-SMS role")
         }
-        val parsed = JsonLines.readFrom<MmsRecord>(source)
+        val parsed = JsonLines.readFrom<MmsRecord>(source, MmsWire.MAX_ITEM_BYTES.toInt())
         var written = 0
         var skipped = parsed.malformed
         for (record in parsed.records) {
             if (runCatching { store.insert(record) }.getOrDefault(false)) written++ else skipped++
         }
         val status = if (parsed.records.isNotEmpty() && written == 0) ItemStatus.WRITE_ERROR else ItemStatus.OK
-        return ApplyOutcome(status, "imported $written MMS; skipped $skipped")
+        return ApplyOutcome(status, "imported $written MMS; skipped $skipped" + oversizeNote(parsed.oversize))
     }
 }

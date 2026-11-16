@@ -101,6 +101,7 @@ class SmsApplyProvider(
             if (runCatching { store.insert(record) }.getOrDefault(false)) applied++ else skipped++
         }
         val status = if (parsed.records.isNotEmpty() && applied == 0) ItemStatus.WRITE_ERROR else ItemStatus.OK
-        return ApplyOutcome(status, "applied $applied, skipped $skipped")
+        val oversizeNote = if (parsed.oversize > 0) " (${parsed.oversize} over the size limit)" else ""
+        return ApplyOutcome(status, "applied $applied, skipped $skipped$oversizeNote")
     }
 }

@@ -110,4 +110,24 @@ class MmsProvidersTest {
         assertThat(summary.bytes).isEqualTo(firstLineSize)
         assertThat(parsed.records).containsExactly(first)
     }
+
+    @Test
+    fun `apply round trips an mms with a roughly 1 MB attachment past the default line cap`() = runTest {
+        val rawBytes = ByteArray(1024 * 1024) { (it % 251).toByte() }
+        val big = record.copy(
+            parts = listOf(
+                MmsPartRecord(
+                    contentType = "image/jpeg",
+                    dataBase64 = java.util.Base64.getEncoder().encodeToString(rawBytes),
+                ),
+            ),
+        )
+        assertThat(MmsWire.encodedLine(big).size).isGreaterThan(JsonLines.MAX_LINE_CHARS)
+        val store = FakeMmsStore()
+
+        val outcome = MmsApplyProvider(store, FakeRoleGateway(selfIsDefault = true)).apply(payloadOf(big))
+
+        assertThat(outcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.inserted).containsExactly(big)
+    }
 }

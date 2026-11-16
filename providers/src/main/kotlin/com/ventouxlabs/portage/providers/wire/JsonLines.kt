@@ -13,8 +13,11 @@ import kotlinx.serialization.json.Json
 import java.io.InputStream
 import java.io.OutputStream
 
-/** Decoded JSON-lines payload: parsed records plus how many lines were unparseable. */
-data class JsonLinesResult<T>(val records: List<T>, val malformed: Int)
+/**
+ * Decoded JSON-lines payload: parsed records plus how many lines were unparseable ([malformed],
+ * which includes the [oversize] lines that exceeded the line cap and were dropped unparsed).
+ */
+data class JsonLinesResult<T>(val records: List<T>, val malformed: Int, val oversize: Int = 0)
 
 /**
  * JSON Lines codec for record-stream payloads (call log, SMS). One record per line gives
@@ -39,15 +42,58 @@ object JsonLines {
         writer.flush()
     }
 
-    inline fun <reified T> readFrom(source: InputStream): JsonLinesResult<T> {
+    /**
+     * Default upper bound on one record line (small-record codecs: SMS, call log). Longer lines are
+     * counted malformed + oversize and skipped unbuffered. Codecs whose records legitimately carry
+     * more (MMS attachments) pass a larger `maxLineChars` to [readFrom].
+     */
+    const val MAX_LINE_CHARS = 1024 * 1024
+
+    inline fun <reified T> readFrom(source: InputStream, maxLineChars: Int = MAX_LINE_CHARS): JsonLinesResult<T> {
         val records = mutableListOf<T>()
         var malformed = 0
-        source.bufferedReader(Charsets.UTF_8).forEachLine { line ->
-            if (line.isBlank()) return@forEachLine
-            runCatching { format.decodeFromString<T>(line) }
-                .onSuccess { records += it }
-                .onFailure { malformed++ }
+        var oversize = 0
+        forEachBoundedLine(source, maxLineChars) { line ->
+            if (line == null) {
+                malformed++
+                oversize++
+            } else if (line.isNotBlank()) {
+                runCatching { format.decodeFromString<T>(line) }
+                    .onSuccess { records += it }
+                    .onFailure { malformed++ }
+            }
         }
-        return JsonLinesResult(records, malformed)
+        return JsonLinesResult(records, malformed, oversize)
+    }
+
+    /**
+     * Reads [source] line by line, buffering at most [maxLineChars] per line. An oversize line is
+     * discarded as it streams past (never held in memory) and reported to [onLine] as null.
+     */
+    @PublishedApi
+    internal fun forEachBoundedLine(source: InputStream, maxLineChars: Int, onLine: (String?) -> Unit) {
+        val reader = source.bufferedReader(Charsets.UTF_8)
+        val line = StringBuilder()
+        var oversize = false
+        var sawChars = false
+        while (true) {
+            val c = reader.read()
+            if (c == -1) break
+            sawChars = true
+            if (c == '\n'.code) {
+                onLine(if (oversize) null else line.toString().removeSuffix("\r"))
+                line.setLength(0)
+                oversize = false
+                sawChars = false
+            } else if (!oversize) {
+                if (line.length >= maxLineChars) {
+                    oversize = true
+                    line.setLength(0)
+                } else {
+                    line.append(c.toChar())
+                }
+            }
+        }
+        if (sawChars) onLine(if (oversize) null else line.toString().removeSuffix("\r"))
     }
 }
