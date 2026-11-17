@@ -79,6 +79,13 @@ object MmsWire {
      */
     const val MAX_ITEM_BYTES = 64L * 1024 * 1024
 
+    /**
+     * Per-record line cap for the receiver's decoder. The Android sender caps a record at 16 MiB
+     * raw (AndroidMmsStore.MAX_RECORD_RAW_BYTES), i.e. about 22.4 M base64 chars, plus a little
+     * JSON metadata; 24 MiB chars leaves headroom without admitting a whole 64 MiB item as one line.
+     */
+    const val MAX_LINE_CHARS = 24 * 1024 * 1024
+
     fun encodedLine(record: MmsRecord): ByteArray =
         (JsonLines.format.encodeToString(record) + "\n").toByteArray(Charsets.UTF_8)
 
@@ -131,7 +138,7 @@ class MmsApplyProvider(
         if (!roleGateway.isSelfDefault()) {
             return ApplyOutcome(ItemStatus.SKIPPED, "MMS restore needs the temporary default-SMS role")
         }
-        val parsed = JsonLines.readFrom<MmsRecord>(source, MmsWire.MAX_ITEM_BYTES.toInt())
+        val parsed = JsonLines.readFrom<MmsRecord>(source, MmsWire.MAX_LINE_CHARS)
         var written = 0
         var skipped = parsed.malformed
         for (record in parsed.records) {

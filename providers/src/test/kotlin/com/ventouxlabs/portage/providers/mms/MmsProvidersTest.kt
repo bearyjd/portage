@@ -130,4 +130,25 @@ class MmsProvidersTest {
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(store.inserted).containsExactly(big)
     }
+
+    @Test
+    fun `apply drops an mms line over the tight line cap and keeps the neighbours`() = runTest {
+        val huge = """{"junk":"${"x".repeat(MmsWire.MAX_LINE_CHARS)}"}""" + "\n"
+        val good = payloadOf(record).readBytes()
+        val payload = ByteArrayInputStream(good + huge.toByteArray(Charsets.UTF_8) + good)
+        val store = FakeMmsStore()
+
+        val outcome = MmsApplyProvider(store, FakeRoleGateway(selfIsDefault = true)).apply(payload)
+
+        assertThat(store.inserted).containsExactly(record, record)
+        assertThat(outcome.detail).contains("1 over the size limit")
+    }
+
+    @Test
+    fun `mms line cap is far below the item cap yet admits a maximum sender record`() {
+        assertThat(MmsWire.MAX_LINE_CHARS.toLong()).isLessThan(MmsWire.MAX_ITEM_BYTES / 2)
+        // 16 MiB raw (AndroidMmsStore.MAX_RECORD_RAW_BYTES) base64-encodes to ceil(n/3)*4 chars.
+        val maxBase64Chars = (16L * 1024 * 1024 + 2) / 3 * 4
+        assertThat(maxBase64Chars).isLessThan(MmsWire.MAX_LINE_CHARS.toLong())
+    }
 }
