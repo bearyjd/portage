@@ -95,4 +95,19 @@ class RfcTextTest {
         }
         assertThat(RfcText.unfold(folded.split("\r\n"))).containsExactly(line)
     }
+
+    @Test
+    fun `unfold runs in linear time on a huge run of continuation lines`() {
+        val lines = ArrayList<String>(400_001)
+        lines += "NOTE:"
+        repeat(400_000) { lines += " x" }
+
+        val start = System.nanoTime()
+        val result = RfcText.unfold(lines)
+        val elapsedMs = (System.nanoTime() - start) / 1_000_000
+
+        assertThat(result).hasSize(1)
+        assertThat(result[0].length).isEqualTo(5 + 400_000)
+        assertThat(elapsedMs).isLessThan(2_000)
+    }
 }
