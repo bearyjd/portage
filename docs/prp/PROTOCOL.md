@@ -179,9 +179,9 @@ size, sha256, display_name, group}`.
 > behavior. Sender export is capped to the receiver's standard 64 MiB Tier-0 item limit and
 > streams one MMS record at a time; large binary parts / records that would exceed the bounded
 > export are skipped rather than creating an item the receiver will refuse. Because each record
-> (attachments base64-inlined) is one JSON line, the receiver's decoder admits MMS lines up to the
-> same 64 MiB item cap (the maximum attachment is therefore bounded by it; the Android sender
-> additionally caps parts at 8 MiB raw and records at 16 MiB raw). Other JSON-lines kinds use a
+> (attachments base64-inlined) is one JSON line, the receiver's decoder admits MMS lines up to
+> 24 MiB chars (`MmsWire.MAX_LINE_CHARS`), just above the Android sender's cap of 16 MiB raw per
+> record (about 22.4 M base64 chars; parts are additionally capped at 8 MiB raw). Other JSON-lines kinds use a
 > 1 MiB per-line cap; an over-cap line is dropped without buffering and reported in the item's
 > ACK detail as "over the size limit" rather than only counted as malformed. Receiver writes
 > require the same transient default-SMS role as SMS. RCS state, carrier/service state, drafts,
