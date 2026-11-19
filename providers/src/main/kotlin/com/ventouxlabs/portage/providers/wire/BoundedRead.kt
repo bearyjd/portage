@@ -32,21 +32,30 @@ internal fun InputStream.readBoundedUtf8(maxBytes: Int): String? {
     return String(buffer, 0, filled, Charsets.UTF_8)
 }
 
-/**
- * Physical lines in order, with null standing in for each line longer than the cap (dropped
- * unbuffered) so unfolding can discard its continuation run; [oversize] counts the nulls.
- */
-internal data class BoundedLines(val lines: List<String?>, val oversize: Int)
+/** One physical line of a text format: kept, or dropped for exceeding the per-line cap. */
+internal sealed interface PhysicalLine {
+    data class Text(val value: String) : PhysicalLine
+
+    /** [continuation] is true when the dropped line began with SPACE/HTAB, i.e. folded into the property before it. */
+    data class Dropped(val continuation: Boolean) : PhysicalLine
+}
+
+/** Physical lines in order, with oversize lines dropped unbuffered; [oversize] counts the [PhysicalLine.Dropped]. */
+internal data class BoundedLines(val lines: List<PhysicalLine>, val oversize: Int)
 
 /** Per-line ceiling for text formats (vCard, iCalendar); RFC fold width is 75 octets. */
 internal const val MAX_TEXT_LINE_CHARS = 1024 * 1024
 
 internal fun InputStream.readBoundedLines(maxLineChars: Int = MAX_TEXT_LINE_CHARS): BoundedLines {
-    val lines = mutableListOf<String?>()
+    val lines = mutableListOf<PhysicalLine>()
     var oversize = 0
-    JsonLines.forEachBoundedLine(this, maxLineChars) { line ->
-        if (line == null) oversize++
-        lines += line
+    JsonLines.forEachBoundedLine(this, maxLineChars) { line, continuation ->
+        if (line == null) {
+            oversize++
+            lines += PhysicalLine.Dropped(continuation)
+        } else {
+            lines += PhysicalLine.Text(line)
+        }
     }
     return BoundedLines(lines, oversize)
 }

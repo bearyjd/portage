@@ -9,6 +9,8 @@
  */
 package com.ventouxlabs.portage.providers.text
 
+import com.ventouxlabs.portage.providers.wire.PhysicalLine
+
 /**
  * TEXT value escaping + line unfolding shared by vCard 3.0 (RFC 2426 §2.4.2) and
  * iCalendar (RFC 5545 §3.3.11). Both specs escape the same four characters and fold
@@ -101,25 +103,32 @@ object RfcText {
      * continuation of the previous one (with the single leading whitespace char removed).
      * A dangling leading continuation has nothing to attach to and is dropped.
      */
-    fun unfold(lines: List<String>): List<String> = unfoldWithGaps(lines)
+    fun unfold(lines: List<String>): List<String> = unfoldWithGaps(lines.map { PhysicalLine.Text(it) })
 
     /**
-     * As [unfold], but a null entry marks a physical line that was dropped (e.g. oversize). The
-     * dropped line ends the logical line before it, and the continuation run that follows it is
-     * discarded, so it cannot be glued onto an unrelated earlier property.
+     * As [unfold], but a [PhysicalLine.Dropped] entry marks a physical line that was dropped
+     * (e.g. oversize). A dropped new property ends the logical line before it and the continuation
+     * run after it is discarded. A dropped continuation belonged to the property before it, so that
+     * whole property is discarded too: emitting its prefix would import a truncated value.
      */
-    fun unfoldWithGaps(lines: List<String?>): List<String> {
+    internal fun unfoldWithGaps(lines: List<PhysicalLine>): List<String> {
         val out = mutableListOf<String>()
         var current: StringBuilder? = null // accumulates the logical line being built
-        for (line in lines) {
-            if (line == null) {
-                current?.let { out += it.toString() }
-                current = null
-            } else if (line.isNotEmpty() && (line[0] == ' ' || line[0] == '\t')) {
-                current?.append(line, 1, line.length)
-            } else {
-                current?.let { out += it.toString() }
-                current = StringBuilder(line)
+        for (physical in lines) {
+            when (physical) {
+                is PhysicalLine.Dropped -> {
+                    if (!physical.continuation) current?.let { out += it.toString() }
+                    current = null
+                }
+                is PhysicalLine.Text -> {
+                    val line = physical.value
+                    if (line.isNotEmpty() && (line[0] == ' ' || line[0] == '\t')) {
+                        current?.append(line, 1, line.length)
+                    } else {
+                        current?.let { out += it.toString() }
+                        current = StringBuilder(line)
+                    }
+                }
             }
         }
         current?.let { out += it.toString() }

@@ -363,4 +363,13 @@ class VCard3Test {
         assertThat(result.malformed).isEqualTo(1)
         assertThat(result.records.single().displayName).isEqualTo("Ada")
     }
+
+    @Test
+    fun `an oversize fold continuation drops its property instead of importing a truncated value`() {
+        val big = "x".repeat(1024 * 1024 + 10)
+        val result = parse("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada\r\nNOTE:abc\r\n $big\r\nEND:VCARD\r\n")
+        assertThat(result.malformed).isEqualTo(1)
+        assertThat(result.records.single().displayName).isEqualTo("Ada")
+        assertThat(result.records.single().note).isNull()
+    }
 }

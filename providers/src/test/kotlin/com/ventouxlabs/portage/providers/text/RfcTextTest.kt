@@ -10,6 +10,7 @@
 package com.ventouxlabs.portage.providers.text
 
 import com.google.common.truth.Truth.assertThat
+import com.ventouxlabs.portage.providers.wire.PhysicalLine
 import org.junit.Test
 
 class RfcTextTest {
@@ -62,8 +63,26 @@ class RfcTextTest {
 
     @Test
     fun `unfoldWithGaps discards the continuation run after a dropped line`() {
-        val lines = listOf("SUMMARY:Lunch", null, " tail", "\tmore", "X:1", " fold")
+        val lines = listOf(
+            PhysicalLine.Text("SUMMARY:Lunch"),
+            PhysicalLine.Dropped(continuation = false),
+            PhysicalLine.Text(" tail"),
+            PhysicalLine.Text("\tmore"),
+            PhysicalLine.Text("X:1"),
+            PhysicalLine.Text(" fold"),
+        )
         assertThat(RfcText.unfoldWithGaps(lines)).containsExactly("SUMMARY:Lunch", "X:1fold").inOrder()
+    }
+
+    @Test
+    fun `unfoldWithGaps discards the whole property when its continuation was dropped`() {
+        val lines = listOf(
+            PhysicalLine.Text("X:a"),
+            PhysicalLine.Dropped(continuation = true),
+            PhysicalLine.Text(" tail"),
+            PhysicalLine.Text("Y:b"),
+        )
+        assertThat(RfcText.unfoldWithGaps(lines)).containsExactly("Y:b")
     }
 
     @Test
