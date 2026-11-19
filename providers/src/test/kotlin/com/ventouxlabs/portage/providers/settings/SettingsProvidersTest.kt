@@ -14,6 +14,7 @@ import com.ventouxlabs.portage.settings.Namespace
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
+import com.ventouxlabs.portage.providers.wire.CountingStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
@@ -293,5 +294,12 @@ class SettingsProvidersTest {
             .apply(payload("default_input_method" to "com.example/.ExampleIme"))
 
         assertThat(secureGlobal.writes).isEmpty()
+    }
+
+    @Test
+    fun `settings codec rejects an oversize payload without reading it all`() {
+        val stream = CountingStream(total = 1024 * 1024L * 64)
+        assertThat(SettingsCodec.decode(stream)).isNull()
+        assertThat(stream.consumed).isAtMost(1024 * 1024L + 1)
     }
 }

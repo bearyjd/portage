@@ -15,6 +15,7 @@ import com.ventouxlabs.portage.providers.ApplyOutcome
 import com.ventouxlabs.portage.providers.ApplyProvider
 import com.ventouxlabs.portage.providers.ExportProvider
 import com.ventouxlabs.portage.providers.wire.JsonLines
+import com.ventouxlabs.portage.providers.wire.readBoundedUtf8
 import com.ventouxlabs.portage.settings.Classification
 import com.ventouxlabs.portage.settings.Namespace
 import com.ventouxlabs.portage.settings.Reach
@@ -41,11 +42,12 @@ object SettingsCodec {
     fun encode(snapshot: SettingsSnapshot): String =
         JsonLines.format.encodeToString(SettingsSnapshot.serializer(), snapshot)
 
+    /** Whole-item ceiling: a real snapshot is a few KiB; over-cap is unreadable, not truncated. */
+    internal const val MAX_PAYLOAD_BYTES = 1024 * 1024
+
     fun decode(source: InputStream): SettingsSnapshot? = runCatching {
-        JsonLines.format.decodeFromString(
-            SettingsSnapshot.serializer(),
-            source.bufferedReader(Charsets.UTF_8).readText(),
-        )
+        val text = source.readBoundedUtf8(MAX_PAYLOAD_BYTES) ?: return null
+        JsonLines.format.decodeFromString(SettingsSnapshot.serializer(), text)
     }.getOrNull()
 }
 

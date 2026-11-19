@@ -15,6 +15,7 @@ import com.ventouxlabs.portage.providers.ApplyOutcome
 import com.ventouxlabs.portage.providers.ApplyProvider
 import com.ventouxlabs.portage.providers.ExportProvider
 import com.ventouxlabs.portage.providers.wire.JsonLines
+import com.ventouxlabs.portage.providers.wire.readBoundedUtf8
 import kotlinx.serialization.Serializable
 import java.io.InputStream
 import java.io.OutputStream
@@ -51,11 +52,12 @@ object BtRosterCodec {
     fun encode(roster: BtPairingRoster): String =
         JsonLines.format.encodeToString(BtPairingRoster.serializer(), roster)
 
+    /** Whole-item ceiling: a real snapshot is a few KiB; over-cap is unreadable, not truncated. */
+    internal const val MAX_PAYLOAD_BYTES = 1024 * 1024
+
     fun decode(source: InputStream): BtPairingRoster? = runCatching {
-        JsonLines.format.decodeFromString(
-            BtPairingRoster.serializer(),
-            source.bufferedReader(Charsets.UTF_8).readText(),
-        )
+        val text = source.readBoundedUtf8(MAX_PAYLOAD_BYTES) ?: return null
+        JsonLines.format.decodeFromString(BtPairingRoster.serializer(), text)
     }.getOrNull()
 }
 

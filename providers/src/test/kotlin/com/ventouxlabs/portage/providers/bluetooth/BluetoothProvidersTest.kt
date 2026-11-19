@@ -15,6 +15,7 @@ import com.ventouxlabs.portage.model.Tier
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
+import com.ventouxlabs.portage.providers.wire.CountingStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
@@ -253,5 +254,12 @@ class BluetoothProvidersTest {
         val outcome = BtPairingsApplyProvider { entries = it }.apply(frameOf(headphones, watch))
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(entries).hasSize(2)
+    }
+
+    @Test
+    fun `bluetooth codec rejects an oversize payload without reading it all`() {
+        val stream = CountingStream(total = 1024 * 1024L * 64)
+        assertThat(BtRosterCodec.decode(stream)).isNull()
+        assertThat(stream.consumed).isAtMost(1024 * 1024L + 1)
     }
 }
