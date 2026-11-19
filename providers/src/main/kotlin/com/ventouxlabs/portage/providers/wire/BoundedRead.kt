@@ -32,17 +32,21 @@ internal fun InputStream.readBoundedUtf8(maxBytes: Int): String? {
     return String(buffer, 0, filled, Charsets.UTF_8)
 }
 
-/** Physical lines that fit the per-line cap, plus how many longer lines were dropped unbuffered. */
-internal data class BoundedLines(val lines: List<String>, val oversize: Int)
+/**
+ * Physical lines in order, with null standing in for each line longer than the cap (dropped
+ * unbuffered) so unfolding can discard its continuation run; [oversize] counts the nulls.
+ */
+internal data class BoundedLines(val lines: List<String?>, val oversize: Int)
 
 /** Per-line ceiling for text formats (vCard, iCalendar); RFC fold width is 75 octets. */
 internal const val MAX_TEXT_LINE_CHARS = 1024 * 1024
 
 internal fun InputStream.readBoundedLines(maxLineChars: Int = MAX_TEXT_LINE_CHARS): BoundedLines {
-    val lines = mutableListOf<String>()
+    val lines = mutableListOf<String?>()
     var oversize = 0
     JsonLines.forEachBoundedLine(this, maxLineChars) { line ->
-        if (line == null) oversize++ else lines += line
+        if (line == null) oversize++
+        lines += line
     }
     return BoundedLines(lines, oversize)
 }

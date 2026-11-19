@@ -61,6 +61,12 @@ class RfcTextTest {
     }
 
     @Test
+    fun `unfoldWithGaps discards the continuation run after a dropped line`() {
+        val lines = listOf("SUMMARY:Lunch", null, " tail", "\tmore", "X:1", " fold")
+        assertThat(RfcText.unfoldWithGaps(lines)).containsExactly("SUMMARY:Lunch", "X:1fold").inOrder()
+    }
+
+    @Test
     fun `unfold ignores a leading continuation with nothing to attach to`() {
         assertThat(RfcText.unfold(listOf(" dangling", "X:1"))).containsExactly("X:1")
     }

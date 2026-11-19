@@ -101,11 +101,21 @@ object RfcText {
      * continuation of the previous one (with the single leading whitespace char removed).
      * A dangling leading continuation has nothing to attach to and is dropped.
      */
-    fun unfold(lines: List<String>): List<String> {
+    fun unfold(lines: List<String>): List<String> = unfoldWithGaps(lines)
+
+    /**
+     * As [unfold], but a null entry marks a physical line that was dropped (e.g. oversize). The
+     * dropped line ends the logical line before it, and the continuation run that follows it is
+     * discarded, so it cannot be glued onto an unrelated earlier property.
+     */
+    fun unfoldWithGaps(lines: List<String?>): List<String> {
         val out = mutableListOf<String>()
         var current: StringBuilder? = null // accumulates the logical line being built
         for (line in lines) {
-            if (line.isNotEmpty() && (line[0] == ' ' || line[0] == '\t')) {
+            if (line == null) {
+                current?.let { out += it.toString() }
+                current = null
+            } else if (line.isNotEmpty() && (line[0] == ' ' || line[0] == '\t')) {
                 current?.append(line, 1, line.length)
             } else {
                 current?.let { out += it.toString() }

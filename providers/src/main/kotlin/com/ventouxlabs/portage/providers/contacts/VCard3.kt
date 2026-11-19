@@ -127,7 +127,7 @@ object VCard3 {
     fun parse(source: InputStream): VCardParseResult {
         // Per-line cap: an oversize line is dropped as it streams past and counted malformed.
         val bounded = source.readBoundedLines()
-        val logical = RfcText.unfold(bounded.lines)
+        val logical = RfcText.unfoldWithGaps(bounded.lines)
 
         val records = mutableListOf<ContactRecord>()
         var malformed = bounded.oversize

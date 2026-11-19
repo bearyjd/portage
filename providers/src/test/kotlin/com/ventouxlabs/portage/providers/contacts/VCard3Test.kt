@@ -355,4 +355,12 @@ class VCard3Test {
         assertThat(result.malformed).isEqualTo(0)
         assertThat(result.records).hasSize(1)
     }
+
+    @Test
+    fun `a continuation after a dropped oversize line is not glued onto the previous property`() {
+        val big = "x".repeat(1024 * 1024 + 10)
+        val result = parse("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada\r\nNOTE:$big\r\n tail\r\nN:Lovelace;Ada;;;\r\nEND:VCARD\r\n")
+        assertThat(result.malformed).isEqualTo(1)
+        assertThat(result.records.single().displayName).isEqualTo("Ada")
+    }
 }

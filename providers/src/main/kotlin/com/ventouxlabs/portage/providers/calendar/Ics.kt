@@ -79,7 +79,7 @@ object Ics {
     fun parse(source: InputStream): IcsParseResult {
         // Per-line cap: an oversize line is dropped as it streams past and counted malformed.
         val bounded = source.readBoundedLines()
-        val logical = RfcText.unfold(bounded.lines)
+        val logical = RfcText.unfoldWithGaps(bounded.lines)
 
         val events = mutableListOf<EventRecord>()
         var malformed = bounded.oversize
