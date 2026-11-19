@@ -336,7 +336,6 @@ private fun ReadyStep(
         CapabilityRow("Secure settings", AdbBridge.PrivilegedCapability.SETTINGS_SECURE in capabilities)
         CapabilityRow("App permission parity", AdbBridge.PrivilegedCapability.PERMISSION_PARITY in capabilities)
         CapabilityRow("Batched app reinstall", AdbBridge.PrivilegedCapability.SILENT_INSTALL in capabilities)
-        CapabilityRow("Navigation mode", AdbBridge.PrivilegedCapability.NAV_MODE in capabilities)
         CapabilityRow("Texting-app restore", AdbBridge.PrivilegedCapability.SMS_ROLE in capabilities)
         Spacer(Modifier.height(s.lg))
         Text(
