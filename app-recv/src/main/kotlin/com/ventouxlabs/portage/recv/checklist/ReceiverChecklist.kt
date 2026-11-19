@@ -40,7 +40,10 @@ object ReceiverChecklist {
      * but OPT-IN — PRP §7: "everything in Tier 0 works without ever seeing [Tier 1]".
      */
     fun defaultChecked(meta: ItemMeta): Boolean =
-        meta.kind.tier == Tier.TIER0 && meta.kind != ItemKind.SMS && meta.kind != ItemKind.MMS
+        meta.kind.tier == Tier.TIER0 && !requiresSmsRole(meta.kind)
+
+    /** Kinds whose writes only work while portage transiently holds ROLE_SMS. */
+    fun requiresSmsRole(kind: ItemKind): Boolean = kind == ItemKind.SMS || kind == ItemKind.MMS
 
     /** Build the grouped checklist from a manifest, preserving first-seen group order. */
     fun build(manifest: TransferManifest): List<ChecklistGroup> =
