@@ -189,4 +189,12 @@ class ReceiverChecklistTest {
         assertThat(ReceiverChecklist.localCalendarWillBeCreated(withoutCalendar, hasWritableCalendar = false))
             .isFalse()
     }
+
+    @Test
+    fun requiresSmsRole_trueOnlyForSmsAndMms() {
+        ItemKind.values().forEach { kind ->
+            assertThat(ReceiverChecklist.requiresSmsRole(kind))
+                .isEqualTo(kind == ItemKind.SMS || kind == ItemKind.MMS)
+        }
+    }
 }

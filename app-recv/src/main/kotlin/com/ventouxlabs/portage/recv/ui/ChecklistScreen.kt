@@ -276,7 +276,7 @@ private fun ChecklistRow(
 ) {
     val s = LocalSpacing.current
     val meta = item.meta
-    val isSms = meta.kind == ItemKind.SMS || meta.kind == ItemKind.MMS
+    val isSms = ReceiverChecklist.requiresSmsRole(meta.kind)
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val rowTint by animateColorAsState(
