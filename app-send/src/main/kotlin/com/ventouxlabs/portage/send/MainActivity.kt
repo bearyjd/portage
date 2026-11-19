@@ -200,6 +200,9 @@ private class SenderViewModelFactory(private val context: Context) : ViewModelPr
  * fails `ExportRegistrationCompletenessTest` instead of silently degrading at transfer time
  * (.agent_native/agent_roadmap.md item #1).
  *
+ * Order matters: every SOUND_FILE provider must precede SOUND_SELECTION so the receiver's shared
+ * `SoundFileRemap` is populated first (pinned by `ExportRegistrationCompletenessTest`).
+ *
  * `APK`, `APP_BACKUP_RELAY`, and `USER_FILE` are apply-only exceptions here on purpose: they are
  * never produced by this fixed export-provider list — APK items come from the user's app-carry
  * selection ([AndroidInstalledAppSource]), APP_BACKUP_RELAY from a user-picked relay file, and

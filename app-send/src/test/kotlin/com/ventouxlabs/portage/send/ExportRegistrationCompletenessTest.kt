@@ -76,6 +76,36 @@ class ExportRegistrationCompletenessTest {
 
         assertThat(registered).containsExactlyElementsIn(expected)
     }
+
+    /**
+     * Custom-ringtone restore depends on ORDER: the receiver's SOUND_FILE items populate the
+     * shared `SoundFileRemap` that SOUND_SELECTION then reads (see `app-recv`'s
+     * `buildApplyProviders`). Every SOUND_FILE provider must precede SOUND_SELECTION.
+     */
+    @Test
+    fun `every SOUND_FILE provider is exported before SOUND_SELECTION`() {
+        val kinds = buildExportProviders(
+            contactsStore = CompletenessContactsStore,
+            calendarStore = CompletenessCalendarStore,
+            callLogStore = CompletenessCallLogStore,
+            smsStore = CompletenessSmsStore,
+            mmsStore = CompletenessMmsStore,
+            inventorySource = CompletenessInventorySource,
+            systemSettingsStore = CompletenessSystemSettingsStore,
+            secureGlobalSettingsStore = CompletenessSecureGlobalSettingsStore,
+            wallpaperStore = CompletenessWallpaperStore,
+            soundStore = CompletenessSoundStore,
+            bluetoothStore = CompletenessBluetoothStore,
+            defaultRolesStore = CompletenessDefaultRolesStore,
+        ).map { it.kind }
+
+        val fileIdx = kinds.withIndex().filter { it.value == ItemKind.SOUND_FILE }.map { it.index }
+        val selectionIdx = kinds.indexOf(ItemKind.SOUND_SELECTION)
+
+        assertThat(fileIdx).isNotEmpty()
+        assertThat(selectionIdx).isAtLeast(0)
+        assertThat(fileIdx.max()).isLessThan(selectionIdx)
+    }
 }
 
 private object CompletenessDefaultRolesStore : DefaultRolesStore {
