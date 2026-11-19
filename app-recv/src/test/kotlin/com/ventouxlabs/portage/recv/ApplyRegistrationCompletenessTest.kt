@@ -37,7 +37,13 @@ import com.ventouxlabs.portage.settings.Namespace
 import com.ventouxlabs.portage.providers.sms.SmsRecord
 import com.ventouxlabs.portage.providers.sms.SmsRoleGateway
 import com.ventouxlabs.portage.providers.sms.SmsStore
+import com.ventouxlabs.portage.providers.sound.SoundChoice
+import com.ventouxlabs.portage.providers.sound.SoundCodec
+import com.ventouxlabs.portage.providers.sound.SoundFileCodec
+import com.ventouxlabs.portage.providers.sound.SoundFileHeader
 import com.ventouxlabs.portage.providers.sound.SoundFileRemap
+import com.ventouxlabs.portage.providers.sound.SoundSelection
+import com.ventouxlabs.portage.providers.sound.SoundSource
 import com.ventouxlabs.portage.providers.sound.SoundRole
 import com.ventouxlabs.portage.providers.sound.SoundStore
 import com.ventouxlabs.portage.providers.wallpaper.ImageBounds
@@ -51,6 +57,7 @@ import org.junit.rules.TemporaryFolder
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
 
 /**
  * Guards `.agent_native/agent_roadmap.md` item #1: wiring a new [ItemKind] end-to-end is a manual
@@ -71,6 +78,7 @@ class ApplyRegistrationCompletenessTest {
         hasSilentInstall: () -> Boolean = { false },
         silentInstaller: ApkSilentInstaller = ApkSilentInstaller.Deferred,
         permissionGranter: RuntimePermissionGranter = RuntimePermissionGranter.NoOp,
+        soundStore: SoundStore = FakeSoundStore,
     ): ApplyProviderRegistry = ApplyProviderRegistry(
             buildApplyProviders(
                 contactsStore = FakeContactsStore,
@@ -85,7 +93,7 @@ class ApplyRegistrationCompletenessTest {
                 systemSettingsStore = FakeSystemSettingsStore,
                 secureGlobalSettingsStore = FakeSecureGlobalSettingsStore,
                 wallpaperStore = FakeWallpaperStore,
-                soundStore = FakeSoundStore,
+                soundStore = soundStore,
                 soundFileRemap = SoundFileRemap(),
                 relayHandoff = { _, _, _, _ -> true },
                 userFileWrite = { _, _ -> true },
@@ -106,6 +114,38 @@ class ApplyRegistrationCompletenessTest {
                 permissionGranter = permissionGranter,
             )
     )
+
+    /**
+     * Pins the production wiring in `MainActivity`: the registry's SOUND_FILE and SOUND_SELECTION
+     * apply providers must share ONE `SoundFileRemap`, so a file applied first lets the selection
+     * resolve its USER_FILE role. Two separate remaps would silently skip every custom sound.
+     */
+    @Test
+    fun `sound file and sound selection apply providers share one remap`(): Unit = runBlocking {
+        val localUri = "content://media/external/audio/media/200"
+        val store = RecordingSoundStore(localUri)
+        val registry = registryWith(File("unused-sound-remap-test-staging"), soundStore = store)
+        val bytes = "OggS-tone".toByteArray()
+        val filePayload = ByteArrayOutputStream().also {
+            SoundFileCodec.writeHeader(
+                it,
+                SoundFileHeader(SoundRole.ALARM, "wake.ogg", "audio/ogg", bytes.size.toLong()),
+            )
+            it.write(bytes)
+        }
+        val selectionPayload = SoundCodec.encode(
+            SoundSelection(listOf(SoundChoice(SoundRole.ALARM, SoundSource.USER_FILE, fileDisplayName = "wake.ogg"))),
+        ).toByteArray(Charsets.UTF_8)
+
+        val fileOutcome = registry.forKind(ItemKind.SOUND_FILE)!!
+            .apply(ByteArrayInputStream(filePayload.toByteArray()))
+        val selectionOutcome = registry.forKind(ItemKind.SOUND_SELECTION)!!
+            .apply(ByteArrayInputStream(selectionPayload))
+
+        assertThat(fileOutcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(selectionOutcome.status).isEqualTo(ItemStatus.OK)
+        assertThat(store.setCalls).containsExactly(SoundRole.ALARM to localUri)
+    }
 
     @Test
     fun `every ItemKind has a registered apply provider`() {
@@ -223,4 +263,20 @@ private object FakeSoundStore : SoundStore {
     override fun resolveBuiltin(role: SoundRole, title: String): String? = null
     override fun canWrite() = false
     override fun setDefault(role: SoundRole, uri: String) = false
+}
+
+private class RecordingSoundStore(private val registeredUri: String) : SoundStore {
+    val setCalls = mutableListOf<Pair<SoundRole, String>>()
+    override fun read(role: SoundRole): String? = null
+    override fun titleOf(uri: String): String? = null
+    override fun resolveBuiltin(role: SoundRole, title: String): String? = null
+    override fun canWrite() = true
+    override fun setDefault(role: SoundRole, uri: String): Boolean {
+        setCalls += role to uri
+        return true
+    }
+    override fun registerSoundFile(header: SoundFileHeader, source: InputStream): String? {
+        source.readBytes()
+        return registeredUri
+    }
 }
