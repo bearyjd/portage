@@ -325,29 +325,22 @@ class AppBackupRelayExportProvider(
  * any partial file on mismatch. Returns true on success, false on any failure. A failed item maps to
  * a per-item WRITE_ERROR — never a batch abort (PROTOCOL.md §5).
  *
- * [itemId] comes from [com.ventouxlabs.portage.model.ItemMeta.itemId] via [nextItemId]. The caller
- * (ReceiverViewModel.applyStaged) sets this before each apply call so that two relay items for the
+ * [itemId] comes from [com.ventouxlabs.portage.model.ItemMeta.itemId], passed per call via
+ * [apply] (itemId, source) by ApplyProviderRegistry, so that two relay items for the
  * same package get distinct [RelayRestorePrompt] row keys and distinct handoff filenames — preventing
  * both the Compose duplicate-key crash and silent file overwrite.
  */
 class AppBackupRelayApplyProvider(
     private val onPrompt: (RelayRestorePrompt) -> Unit,
     private val handoff: (RelayHeader, InputStream, Long, Int) -> Boolean,
-    /**
-     * Returns the item id for the item currently being applied. Set by the ViewModel before each
-     * [apply] call via [setNextItemId]. Default 0 is safe: it is overwritten before first use in
-     * production; tests that exercise the single-item path can leave it at the default.
-     */
-    private var nextItemId: Int = 0,
 ) : ApplyProvider {
 
     override val kind = ItemKind.APP_BACKUP_RELAY
 
-    /** Called by ReceiverViewModel.applyStaged immediately before apply() to thread the item id. */
-    fun setNextItemId(id: Int) { nextItemId = id }
+    /** No item id available: uses 0, safe for single-item callers (production goes via [apply] with an id). */
+    override suspend fun apply(source: InputStream): ApplyOutcome = apply(0, source)
 
-    override suspend fun apply(source: InputStream): ApplyOutcome {
-        val itemId = nextItemId
+    override suspend fun apply(itemId: Int, source: InputStream): ApplyOutcome {
 
         // Read only the header line; stream position is left at the first blob byte.
         val rawHeader = RelayCodec.readHeaderFrom(source)

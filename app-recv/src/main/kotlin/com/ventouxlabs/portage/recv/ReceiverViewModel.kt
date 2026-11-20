@@ -25,7 +25,6 @@ import com.ventouxlabs.portage.providers.roles.RoleRestoreCandidate
 import com.ventouxlabs.portage.providers.roles.RestorableRole
 import com.ventouxlabs.portage.providers.roles.RoleRestorer
 import com.ventouxlabs.portage.providers.inventory.InstallAction
-import com.ventouxlabs.portage.providers.relay.AppBackupRelayApplyProvider
 import com.ventouxlabs.portage.providers.relay.RelayRestorePrompt
 import com.ventouxlabs.portage.providers.sound.SoundFileHeader
 import com.ventouxlabs.portage.providers.userfile.UserFileHeader
@@ -272,15 +271,6 @@ class ReceiverViewModel(
                 },
             ),
         )
-
-    /**
-     * Reference to the relay apply provider, extracted from the registry after construction.
-     * Used by [applyStaged] to set the current item id before each apply call so that two relay
-     * items for the same package get distinct [RelayRestorePrompt] row keys and distinct filenames.
-     * Null when no relay provider is registered (e.g. in tests that don't exercise relay).
-     */
-    private val relayApplyProvider: AppBackupRelayApplyProvider? =
-        applyRegistry.forKind(ItemKind.APP_BACKUP_RELAY) as? AppBackupRelayApplyProvider
 
     private var channel: SecureChannel? = null
 
@@ -545,15 +535,8 @@ class ReceiverViewModel(
      */
     internal suspend fun applyStaged(meta: ItemMeta, source: InputStream): ApplyOutcome {
         updateItem(meta.itemId) { it.copy(phase = ItemPhase.APPLYING) }
-        // Thread the item id into the relay provider so each relay item gets a distinct prompt key
-        // and a distinct handoff filename — prevents same-app overwrite and Compose duplicate-key crash.
-        // INVARIANT: setNextItemId + the provider's mutable nextItemId rely on SEQUENTIAL apply —
-        // ItemStreamReceiver applies items one at a time on a single coroutine, so the set-then-apply
-        // pair is atomic per item. Parallelizing applies would race nextItemId and corrupt the
-        // prompt/file identity (a backup could be tagged with another item's id); keep applies serial.
-        if (meta.kind == ItemKind.APP_BACKUP_RELAY) relayApplyProvider?.setNextItemId(meta.itemId)
         val outcome = try {
-            applyRegistry.apply(meta.kind, source)
+            applyRegistry.apply(meta.kind, meta.itemId, source)
         } catch (c: CancellationException) {
             throw c
         } catch (t: Throwable) {

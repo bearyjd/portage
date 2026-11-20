@@ -54,6 +54,12 @@ interface ApplyProvider {
     val kind: ItemKind
 
     suspend fun apply(source: InputStream): ApplyOutcome
+
+    /**
+     * Apply with the wire [itemId] of the item being applied. Defaults to [apply]; providers that
+     * key output on the item (e.g. the relay provider) override this instead of holding mutable state.
+     */
+    suspend fun apply(itemId: Int, source: InputStream): ApplyOutcome = apply(source)
 }
 
 /** Provider state that must survive retries within one transfer, but not cross transfer boundaries. */
@@ -76,7 +82,7 @@ class ApplyProviderRegistry(providers: List<ApplyProvider>) {
 
     fun forKind(kind: ItemKind): ApplyProvider? = byKind[kind]
 
-    suspend fun apply(kind: ItemKind, source: InputStream): ApplyOutcome =
-        byKind[kind]?.apply(source)
+    suspend fun apply(kind: ItemKind, itemId: Int, source: InputStream): ApplyOutcome =
+        byKind[kind]?.apply(itemId, source)
             ?: ApplyOutcome(ItemStatus.UNKNOWN_KIND, "no apply handler for '${kind.wire}'")
 }

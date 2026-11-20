@@ -35,7 +35,7 @@ class ApplyProviderRegistryTest {
         val calls = StubApply(ItemKind.CALL_LOG, ApplyOutcome(ItemStatus.OK, "calls"))
         val registry = ApplyProviderRegistry(listOf(contacts, calls))
 
-        val outcome = registry.apply(ItemKind.CALL_LOG, empty)
+        val outcome = registry.apply(ItemKind.CALL_LOG, 0, empty)
 
         assertThat(outcome.detail).isEqualTo("calls")
         assertThat(calls.calls).isEqualTo(1)
@@ -46,7 +46,7 @@ class ApplyProviderRegistryTest {
     fun `a kind with no registered handler is reported UNKNOWN_KIND, never acted on`() = runTest {
         val registry = ApplyProviderRegistry(emptyList())
 
-        val outcome = registry.apply(ItemKind.SETTINGS, empty)
+        val outcome = registry.apply(ItemKind.SETTINGS, 0, empty)
 
         assertThat(outcome.status).isEqualTo(ItemStatus.UNKNOWN_KIND)
     }
@@ -65,7 +65,7 @@ class ApplyProviderRegistryTest {
         val wallpaper = StubApply(ItemKind.WALLPAPER, ApplyOutcome(ItemStatus.OK, "wallpaper"))
         val registry = ApplyProviderRegistry(listOf(wallpaper))
 
-        val outcome = registry.apply(ItemKind.WALLPAPER, empty)
+        val outcome = registry.apply(ItemKind.WALLPAPER, 0, empty)
 
         assertThat(outcome.detail).isEqualTo("wallpaper")
         assertThat(wallpaper.calls).isEqualTo(1)
@@ -76,9 +76,37 @@ class ApplyProviderRegistryTest {
         val relay = StubApply(ItemKind.APP_BACKUP_RELAY, ApplyOutcome(ItemStatus.OK, "relay"))
         val registry = ApplyProviderRegistry(listOf(relay))
 
-        val outcome = registry.apply(ItemKind.APP_BACKUP_RELAY, empty)
+        val outcome = registry.apply(ItemKind.APP_BACKUP_RELAY, 0, empty)
 
         assertThat(outcome.detail).isEqualTo("relay")
         assertThat(relay.calls).isEqualTo(1)
+    }
+
+    @Test
+    fun `registry threads the item id to a provider that overrides the itemId apply`() = runTest {
+        val seen = mutableListOf<Int>()
+        val provider = object : ApplyProvider {
+            override val kind = ItemKind.APP_BACKUP_RELAY
+            override suspend fun apply(source: InputStream) = ApplyOutcome(ItemStatus.OK, "no-id")
+            override suspend fun apply(itemId: Int, source: InputStream): ApplyOutcome {
+                seen += itemId
+                return ApplyOutcome(ItemStatus.OK, "id-$itemId")
+            }
+        }
+        val registry = ApplyProviderRegistry(listOf(provider))
+
+        val outcome = registry.apply(ItemKind.APP_BACKUP_RELAY, 7, empty)
+
+        assertThat(outcome.detail).isEqualTo("id-7")
+        assertThat(seen).containsExactly(7)
+    }
+
+    @Test
+    fun `an id-unaware provider is reached through the default itemId apply`() = runTest {
+        val stub = StubApply(ItemKind.SETTINGS, ApplyOutcome(ItemStatus.OK, "plain"))
+        val registry = ApplyProviderRegistry(listOf(stub))
+
+        assertThat(registry.apply(ItemKind.SETTINGS, 99, empty).detail).isEqualTo("plain")
+        assertThat(stub.calls).isEqualTo(1)
     }
 }

@@ -310,9 +310,8 @@ class AppBackupRelayProvidersTest {
         val provider = AppBackupRelayApplyProvider(
             onPrompt = sink::onPrompt,
             handoff = handoff::invoke,
-            nextItemId = 42,
         )
-        val outcome = provider.apply(frameOf())
+        val outcome = provider.apply(42, frameOf())
 
         assertThat(outcome.status).isEqualTo(ItemStatus.OK)
         assertThat(sink.prompts).hasSize(1)
@@ -397,13 +396,11 @@ class AppBackupRelayProvidersTest {
         )
 
         // First item (itemId = 10)
-        provider.setNextItemId(10)
-        val outcome1 = provider.apply(frameOf(bytes = "first-backup".toByteArray(), byteLength = "first-backup".length.toLong()))
+        val outcome1 = provider.apply(10, frameOf(bytes = "first-backup".toByteArray(), byteLength = "first-backup".length.toLong()))
         assertThat(outcome1.status).isEqualTo(ItemStatus.OK)
 
         // Second item for the SAME package (itemId = 11)
-        provider.setNextItemId(11)
-        val outcome2 = provider.apply(frameOf(bytes = "second-backup".toByteArray(), byteLength = "second-backup".length.toLong()))
+        val outcome2 = provider.apply(11, frameOf(bytes = "second-backup".toByteArray(), byteLength = "second-backup".length.toLong()))
         assertThat(outcome2.status).isEqualTo(ItemStatus.OK)
 
         // Two distinct prompts with distinct itemIds — no duplicate row key
