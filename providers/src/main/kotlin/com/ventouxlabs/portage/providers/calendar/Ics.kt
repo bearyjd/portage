@@ -10,6 +10,7 @@
 package com.ventouxlabs.portage.providers.calendar
 
 import com.ventouxlabs.portage.providers.text.RfcText
+import com.ventouxlabs.portage.providers.wire.readBoundedLines
 import java.io.InputStream
 import java.io.OutputStream
 import java.time.Instant
@@ -76,11 +77,12 @@ object Ics {
     }
 
     fun parse(source: InputStream): IcsParseResult {
-        val physical = source.bufferedReader(Charsets.UTF_8).readLines().map { it.trimEnd('\r') }
-        val logical = RfcText.unfold(physical)
+        // Per-line cap: an oversize line is dropped as it streams past and counted malformed.
+        val bounded = source.readBoundedLines()
+        val logical = RfcText.unfoldWithGaps(bounded.lines)
 
         val events = mutableListOf<EventRecord>()
-        var malformed = 0
+        var malformed = bounded.oversize
         var event: EventBuilder? = null
 
         for (line in logical) {

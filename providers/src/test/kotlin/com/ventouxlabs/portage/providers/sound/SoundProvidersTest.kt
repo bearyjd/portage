@@ -15,6 +15,7 @@ import com.ventouxlabs.portage.model.Tier
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
+import com.ventouxlabs.portage.providers.wire.CountingStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
@@ -451,5 +452,12 @@ class SoundProvidersTest {
         assertThat(SoundUri.isAcceptable("http://evil.example/x")).isFalse()
         assertThat(SoundUri.isAcceptable("")).isFalse()
         assertThat(SoundUri.isAcceptable("   ")).isFalse()
+    }
+
+    @Test
+    fun `sound codec rejects an oversize payload without reading it all`() {
+        val stream = CountingStream(total = 1024 * 1024L * 64)
+        assertThat(SoundCodec.decode(stream)).isNull()
+        assertThat(stream.consumed).isAtMost(1024 * 1024L + 1)
     }
 }

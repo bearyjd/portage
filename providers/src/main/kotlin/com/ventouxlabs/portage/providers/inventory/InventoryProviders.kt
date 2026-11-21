@@ -15,6 +15,7 @@ import com.ventouxlabs.portage.providers.ApplyOutcome
 import com.ventouxlabs.portage.providers.ApplyProvider
 import com.ventouxlabs.portage.providers.ExportProvider
 import com.ventouxlabs.portage.providers.wire.JsonLines
+import com.ventouxlabs.portage.providers.wire.readBoundedUtf8
 import kotlinx.serialization.Serializable
 import java.io.InputStream
 import java.io.OutputStream
@@ -112,12 +113,16 @@ class AppInventoryApplyProvider(
 
     override val kind = ItemKind.APP_INVENTORY
 
+    private companion object {
+        /** Whole-item ceiling; a few thousand packages is well under 1 MiB, 8 MiB is generous. */
+        const val MAX_INVENTORY_BYTES = 8 * 1024 * 1024
+    }
+
     override suspend fun apply(source: InputStream): ApplyOutcome {
         val inventory = runCatching {
-            JsonLines.format.decodeFromString(
-                AppInventory.serializer(),
-                source.bufferedReader(Charsets.UTF_8).readText(),
-            )
+            val text = source.readBoundedUtf8(MAX_INVENTORY_BYTES)
+                ?: error("app inventory exceeds $MAX_INVENTORY_BYTES bytes")
+            JsonLines.format.decodeFromString(AppInventory.serializer(), text)
         }.getOrElse {
             return ApplyOutcome(ItemStatus.WRITE_ERROR, "unreadable app inventory")
         }

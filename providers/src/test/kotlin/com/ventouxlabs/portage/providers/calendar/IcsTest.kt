@@ -11,6 +11,7 @@ package com.ventouxlabs.portage.providers.calendar
 
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
+import com.ventouxlabs.portage.providers.wire.CountingStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
@@ -191,5 +192,35 @@ class IcsTest {
         assertThat(Ics.durationToMillis("p1d")).isEqualTo(86_400_000L)
         assertThat(Ics.durationToMillis("one hour")).isNull()
         assertThat(Ics.durationToMillis("")).isNull()
+    }
+
+    @Test
+    fun `an oversize line is malformed and not buffered whole`() {
+        val result = Ics.parse(CountingStream(total = 512L * 1024 * 1024))
+        assertThat(result.events).isEmpty()
+        assertThat(result.malformed).isAtLeast(1)
+    }
+
+    @Test
+    fun `a continuation after a dropped oversize line is not glued onto the previous property`() {
+        val big = "x".repeat(1024 * 1024 + 10)
+        val result = parse(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\nSUMMARY:Lunch\r\n" +
+                "DESCRIPTION:$big\r\n tail\r\n" +
+                "DTSTART:20260101T100000Z\r\nDTEND:20260101T110000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        )
+        assertThat(result.malformed).isEqualTo(1)
+        assertThat(result.events.single().title).isEqualTo("Lunch")
+    }
+
+    @Test
+    fun `a long but under-cap line still parses`() {
+        val desc = "x".repeat(900 * 1024)
+        val result = parse(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\nSUMMARY:Lunch\r\n" +
+                "DTSTART:20260101T100000Z\r\nDTEND:20260101T110000Z\r\nDESCRIPTION:$desc\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        )
+        assertThat(result.malformed).isEqualTo(0)
+        assertThat(result.events).hasSize(1)
     }
 }

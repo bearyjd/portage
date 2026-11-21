@@ -10,6 +10,7 @@
 package com.ventouxlabs.portage.providers.contacts
 
 import com.ventouxlabs.portage.providers.text.RfcText
+import com.ventouxlabs.portage.providers.wire.readBoundedLines
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.Base64
@@ -124,11 +125,12 @@ object VCard3 {
     }
 
     fun parse(source: InputStream): VCardParseResult {
-        val physical = source.bufferedReader(Charsets.UTF_8).readLines().map { it.trimEnd('\r') }
-        val logical = RfcText.unfold(physical)
+        // Per-line cap: an oversize line is dropped as it streams past and counted malformed.
+        val bounded = source.readBoundedLines()
+        val logical = RfcText.unfoldWithGaps(bounded.lines)
 
         val records = mutableListOf<ContactRecord>()
-        var malformed = 0
+        var malformed = bounded.oversize
         var card: CardBuilder? = null
 
         for (line in logical) {

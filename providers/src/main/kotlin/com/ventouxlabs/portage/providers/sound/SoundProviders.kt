@@ -16,6 +16,7 @@ import com.ventouxlabs.portage.providers.ApplyProvider
 import com.ventouxlabs.portage.providers.ExportProvider
 import com.ventouxlabs.portage.providers.TransferScopedApplyProvider
 import com.ventouxlabs.portage.providers.wire.JsonLines
+import com.ventouxlabs.portage.providers.wire.readBoundedUtf8
 import kotlinx.serialization.Serializable
 import java.io.ByteArrayInputStream
 import java.io.InputStream
@@ -62,11 +63,12 @@ object SoundCodec {
     fun encode(selection: SoundSelection): String =
         JsonLines.format.encodeToString(SoundSelection.serializer(), selection)
 
+    /** Whole-item ceiling: a real snapshot is a few KiB; over-cap is unreadable, not truncated. */
+    internal const val MAX_PAYLOAD_BYTES = 1024 * 1024
+
     fun decode(source: InputStream): SoundSelection? = runCatching {
-        JsonLines.format.decodeFromString(
-            SoundSelection.serializer(),
-            source.bufferedReader(Charsets.UTF_8).readText(),
-        )
+        val text = source.readBoundedUtf8(MAX_PAYLOAD_BYTES) ?: return null
+        JsonLines.format.decodeFromString(SoundSelection.serializer(), text)
     }.getOrNull()
 }
 

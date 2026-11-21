@@ -13,6 +13,7 @@ import com.ventouxlabs.portage.model.ItemStatus
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
+import com.ventouxlabs.portage.providers.wire.CountingStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
@@ -141,5 +142,13 @@ class InventoryProvidersTest {
 
         assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
         assertThat(called).isFalse()
+    }
+
+    @Test
+    fun `apply rejects an oversize inventory without reading it all`() = runTest {
+        val stream = CountingStream(total = 8L * 1024 * 1024 * 64)
+        val outcome = AppInventoryApplyProvider(FakeInventorySource()) { }.apply(stream)
+        assertThat(outcome.status).isEqualTo(ItemStatus.WRITE_ERROR)
+        assertThat(stream.consumed).isAtMost(8L * 1024 * 1024 + 1)
     }
 }

@@ -11,6 +11,7 @@ package com.ventouxlabs.portage.providers.contacts
 
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
+import com.ventouxlabs.portage.providers.wire.CountingStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.Base64
@@ -337,5 +338,38 @@ class VCard3Test {
         assertThat(back.middleName).isEqualTo("Quinn")
         assertThat(back.namePrefix).isEqualTo("Dr.")
         assertThat(back.nameSuffix).isEqualTo("Jr.")
+    }
+
+    @Test
+    fun `an oversize line is malformed and not buffered whole`() {
+        val stream = CountingStream(total = 512L * 1024 * 1024)
+        val result = VCard3.parse(stream)
+        assertThat(result.records).isEmpty()
+        assertThat(result.malformed).isAtLeast(1)
+    }
+
+    @Test
+    fun `a long but under-cap line still parses`() {
+        val note = "x".repeat(900 * 1024)
+        val result = parse("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada\r\nN:Lovelace;Ada;;;\r\nNOTE:$note\r\nEND:VCARD\r\n")
+        assertThat(result.malformed).isEqualTo(0)
+        assertThat(result.records).hasSize(1)
+    }
+
+    @Test
+    fun `a continuation after a dropped oversize line is not glued onto the previous property`() {
+        val big = "x".repeat(1024 * 1024 + 10)
+        val result = parse("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada\r\nNOTE:$big\r\n tail\r\nN:Lovelace;Ada;;;\r\nEND:VCARD\r\n")
+        assertThat(result.malformed).isEqualTo(1)
+        assertThat(result.records.single().displayName).isEqualTo("Ada")
+    }
+
+    @Test
+    fun `an oversize fold continuation drops its property instead of importing a truncated value`() {
+        val big = "x".repeat(1024 * 1024 + 10)
+        val result = parse("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada\r\nNOTE:abc\r\n $big\r\nEND:VCARD\r\n")
+        assertThat(result.malformed).isEqualTo(1)
+        assertThat(result.records.single().displayName).isEqualTo("Ada")
+        assertThat(result.records.single().note).isNull()
     }
 }

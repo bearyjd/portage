@@ -53,7 +53,7 @@ object JsonLines {
         val records = mutableListOf<T>()
         var malformed = 0
         var oversize = 0
-        forEachBoundedLine(source, maxLineChars) { line ->
+        forEachBoundedLine(source, maxLineChars) { line, _ ->
             if (line == null) {
                 malformed++
                 oversize++
@@ -68,20 +68,24 @@ object JsonLines {
 
     /**
      * Reads [source] line by line, buffering at most [maxLineChars] per line. An oversize line is
-     * discarded as it streams past (never held in memory) and reported to [onLine] as null.
+     * discarded as it streams past (never held in memory) and reported to [onLine] as null; the second argument says whether
+     * the dropped line started with SPACE/HTAB (a fold continuation), which callers that unfold must
+     * treat differently from a dropped new property.
      */
     @PublishedApi
-    internal fun forEachBoundedLine(source: InputStream, maxLineChars: Int, onLine: (String?) -> Unit) {
+    internal fun forEachBoundedLine(source: InputStream, maxLineChars: Int, onLine: (String?, Boolean) -> Unit) {
         val reader = source.bufferedReader(Charsets.UTF_8)
         val line = StringBuilder()
         var oversize = false
         var sawChars = false
+        var continuation = false // first char of the current physical line is SPACE or HTAB
         while (true) {
             val c = reader.read()
             if (c == -1) break
+            if (!sawChars) continuation = c == ' '.code || c == '\t'.code
             sawChars = true
             if (c == '\n'.code) {
-                onLine(if (oversize) null else line.toString().removeSuffix("\r"))
+                onLine(if (oversize) null else line.toString().removeSuffix("\r"), continuation)
                 line.setLength(0)
                 oversize = false
                 sawChars = false
@@ -94,6 +98,6 @@ object JsonLines {
                 }
             }
         }
-        if (sawChars) onLine(if (oversize) null else line.toString().removeSuffix("\r"))
+        if (sawChars) onLine(if (oversize) null else line.toString().removeSuffix("\r"), continuation)
     }
 }
